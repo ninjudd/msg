@@ -57,6 +57,7 @@ function infoPlist() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleIdentifier</key><string>${IDENTIFIER}</string>
   <key>CFBundleName</key><string>msgd</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>NSAppleEventsUsageDescription</key><string>msg sends and reads messages through Messages.</string>
