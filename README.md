@@ -134,6 +134,14 @@ Automation is a separate permission from Full Disk Access, so the two can be set
 independently: a daemon allowed to send but refused the database, or the
 reverse. Sending by chat guid needs no database read at all.
 
+`msg daemon automation` reports both gates and sends nothing to anyone. Either
+one can be closed to take away the ability to send:
+
+```sh
+msg daemon automation --settings         # the switch, under Automation
+tccutil reset AppleEvents com.ninjudd.msgd
+```
+
 `--dry-run` works whatever the gates say, so the disabled state stays
 inspectable.
 
@@ -171,19 +179,28 @@ Access on its own, answers a fixed set of questions over a unix socket, and
 takes no filesystem path from anyone. The CLI needs no permission at all.
 
 ```sh
-pnpm build:msgd        # compile msgd to a single executable
+pnpm build:msgd        # compile msgd to a single executable in msgd.app
 msg daemon install     # copy it into place and start it
 ```
 
-Then add the printed path under System Settings > Privacy & Security > Full Disk
-Access and switch it on. It appears in that list because the daemon has already
-tried to read and been refused — a denied access is what creates the entry, and
-there is no command that can add one. Give it a minute if it is not there yet.
+Then switch on `msgd` under System Settings > Privacy & Security > Full Disk
+Access, which the install opens for you. It appears in that list because the
+daemon has already tried to read and been refused — a denied access is what
+creates the entry, and there is no command that can add one. Give it a minute if
+it is not there yet.
 
 ```sh
 msg daemon status      # installed? running? granted? how many watchers?
+msg daemon automation  # may it drive Messages? sends nothing
 msg daemon uninstall   # stop and remove it
 ```
+
+It ships as an app bundle in `~/.local/libexec/msgd.app`, which nothing ever
+launches. The bundle exists so macOS keys its permissions by bundle identifier
+rather than by executable path: a path-keyed permission cannot be switched off —
+the toggle asks for Touch ID and then silently does nothing — which makes
+granting Automation a one-way door. The reasoning and the measurements are in
+[daemon-and-permissions.md §13](docs/projects/all/daemon-and-permissions.md).
 
 `msg` talks to the daemon whenever one is listening and reads the database
 directly when one is not, so nothing breaks if you never install it. `--db`
@@ -218,9 +235,14 @@ The two permissions are independent. Granting Full Disk Access does not let
 `msgd` send, granting Automation does not let it read, and each is a separate
 switch in a separate list.
 
-**Uninstalling does not withdraw the grant.** A Full Disk Access entry outlives
-the binary it was granted to. Remove it in System Settings, or with
-`sudo tccutil reset SystemPolicyAllFiles com.ninjudd.msgd`.
+**Uninstalling does not withdraw the grants.** They outlive the bundle they were
+granted to. Both are switches in System Settings, and both can be revoked from a
+script, because they are keyed to the bundle identifier:
+
+```sh
+tccutil reset SystemPolicyAllFiles com.ninjudd.msgd   # stop it reading
+tccutil reset AppleEvents com.ninjudd.msgd            # stop it sending
+```
 
 The reasoning behind the design — including why the socket carries no
 authentication, and why the daemon is a single executable rather than a copy of
@@ -352,7 +374,6 @@ src/
   db.ts          read-only queries against chat.db
   format.ts      terminal and JSON rendering
   source.ts      the daemon when one is listening, the database when not
-  macho.ts       embedding an Info.plist in the daemon executable
   cli.ts         command definitions
   msgd.ts        the daemon process
   daemon/
@@ -361,7 +382,7 @@ src/
     client.ts    connecting and reading answers
     config.ts    the one config key, read by the daemon
     send.ts      driving Messages.app over Apple Events
-    install.ts   the launchd agent and where the binary lives
+    install.ts   the launchd agent and where the bundle lives
 ```
 
 ## Limitations

@@ -1,5 +1,5 @@
 /**
- * Installing the daemon: a copied binary, a launchd agent, and the one step
+ * Installing the daemon: a copied bundle, a launchd agent, and the one step
  * that cannot be automated.
  *
  * There is no API for granting Full Disk Access — `tccutil` only removes — so
@@ -9,13 +9,32 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LABEL, socketPath, stateDirectory } from './protocol.js';
 
+/**
+ * The installed bundle.
+ *
+ * A bundle rather than a bare executable, because TCC keys a grant by bundle
+ * identifier when it can resolve one and by executable path when it cannot —
+ * and a path-keyed grant cannot be switched off. System Settings only ever
+ * creates and deletes those rows; the toggle authenticates and then does
+ * nothing (§13). It is not in /Applications because nobody launches it.
+ */
+export function bundlePath(): string {
+  return join(homedir(), '.local', 'libexec', 'msgd.app');
+}
+
+/** What launchd runs. TCC resolves it back to the bundle above. */
 export function binaryPath(): string {
+  return join(bundlePath(), 'Contents', 'MacOS', 'msgd');
+}
+
+/** Where the daemon lived before it was bundled, removed on install. */
+function legacyBinaryPath(): string {
   return join(homedir(), '.local', 'libexec', 'msgd');
 }
 
@@ -27,9 +46,9 @@ export function logPath(): string {
   return join(stateDirectory(), 'msgd.log');
 }
 
-/** Where `pnpm build:msgd` leaves the signed executable. */
-export function builtBinary(): string {
-  return fileURLToPath(new URL('../../build/msgd', import.meta.url));
+/** Where `pnpm build:msgd` leaves the signed bundle. */
+export function builtBundle(): string {
+  return fileURLToPath(new URL('../../build/msgd.app', import.meta.url));
 }
 
 function domain(): string {
@@ -131,27 +150,39 @@ export function isLoaded(): boolean {
 }
 
 export interface Installed {
+  bundle: string;
   binary: string;
   plist: string;
   socket: string;
   log: string;
+  /** Whether an unbundled daemon from an older install was removed. */
+  replacedLegacy: boolean;
   /** What was carried into the job from the installing shell's environment. */
   environment: Record<string, string>;
 }
 
-export function install(source = builtBinary()): Installed {
-  if (!existsSync(source)) {
+export function install(source = builtBundle()): Installed {
+  if (!existsSync(join(source, 'Contents', 'MacOS', 'msgd'))) {
     throw new Error(
-      `no daemon binary at ${source}\nBuild it first with \`pnpm build:msgd\`.`,
+      `no daemon bundle at ${source}\nBuild it first with \`pnpm build:msgd\`.`,
     );
   }
 
+  const bundle = bundlePath();
   const binary = binaryPath();
-  mkdirSync(dirname(binary), { recursive: true });
-  // launchd holds the running binary open, so replacing it in place fails.
-  if (existsSync(binary)) rmSync(binary);
-  copyFileSync(source, binary);
+  mkdirSync(dirname(bundle), { recursive: true });
+  // launchd holds the running binary open, so replacing it in place fails. A
+  // leftover _CodeSignature would also make the new bundle fail to validate.
+  rmSync(bundle, { recursive: true, force: true });
+  cpSync(source, bundle, { recursive: true });
   chmodSync(binary, 0o755);
+
+  // An install from before the bundle left an executable where the bundle now
+  // goes beside it. It holds its own grants and would keep running if anything
+  // still pointed at it, so it does not get to linger.
+  const legacy = legacyBinaryPath();
+  const replacedLegacy = existsSync(legacy) && statSync(legacy).isFile();
+  if (replacedLegacy) rmSync(legacy);
 
   const log = logPath();
   mkdirSync(stateDirectory(), { recursive: true, mode: 0o700 });
@@ -175,7 +206,7 @@ export function install(source = builtBinary()): Installed {
     throw new Error(`launchctl could not start ${LABEL}: ${started.output.trim()}`);
   }
 
-  return { binary, plist: agent, socket: socketPath(), log, environment };
+  return { bundle, binary, plist: agent, socket: socketPath(), log, replacedLegacy, environment };
 }
 
 /**
@@ -193,11 +224,14 @@ export function describeSignature(text: string): string {
 }
 
 /**
- * How the binary is signed, which decides whether its grant survives a rebuild.
- * `codesign -dv` reports on stderr, hence spawnSync rather than execFileSync.
+ * How the bundle is signed, which decides whether its grant survives a rebuild.
+ *
+ * `--verbose=2` because plain `-dv` omits the Authority line entirely, so
+ * everything came back as a bare "signed" with no way to tell which certificate
+ * the grant is anchored to. It reports on stderr, hence spawnSync.
  */
-export function signatureOf(binary: string): string {
-  const result = spawnSync('codesign', ['-dv', binary], { encoding: 'utf8' });
+export function signatureOf(target: string): string {
+  const result = spawnSync('codesign', ['-dv', '--verbose=2', target], { encoding: 'utf8' });
   return describeSignature(`${result.stdout ?? ''}${result.stderr ?? ''}`);
 }
 
@@ -210,16 +244,21 @@ export function openFullDiskAccess(): void {
   spawnSync('open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles']);
 }
 
+/** The pane holding the switch that decides whether the daemon may send (§13). */
+export function openAutomation(): void {
+  spawnSync('open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_Automation']);
+}
+
 export function uninstall(): { removed: string[]; grantRemains: boolean } {
   const removed: string[] = [];
   launchctl(['bootout', `${domain()}/${LABEL}`]);
 
-  for (const path of [plistPath(), binaryPath(), socketPath()]) {
+  for (const path of [plistPath(), bundlePath(), legacyBinaryPath(), socketPath()]) {
     if (existsSync(path)) {
-      rmSync(path);
+      rmSync(path, { recursive: true, force: true });
       removed.push(path);
     }
   }
-  // Deleting the binary does not withdraw its grant; the entry outlives it (§9).
+  // Deleting the bundle does not withdraw its grants; the entries outlive it (§9).
   return { removed, grantRemains: true };
 }

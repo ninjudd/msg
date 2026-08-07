@@ -6,7 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LABEL } from './protocol.js';
-import { daemonEnvironment, describeSignature, plist } from './install.js';
+import {
+  binaryPath,
+  builtBundle,
+  bundlePath,
+  daemonEnvironment,
+  describeSignature,
+  plist,
+} from './install.js';
 
 let directory: string;
 
@@ -37,6 +44,20 @@ describe('plist', () => {
     // Resident rather than socket-activated: launch_activate_socket(3) is not
     // reachable from Node (daemon-and-permissions.md §3).
     expect(parsed.KeepAlive).toBe(true);
+  });
+});
+
+describe('bundle layout', () => {
+  // TCC resolves an executable back to the bundle above it by walking up from
+  // Contents/MacOS. Anywhere else and it finds nothing, falls back to keying the
+  // grant by path, and the Automation switch stops working (§13).
+  it('runs the executable from inside Contents/MacOS', () => {
+    expect(binaryPath()).toBe(join(bundlePath(), 'Contents', 'MacOS', 'msgd'));
+    expect(bundlePath().endsWith('.app')).toBe(true);
+  });
+
+  it('installs from the bundle the build produces', () => {
+    expect(builtBundle().endsWith('/build/msgd.app')).toBe(true);
   });
 });
 

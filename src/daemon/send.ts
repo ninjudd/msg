@@ -9,7 +9,8 @@
  *
  * macOS refuses an Apple Event from a client with no
  * `NSAppleEventsUsageDescription`, without even prompting, so this only works
- * because the build embeds one: see src/macho.ts.
+ * because the daemon ships as a bundle carrying one in its `Info.plist`: see
+ * scripts/build-msgd.mjs.
  */
 
 import { execFileSync } from 'node:child_process';

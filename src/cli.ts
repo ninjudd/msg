@@ -4,11 +4,12 @@ import { basename } from 'node:path';
 import { Command } from 'commander';
 import { DaemonError, socketPath } from './daemon/protocol.js';
 import {
-  binaryPath,
-  builtBinary,
+  builtBundle,
+  bundlePath,
   install,
   isLoaded,
   logPath,
+  openAutomation,
   openFullDiskAccess,
   plistPath,
   signatureOf,
@@ -260,26 +261,33 @@ const daemon = program
 daemon
   .command('install')
   .description('install and start the launchd agent')
-  .option('--from <path>', 'binary to install', builtBinary())
+  .option('--from <path>', 'bundle to install', builtBundle())
   .action((opts: { from: string }) => {
     try {
       const installed = install(opts.from);
-      const signature = signatureOf(installed.binary);
+      const signature = signatureOf(installed.bundle);
       const carried = Object.entries(installed.environment)
         .map(([name, value]) => `carried ${name}=${value}\n`)
         .join('');
       process.stdout.write(
-        `installed ${installed.binary} (signed ${signature})\n` +
+        `installed ${installed.bundle} (signed ${signature})\n` +
           `started ${installed.plist}\n` +
           carried +
           '\n' +
-          'One step left, and it cannot be automated: switch on the daemon under\n' +
+          'One step left, and it cannot be automated: switch on msgd under\n' +
           'Privacy & Security > Full Disk Access, which is now open.\n\n' +
-          `  ${installed.binary}\n\n` +
           'It is listed there because it has already tried to read and been refused —\n' +
           'a denied access is what creates the entry — so give it a minute if it is\n' +
           'not there yet, then run `msg daemon status`.\n',
       );
+      if (installed.replacedLegacy) {
+        process.stdout.write(
+          '\nThis replaced an unbundled daemon, whose own entries are still listed and\n' +
+            'now point at nothing. Remove them with the "-" button under Full Disk\n' +
+            'Access; the Automation one cannot be removed singly, only by\n' +
+            '`tccutil reset AppleEvents`, which clears every app on the machine.\n',
+        );
+      }
       if (signature === 'ad-hoc') {
         process.stdout.write(
           '\nThis build is signed ad-hoc, so the grant is pinned to its hash and the\n' +
@@ -302,10 +310,10 @@ daemon
       for (const path of removed) process.stdout.write(`removed ${path}\n`);
       if (removed.length === 0) process.stdout.write('nothing to remove\n');
       process.stdout.write(
-        '\nTwo things outlive the binary. The Full Disk Access grant, removed in System\n' +
-          'Settings or with:\n\n' +
-          '  sudo tccutil reset SystemPolicyAllFiles com.ninjudd.msgd\n\n' +
-          'and the certificate the build signed it with:\n\n' +
+        '\nThe grants outlive the bundle, and both are keyed to its identifier:\n\n' +
+          '  tccutil reset SystemPolicyAllFiles com.ninjudd.msgd\n' +
+          '  tccutil reset AppleEvents com.ninjudd.msgd\n\n' +
+          'So does the certificate the build signed it with:\n\n' +
           '  security delete-identity -c "msg dev"\n',
       );
     } catch (error) {
@@ -329,13 +337,13 @@ daemon
     const message = problem === null ? null : describe(problem);
 
     if (opts.json === true) {
-      process.stdout.write(toJson({ loaded, binary: binaryPath(), status, error: message }));
+      process.stdout.write(toJson({ loaded, bundle: bundlePath(), status, error: message }));
       return;
     }
 
     const lines = [
       `agent      ${loaded ? 'loaded' : 'not loaded'} (${plistPath()})`,
-      `binary     ${binaryPath()}`,
+      `bundle     ${bundlePath()}`,
       `socket     ${socketPath()}${status === null ? ' (not listening)' : ''}`,
       `log        ${logPath()}`,
     ];
@@ -363,7 +371,8 @@ daemon
 daemon
   .command('automation')
   .description('check whether macOS lets the daemon drive Messages, sending nothing')
-  .action(async () => {
+  .option('--settings', 'open the pane holding the switch')
+  .action(async (opts: { settings?: boolean }) => {
     await withSource(async (source) => {
       const reply = await source.automation();
       process.stdout.write(
@@ -373,15 +382,15 @@ daemon
       );
       if (reply.allowed && reply.configEnabled) {
         process.stdout.write(
-          '\nBoth gates are open, so `msg send` will reach real people.\n' +
-            'Switch msgd off under Privacy & Security > Automation to revoke this,\n' +
-            'or set `send = false` in the config to close the other gate.\n',
+          '\nBoth gates are open, so `msg send` will reach real people. Close either:\n\n' +
+            '  msg daemon automation --settings   switch msgd off under Automation\n' +
+            '  tccutil reset AppleEvents com.ninjudd.msgd\n' +
+            '  send = false                       in ~/.config/msg/config.toml\n',
         );
       } else if (reply.allowed) {
-        process.stdout.write(
-          '\nmacOS would allow a send; the config is what is refusing it.\n',
-        );
+        process.stdout.write('\nmacOS would allow a send; the config is what is refusing it.\n');
       }
+      if (opts.settings === true) openAutomation();
     });
   });
 
