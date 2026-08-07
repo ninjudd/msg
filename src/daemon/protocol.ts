@@ -101,6 +101,21 @@ export interface StatusRequest {
   cmd: 'status';
 }
 
+/**
+ * Exercise the Automation permission without sending anything, so the entry in
+ * System Settings exists to be switched off.
+ */
+export interface AutomationRequest {
+  cmd: 'automation';
+}
+
+export interface AutomationReply {
+  allowed: boolean;
+  detail: string;
+  /** Whether the config would let a send through, independent of macOS. */
+  configEnabled: boolean;
+}
+
 export type Request =
   | ChatsRequest
   | ReadRequest
@@ -109,6 +124,7 @@ export type Request =
   | ResolveRequest
   | SendRequest
   | ContactsRequest
+  | AutomationRequest
   | StatusRequest;
 
 /** What the client writes: a request plus the protocol version it speaks. */

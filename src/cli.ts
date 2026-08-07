@@ -361,6 +361,31 @@ daemon
   });
 
 daemon
+  .command('automation')
+  .description('check whether macOS lets the daemon drive Messages, sending nothing')
+  .action(async () => {
+    await withSource(async (source) => {
+      const reply = await source.automation();
+      process.stdout.write(
+        `automation  ${reply.allowed ? 'allowed' : 'refused'}\n` +
+          `config      send = ${String(reply.configEnabled)}\n` +
+          (reply.allowed ? '' : `\n${reply.detail}\n`),
+      );
+      if (reply.allowed && reply.configEnabled) {
+        process.stdout.write(
+          '\nBoth gates are open, so `msg send` will reach real people.\n' +
+            'Switch msgd off under Privacy & Security > Automation to revoke this,\n' +
+            'or set `send = false` in the config to close the other gate.\n',
+        );
+      } else if (reply.allowed) {
+        process.stdout.write(
+          '\nmacOS would allow a send; the config is what is refusing it.\n',
+        );
+      }
+    });
+  });
+
+daemon
   .command('run')
   .description('run the daemon in the foreground, for debugging')
   .action(async () => {
