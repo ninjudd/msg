@@ -1,10 +1,13 @@
 # Plan: A daemon, so the terminal stops holding Full Disk Access
 
-**Status:** Designed, not started, permission model validated. A spike on
-2026-08-07 confirmed the premise the whole design rests on and settled two of
-the open questions ([§9](#9-what-the-spike-measured-2026-08-07)); §3 and §4
-carry corrections from it. No daemon code is written. `msg` currently requires
-Full Disk Access on the terminal, which is what this replaces.
+**Status:** Shipped. The daemon reads and sends, and the CLI holds no grant of
+its own — Full Disk Access and Automation are both attributed to `msgd`, and
+each can be given or withheld without the other.
+[§9](#9-what-the-spike-measured-2026-08-07) records the spike that validated the
+permission model, [§10](#10-what-shipped-2026-08-07) what building it settled,
+[§11](#11-what-sending-needed-2026-08-07) the one thing §7 assumed that turned
+out to need work, and [§12](#12-what-contacts-needed-2026-08-07) why a grant
+that plainly worked stopped applying halfway through a function.
 
 **Goal:** Move the privileged read into a launchd agent that holds Full Disk
 Access on its own, so the CLI needs no permission at all and a compromised shell
@@ -109,15 +112,15 @@ Rejected alternatives:
 - **Copy the node binary and pass it a script path.** Works, and needs no build
   step at all — §9 measured it reading `chat.db` under launchd. It is the
   confused deputy above.
-- **Wrap it in a minimal `.app` bundle.** Open rather than rejected. §9
-  confirmed it registers as `client_type=0`, keyed by bundle identifier, so its
-  grant is independent of where the app lives. It is also the only way to carry
-  an `Info.plist`, which §7 needs if sending moves into the daemon, since Apple
-  Events require `NSAppleEventsUsageDescription` and a bare executable has
-  nowhere to put one. The install-step advantage it was expected to have did not
-  materialize: it appears in the Full Disk Access list under its executable's
-  filename rather than the bundle name, which is what made it unfindable during
-  the spike.
+- **Wrap it in a minimal `.app` bundle.** Rejected, though it was left open for
+  a while. §9 confirmed it works and registers as `client_type=0`, keyed by
+  bundle identifier, so its grant is independent of where the app lives. What
+  kept it open was the belief that a bundle is the only way to carry an
+  `Info.plist`, which §7 needs for Apple Events. That is wrong, and §11 replaces
+  it: a bare executable carries one in `__TEXT,__info_plist`. The install-step
+  advantage it was expected to have did not materialize either — it appears in
+  the Full Disk Access list under its executable's filename rather than the
+  bundle name, which is what made it unfindable during the spike.
 
 **Correction (2026-08-07).** This section previously stated that an unsigned or
 ad-hoc-signed binary is matched by cdhash, so rebuilding can invalidate the
@@ -236,17 +239,6 @@ still send from any shell.
 
 ## 8 What is unresolved
 
-- The wire protocol. Length-prefixed JSON over the socket is the obvious start,
-  and the API surface in §6 is small enough that it does not need to be clever.
-  §3's resident daemon means it also has to carry a streaming response for
-  `watch`.
-- Whether `msgd` ships bare or inside an `.app` bundle (§4). This follows from
-  whether sending moves into the daemon, not from packaging taste: the bundle
-  earns its keep only as somewhere to put `NSAppleEventsUsageDescription`.
-- What happens when the daemon is not installed. If the CLI keeps a direct-read
-  fallback, most users will keep the terminal grant and the exercise buys
-  nothing; if it does not, `AccessDeniedError` has to become an install
-  instruction, and that is the first thing a new user hits.
 - How the install step explains adding a binary to Full Disk Access without it
   reading as something a reasonable person should refuse to do. §9 turned up
   three hazards to write around: the list can take minutes to show a newly added
@@ -254,6 +246,15 @@ still send from any shell.
   identical rows, and a grant outlives its binary — deleting the app leaves
   `auth=2` behind, and `tccutil reset SystemPolicyAllFiles <bundle-id>` is the
   only way to withdraw one that no longer shows in the list.
+
+Resolved by building it, and previously listed here:
+
+- The wire protocol, and whether it could stay simple. It did: see §10.
+- What happens when the daemon is not installed. The CLI reads the database
+  itself, for the reason in §10.
+- Whether `msgd` ships bare or inside an `.app` bundle. Bare. The bundle was
+  only ever wanted as somewhere to put `NSAppleEventsUsageDescription`, and a
+  bare executable can carry one: see §11.
 
 Resolved by the spike, and previously listed here:
 
@@ -294,3 +295,117 @@ Findings, in the order they changed the plan:
 7. **A denied attempt is what creates the TCC entry.** There is no CLI to add a
    Full Disk Access grant — only `tccutil` to remove one — so the install flow
    is: run the daemon, let it fail, then switch on the row that failure created.
+
+## 10 What shipped (2026-08-07)
+
+Everything in §1 through §6, and none of §7.
+
+**The wire is newline-delimited JSON, one request per connection.** `chats`,
+`read`, `search`, `resolve`, `contacts` and `status` answer with a single
+`result` frame and close; `watch` streams `item` frames until the client
+disconnects. The request carries its protocol version and a mismatch is refused
+by name, so a CLI left behind by an upgrade gets an instruction rather than a
+parse error. Length-prefixing was never needed.
+
+**`resolve` was not in §6's list of commands.** `send` has to turn a name into a
+chat guid before it can address anything, and that lookup is the one every other
+command already does internally. It returns a chat and takes no path, so the
+rule §6 sets still holds.
+
+**The CLI still reads the database when no daemon is listening.** §8 asked which
+way this should go, and the fallback wins for a reason external to this plan:
+AGENTS.md requires the `AccessDeniedError` path to keep working because it is
+the first thing a new user meets, and without the fallback a machine that has
+not installed the daemon has no working `msg` at all. `--db` is answered locally
+in every case, so a path argument never reaches the daemon.
+
+**Sending stayed in the CLI in the first pass**, and moved into the daemon in
+the second. §11 records what that took.
+
+**Two things building it turned up.** A unix socket path is capped at 104 bytes
+on macOS and the kernel reports a bare `EINVAL`, so the daemon checks the length
+and says so itself. And the snapshot fallback in `openDatabase` threw a raw
+`EPERM` from `copyFileSync` rather than `AccessDeniedError`: the documented
+"exits 2 with an explanation" path had been broken for as long as the
+development machine held the grant, and revoking it is what exposed that.
+
+## 11 What sending needed (2026-08-07)
+
+§7 assumed the Automation grant was there to be withheld. It was not there to be
+given either, and finding out took a second round of measurement.
+
+**A client with no usage description cannot ask.** A bare SEA under launchd was
+refused with `-1743`, with **no prompt and no entry created** in Privacy &
+Security > Automation. That last part is what makes it different from Full Disk
+Access, where §9 found that the denial is exactly what creates the row to switch
+on. Here there is nothing to switch on, so the grant is unreachable rather than
+merely absent.
+
+**A bare executable can carry `NSAppleEventsUsageDescription` after all.** It
+goes in a `__TEXT,__info_plist` section, which is what `/usr/bin/osascript` and
+`/usr/libexec/sshd-keygen-wrapper` do — the same wrapper §2 cites for holding
+Full Disk Access without a bundle. This retires the `.app` question in §8: the
+bundle was only ever wanted as somewhere to put this string.
+
+**Nothing on a stock machine can add that section**, which is the part that cost
+real work. `postject` refuses, because it needs a sentinel in the binary that
+only exists for the SEA blob, and there is no `llvm-objcopy`. `src/macho.ts`
+does it directly: a `section_64` is inserted into `__TEXT`'s section list, the
+load commands after it shift, and the payload goes in the padding between the
+load commands and the first section's data. Nothing outside the header moves and
+the file does not change length.
+
+**The payload goes at the far end of that padding, not the near end.** Placed
+immediately after the load commands it was silently overwritten, because
+`codesign` appends `LC_CODE_SIGNATURE` there afterwards. The only symptom was
+`codesign --verify` reporting an invalid Info.plist, which reads like a signing
+problem rather than a layout one.
+
+With the section embedded, the same binary prompts — naming `msgd`, not the
+terminal — and the event goes through once approved. Both halves of §7 are now
+real: the config key is checked by the daemon, and the Automation grant is a
+switch macOS enforces underneath it.
+
+**What the CLI lost.** `src/commands/send.ts` is gone. Sending without a daemon
+now fails with an instruction to install one, because a send path in the CLI
+would make the Automation gate decorative — the CLI would simply send without
+asking macOS for anything, which is the situation §7 exists to end.
+
+## 12 What contacts needed (2026-08-07)
+
+Names stopped resolving the moment reading moved into the daemon. `msg read
+"<a contact name>"` answered `no chat matching`, while reading by rowid or
+handle worked, because the daemon's contact index was empty.
+
+**Full Disk Access was granted and working.** The daemon read 763,232 messages
+from `chat.db`, and its TCC row was there to see:
+`kTCCServiceSystemPolicyAllFiles type=1 auth=2 /Users/…/.local/libexec/msgd`.
+There was no Contacts row, and §9 had already measured that a launchd binary
+with Full Disk Access reads the AddressBook databases without one.
+
+**The order of two calls decided whether that stayed true.** `loadContacts`
+consulted `defaults read com.apple.AddressBook` for the preferred source before
+opening any database. Asking for those preferences appears to make TCC start
+enforcing the Contacts service against the process, and every subsequent access
+to `~/Library/Application Support/AddressBook` is then refused with `EPERM` —
+Full Disk Access notwithstanding. Two builds differing only in whether the
+directory was read before or after that call saw 1,123 handles and none.
+
+Reading the databases first and consulting the preference afterwards costs
+nothing, since the preference only decides which source wins a tie.
+
+**Three things hid it**, and all three are now fixed:
+
+- `loadContacts` caught every error and returned an empty index, so a refused
+  read looked exactly like a machine with no contacts.
+- The enumeration used `globSync`, which swallowed the `EPERM` and returned no
+  matches. `readdirSync` raises it, which is how the cause became visible at
+  all. A glob that cannot distinguish "nothing there" from "not allowed" has no
+  place on a TCC-protected path.
+- The daemon cached the empty index for ten minutes. Since the install flow
+  guarantees the daemon runs before its grant exists, the first load is expected
+  to fail, and caching that failure kept names broken long after the grant.
+
+The general lesson is worth more than the fix: **Full Disk Access is not a
+property of the process, it is a property of each access.** Something the
+process did earlier can change the answer.

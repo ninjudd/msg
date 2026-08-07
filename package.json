@@ -12,6 +12,7 @@
   "packageManager": "pnpm@11.15.1",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:msgd": "pnpm build && node scripts/build-msgd.mjs",
     "prepare": "pnpm build",
     "msg": "tsx src/cli.ts",
     "test": "vitest run",
@@ -22,6 +23,8 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.1",
+    "postject": "1.0.0-alpha.6",
     "tsx": "^4.19.0",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"

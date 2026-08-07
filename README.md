@@ -25,16 +25,19 @@ Dana Reyes
 
 - macOS, with Messages signed in
 - Node 24 or newer, for the built-in `node:sqlite` module
-- Full Disk Access for your terminal
+- Full Disk Access, held by [the daemon](#the-daemon) or by your terminal
 
-Grant Full Disk Access in System Settings > Privacy & Security > Full Disk
-Access, add your terminal application, then restart it. macOS only applies the
-permission to processes started after the change, so an already-open terminal
-keeps failing until it is relaunched.
+The Messages database is protected by TCC, so something has to hold Full Disk
+Access. The daemon is the better place for it, because a grant on your terminal
+covers Mail, Safari history, Photos, and every file you can read, and every
+command you run there inherits it.
 
-Without it, every command exits with status 2 and an explanation. The Messages
-database is protected by TCC, so this step is unavoidable for any tool that
-reads it.
+To grant it to the terminal instead, add your terminal application under System
+Settings > Privacy & Security > Full Disk Access and restart it. macOS only
+applies the permission to processes started after the change, so an already-open
+terminal keeps failing until it is relaunched.
+
+Without either, every command exits with status 2 and an explanation.
 
 ## Install
 
@@ -102,7 +105,8 @@ msg watch -c dana              # just one conversation
 msg watch --json               # JSON lines, one object per message
 ```
 
-`watch` polls every 3 seconds by default; change it with `--interval`.
+With [the daemon](#the-daemon) running, new messages arrive as they land. Without
+it, `watch` polls every 3 seconds; change that with `--interval`.
 
 ### Sending
 
@@ -112,10 +116,33 @@ msg send dana --file ~/diagram.png
 msg send dana "hi" --dry-run   # print what would be sent, send nothing
 ```
 
-Sending is handled by Messages.app through AppleScript. The chat identifier and
-the message body are passed to the script as arguments rather than interpolated
-into it, so quotes, backslashes, and newlines in a message need no escaping and
-cannot alter the script.
+**Sending is off until you switch it on, and it goes through
+[the daemon](#the-daemon).** Two independent gates stand in front of it:
+
+```toml
+# ~/.config/msg/config.toml
+send = true
+```
+
+and macOS has to allow `msgd` to control Messages, under System Settings >
+Privacy & Security > Automation. The first is a switch you can find and read;
+the second is enforced by the operating system, so it holds even when something
+rewrites the config. The daemon checks the config key, not the CLI — a check a
+program runs on itself is advice rather than a gate.
+
+Automation is a separate permission from Full Disk Access, so the two can be set
+independently: a daemon allowed to send but refused the database, or the
+reverse. Sending by chat guid needs no database read at all.
+
+`--dry-run` works whatever the gates say, so the disabled state stays
+inspectable.
+
+The chat identifier and the message body are passed to AppleScript as arguments
+rather than interpolated into it, so quotes, backslashes, and newlines in a
+message need no escaping and cannot alter the script. `--file` is read by the
+CLI with your own permissions and handed to the daemon as bytes; the daemon
+never opens a path a caller named, since it holds Full Disk Access and that
+would make it read anything.
 
 ### Names
 
@@ -132,6 +159,74 @@ JSON, one object per message, suitable for streaming into another process.
 msg search "invoice" --json | jq '.[] | {date, sender, body}'
 ```
 
+## The daemon
+
+`msg` can read the Messages database itself, but that means granting Full Disk
+Access to your terminal, and that grant is not scoped to messages: it covers
+Mail, Safari history, Photos, every application container, and every file you
+can read. Everything you run in that terminal inherits it.
+
+`msgd` moves the grant to one binary. It is a launchd agent that holds Full Disk
+Access on its own, answers a fixed set of questions over a unix socket, and
+takes no filesystem path from anyone. The CLI needs no permission at all.
+
+```sh
+pnpm build:msgd        # compile msgd to a single executable
+msg daemon install     # copy it into place and start it
+```
+
+Then add the printed path under System Settings > Privacy & Security > Full Disk
+Access and switch it on. It appears in that list because the daemon has already
+tried to read and been refused — a denied access is what creates the entry, and
+there is no command that can add one. Give it a minute if it is not there yet.
+
+```sh
+msg daemon status      # installed? running? granted? how many watchers?
+msg daemon uninstall   # stop and remove it
+```
+
+`msg` talks to the daemon whenever one is listening and reads the database
+directly when one is not, so nothing breaks if you never install it. `--db`
+always reads locally and never reaches the daemon.
+
+**Signing.** The grant is pinned to the daemon's code signature, so an ad-hoc
+signature — matched by hash — dies on every rebuild and has to be granted again.
+To avoid that, **the first `pnpm build:msgd` creates a self-signed `msg dev`
+certificate in your login keychain** and signs with it; the requirement then
+anchors to the certificate and survives rebuilds. Nothing is submitted anywhere,
+`codesign` is offline, and the certificate is never added to any trust store.
+
+macOS asks before `codesign` uses that key, once per build. Answering "Always
+Allow" removes the prompt and, with it, the thing that stops local code from
+signing its own daemon and inheriting the grant — see
+[signing-identity.md](docs/projects/all/signing-identity.md).
+
+```sh
+MSG_SIGN_IDENTITY="my identity" pnpm build:msgd   # use a different certificate
+MSG_SIGN_IDENTITY=- pnpm build:msgd               # ad-hoc, no certificate
+security delete-identity -c "msg dev"             # remove the one msg created
+```
+
+**What it changes.** `watch` stops polling — the daemon tails the write-ahead log
+and pushes to every watcher, so one process does the work no matter how many
+terminals are following. Contact names are resolved by the daemon too, so
+Contacts needs no permission of its own. And [sending](#sending) runs from the
+daemon, which is what makes "may this tool text people?" an operating system
+permission rather than a flag a program honours about itself.
+
+The two permissions are independent. Granting Full Disk Access does not let
+`msgd` send, granting Automation does not let it read, and each is a separate
+switch in a separate list.
+
+**Uninstalling does not withdraw the grant.** A Full Disk Access entry outlives
+the binary it was granted to. Remove it in System Settings, or with
+`sudo tccutil reset SystemPolicyAllFiles com.ninjudd.msgd`.
+
+The reasoning behind the design — including why the socket carries no
+authentication, and why the daemon is a single executable rather than a copy of
+`node` — is in
+[docs/projects/all/daemon-and-permissions.md](docs/projects/all/daemon-and-permissions.md).
+
 ## Options
 
 | Option | Applies to | Meaning |
@@ -143,7 +238,7 @@ msg search "invoice" --json | jq '.[] | {date, sender, body}'
 | `--since <when>` | `read`, `search` | duration or date lower bound |
 | `-c, --chat <chat>` | `search`, `watch` | restrict to one conversation |
 | `--tapbacks` | `read`, `watch` | include reactions |
-| `--interval <seconds>` | `watch` | poll frequency |
+| `--interval <seconds>` | `watch` | poll frequency, without a daemon |
 | `-f, --file <path>` | `send` | send a file instead of text |
 | `--dry-run` | `send` | show without sending |
 | `--json` | all read commands | machine-readable output |
@@ -154,6 +249,23 @@ msg search "invoice" --json | jq '.[] | {date, sender, body}'
 | --- | --- |
 | `MSG_DB` | path to an alternate `chat.db`, same as `--db` |
 | `MSG_CONTACTS_SOURCE` | UUID of the Contacts source whose names win |
+| `MSG_SOCKET` | where the daemon listens, default `~/.local/state/msg/msgd.sock` |
+| `MSG_STATE_DIR` | socket and log directory, default `~/.local/state/msg` |
+| `MSG_CONFIG` | config file, default `~/.config/msg/config.toml` |
+| `MSG_SIGN_IDENTITY` | Code Signing identity for `pnpm build:msgd` |
+
+`MSG_DB` steers the CLI, which reads that database itself rather than asking the
+daemon — the same as `--db`, so a fixture stays a fixture even with a daemon
+running.
+
+`MSG_SOCKET`, `MSG_STATE_DIR`, `MSG_CONFIG` and `MSG_CONTACTS_SOURCE` are read by
+the daemon, and **a launchd job inherits nothing from your shell**. `msg daemon
+install` copies whichever of them are set into the agent and prints what it
+carried; changing one afterwards means installing again.
+
+`MSG_DB` is never carried into the agent, deliberately. It would outlive the
+shell that set it, leaving a daemon pinned to a fixture and a CLI with no way to
+know. To serve one, run `msgd` yourself with `MSG_DB` set.
 
 ## How it works
 
@@ -223,12 +335,15 @@ nothing and messages still read normally.
 pnpm test        # vitest
 pnpm typecheck   # tsc --noEmit
 pnpm build       # tsc -p tsconfig.build.json
+pnpm build:msgd  # bundle and sign the daemon executable
 ```
 
 Point `MSG_DB` at another database to develop against a fixture rather than your
-own messages. The tests cover the two pieces with real logic in them, the Apple
-timestamp conversions and typedstream decoding in `src/apple.ts`, and the handle
-normalization in `src/contacts.ts`. Neither test suite touches a real database.
+own messages. The tests cover the pieces with real logic in them: the Apple
+timestamp conversions and typedstream decoding in `src/apple.ts`, the handle
+normalization in `src/contacts.ts`, and the daemon end to end over a real socket
+against a database the test builds. No test reads a real database, and every
+daemon test asks for `names: false` so none of them touches Contacts.
 
 ```
 src/
@@ -236,9 +351,17 @@ src/
   contacts.ts    Contacts lookup and handle normalization
   db.ts          read-only queries against chat.db
   format.ts      terminal and JSON rendering
+  source.ts      the daemon when one is listening, the database when not
+  macho.ts       embedding an Info.plist in the daemon executable
   cli.ts         command definitions
-  commands/
-    send.ts      sending through Messages.app
+  msgd.ts        the daemon process
+  daemon/
+    protocol.ts  the wire: requests, frames, socket path
+    server.ts    the daemon itself
+    client.ts    connecting and reading answers
+    config.ts    the one config key, read by the daemon
+    send.ts      driving Messages.app over Apple Events
+    install.ts   the launchd agent and where the binary lives
 ```
 
 ## Limitations
@@ -248,7 +371,7 @@ src/
   U+FFFC placeholder that Messages stores in its place.
 - Editing, unsending, and reactions cannot be sent. Those need the private
   APIs, which are not reachable from AppleScript.
-- `watch` polls rather than subscribing, so a new message appears within one
-  poll interval rather than instantly.
+- Without the daemon, `watch` polls rather than subscribing, so a new message
+  appears within one poll interval rather than instantly.
 - Group membership changes, read receipts, and typing indicators are not
   surfaced.

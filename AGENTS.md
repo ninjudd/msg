@@ -23,14 +23,16 @@ write.
   the explicit task is to send a message the user asked for.
 - A send attempt has a second consequence beyond the message: the first one
   triggers a macOS Automation prompt, and approving it permanently grants the
-  terminal the right to drive Messages. That already happened once here
+  asking process the right to drive Messages. That already happened once here
   (`com.googlecode.iterm2 | com.apple.MobileSMS`, 2026-08-06), from a
   verification command labeled `--dry-run` that omitted the flag. It only failed
-  to send because the fixture chat id did not exist.
-- Sending is planned to be off by default behind a config key
+  to send because the fixture chat id did not exist. That grant has since been
+  revoked.
+- Sending now runs in the daemon, off unless `send = true` is in
+  `~/.config/msg/config.toml` *and* macOS has granted `msgd` Automation
   ([daemon-and-permissions.md §7](docs/projects/all/daemon-and-permissions.md)).
-  Until that lands, the only thing between a careless command and a real message
-  is the flag.
+  Neither gate is a substitute for the flag: on a machine where both are open,
+  a missing `--dry-run` texts someone.
 
 ## This repository is public
 
@@ -71,6 +73,12 @@ than by reasoning. Assume there are more.
   NSArchiver typedstream. `src/apple.ts` decodes it in plain TypeScript.
 - **Tapbacks are messages**, with `associated_message_type != 0`.
 - **Filtered chats are the Unknown Senders bucket**, `chat.is_filtered`.
+- **Reading Contacts preferences poisons Contacts file access.** Calling
+  `defaults read com.apple.AddressBook` before opening the AddressBook databases
+  makes TCC refuse them with `EPERM` for the rest of the process, even with Full
+  Disk Access. Read the databases first
+  ([daemon-and-permissions.md §12](docs/projects/all/daemon-and-permissions.md)).
+  Full Disk Access is a property of each access, not of the process.
 
 Verify a schema assumption against the database before building on it. Column
 names, value ranges, and which flags are actually populated all vary by macOS
@@ -106,9 +114,16 @@ change is not live until `pnpm build`.
 
 ## Permissions
 
-Reading requires Full Disk Access on the terminal, which is why
-[the daemon plan](docs/projects/all/daemon-and-permissions.md) exists. TCC
-attributes access to the responsible process, so granting it to `node` or to a
-CLI-spawned child does nothing. Without the grant, `openDatabase` throws
-`AccessDeniedError` and the CLI exits with status 2 and an explanation; keep
-that path working, since it is the first thing a new user hits.
+Reading requires Full Disk Access, held either by
+[the daemon](docs/projects/all/daemon-and-permissions.md) or by the terminal.
+TCC attributes access to the responsible process, so granting it to `node` or to
+a CLI-spawned child does nothing; a launchd job is its own responsible process,
+which is why `msgd` exists.
+
+The CLI reads the database itself when no daemon is listening. With a grant on
+neither side, `openDatabase` throws `AccessDeniedError` and the CLI exits with
+status 2 and an explanation. Keep that path working, since it is the first thing
+a new user hits — and it had already broken once: the snapshot fallback raised a
+raw `EPERM` from `copyFileSync` instead of the explanation, and nothing caught it
+because the development machine held the grant. Revoke it before trusting that
+path.
