@@ -1,7 +1,10 @@
 # Plan: A daemon, so the terminal stops holding Full Disk Access
 
-**Status:** Designed, not started. `msg` currently requires Full Disk Access on
-the terminal, which is what this replaces.
+**Status:** Designed, not started, permission model validated. A spike on
+2026-08-07 confirmed the premise the whole design rests on and settled two of
+the open questions ([§9](#9-what-the-spike-measured-2026-08-07)); §3 and §4
+carry corrections from it. No daemon code is written. `msg` currently requires
+Full Disk Access on the terminal, which is what this replaces.
 
 **Goal:** Move the privileged read into a launchd agent that holds Full Disk
 Access on its own, so the CLI needs no permission at all and a compromised shell
@@ -47,14 +50,30 @@ application bundle:
 
 ## 3 The shape
 
-A **LaunchAgent** in `~/Library/LaunchAgents` declaring a `Sockets` key. launchd
-owns the listening socket, starts the daemon on first connect, and the daemon
-idle-exits after a timeout. That is on-demand in the real sense, and it is why
-this is a LaunchAgent rather than a LaunchDaemon: agents run inside the user's
-GUI session, which is required for any TCC prompt to appear at all. A
-LaunchDaemon would fail to prompt with no way to approve.
+A **LaunchAgent** in `~/Library/LaunchAgents`, resident: `RunAtLoad` and
+`KeepAlive`, binding its own `0600` socket. It is a LaunchAgent rather than a
+LaunchDaemon because agents run inside the user's GUI session, which is required
+for any TCC prompt to appear at all. A LaunchDaemon would fail to prompt with no
+way to approve.
 
 The CLI connects to the socket and needs no permission of any kind.
+
+**Correction (2026-08-07).** This section previously specified a `Sockets` key,
+with launchd owning the listening socket, starting the daemon on first connect,
+and the daemon idle-exiting after a timeout. That is not reachable from Node: a
+socket-activated job collects its listener with `launch_activate_socket(3)`, a C
+API with no Node binding and no FFI in Node 24 to reach it. Every Apple job
+using `SockPathName` is a C binary. Two ways out were weighed:
+
+- **`inetdCompatibility`**, where launchd hands over the already-accepted
+  connection on stdin and stdout, needing no C at all. It costs a process spawn
+  per connection, and every Apple example uses network rather than unix sockets,
+  so it would have to be tested before being relied on.
+- **Resident, with no socket activation.** Chosen. It costs an idle node
+  process, and it is what makes `watch` better rather than merely possible: one
+  process tailing `chat.db-wal` and pushing to subscribers beats N terminals
+  each polling on their own timer. Idle-exit was a nicety that cost a C
+  dependency.
 
 ## 4 The daemon's TCC identity is its main executable (DECIDED)
 
@@ -67,20 +86,49 @@ it.
 **Decided:** compile the daemon to its own executable with Node's Single
 Executable Application support, so `msgd` is the TCC client.
 
+The decisive reason is not the one first written down here. A copy of the node
+binary sitting at a granted path is a **confused deputy**: the binary holds the
+grant, but the code it runs is whatever it is handed. The plist supplies the
+script path, and `~/Library/LaunchAgents` is user-writable, so rewriting
+`ProgramArguments` and calling `launchctl kickstart` runs arbitrary code with
+Full Disk Access using nothing but public tooling. The script file is equally
+exposed: §9 overwrote one in place, re-signed nothing, and the replacement ran
+with the grant intact, because TCC does not check a bundle's resource seal.
+Root ownership closes both routes, but it leaves the design resting on file
+permissions around an interpreter. A SEA has no script argument to redirect and
+no resource file to swap, and its JS lives in the signed Mach-O the kernel does
+enforce — measured in §9, a SEA handed `/tmp/attacker.js --evil` recorded the
+argument and ran its own embedded code regardless. It also makes the writable
+plist stop mattering, since pointing it at anything else runs a binary that
+holds no grant.
+
 Rejected alternatives:
 
 - **Run node directly.** Simplest, but the grant is both too broad and too
   fragile, which defeats the point of the exercise.
-- **Wrap it in a minimal `.app` bundle.** Works, and a bundle identifier
-  (`client_type=0`) survives rebuilds better than a cdhash. Heavier to build and
-  harder to explain in an install step; worth revisiting if grant churn becomes
-  annoying in practice.
+- **Copy the node binary and pass it a script path.** Works, and needs no build
+  step at all — §9 measured it reading `chat.db` under launchd. It is the
+  confused deputy above.
+- **Wrap it in a minimal `.app` bundle.** Open rather than rejected. §9
+  confirmed it registers as `client_type=0`, keyed by bundle identifier, so its
+  grant is independent of where the app lives. It is also the only way to carry
+  an `Info.plist`, which §7 needs if sending moves into the daemon, since Apple
+  Events require `NSAppleEventsUsageDescription` and a bare executable has
+  nowhere to put one. The install-step advantage it was expected to have did not
+  materialize: it appears in the Full Disk Access list under its executable's
+  filename rather than the bundle name, which is what made it unfindable during
+  the spike.
 
-Either way, an unsigned or ad-hoc-signed binary is matched by cdhash, so
-rebuilding can invalidate the grant and require re-adding it in System Settings.
-Signing with a stable identity avoids that. For a personal tool, re-adding it
-occasionally is acceptable; for anyone else installing this, it is the roughest
-edge in the design.
+**Correction (2026-08-07).** This section previously stated that an unsigned or
+ad-hoc-signed binary is matched by cdhash, so rebuilding can invalidate the
+grant, and called that the roughest edge in the design. Only the ad-hoc half is
+true. Signed with a stable identity the requirement anchors to the certificate
+instead: §9 rebuilt a SEA with changed code and a changed cdhash at the same
+path, and the grant held. Two practical notes follow. Sign with an explicit
+`--identifier com.ninjudd.msgd`, because the identifier otherwise defaults to
+the filename and a rename would void the grant. Prefer a self-signed Code
+Signing certificate to an Apple Development one, which expires annually and
+would take the grant with it.
 
 ## 5 The socket carries no authentication (DECIDED)
 
@@ -127,6 +175,15 @@ nothing that could turn it into a general-purpose reader with Full Disk Access
 behind it. Peer pid (`LOCAL_PEERPID`) is worth logging for auditing, but it is
 not a control and should not be described as one.
 
+Two consequences for the API as it grows. **`watch` belongs in the daemon**, and
+is the one command a daemon makes better rather than merely possible, so the
+protocol needs a streaming response from the start rather than bolted on later.
+**Attachments are addressed by rowid, never by path** — `later.md` wants them,
+and an API taking an attachment path is precisely the general-purpose reader
+this rule exists to prevent. `--db` and `MSG_DB` stay client-side and never
+reach the daemon, which keeps fixtures and tests working without widening what
+the daemon will answer.
+
 ## 7 Sending is off by default, gated twice (DECIDED)
 
 Sending goes through Messages.app over Apple Events, which needs Automation
@@ -149,6 +206,12 @@ agent can set it inline in the same command it uses to send, which is precisely
 the accident the gate exists to prevent.
 
 `--dry-run` works unconditionally, so the disabled state stays inspectable.
+
+**The CLI's direct send path has to go when the daemon lands.** While
+`src/commands/send.ts` shells out to `osascript` itself, withholding Automation
+from the daemon gates nothing, because the CLI never asked it. For the same
+reason the config key is checked by the daemon rather than by the client: a
+check a caller performs on itself is advice, not a gate.
 
 **This is off for the author's own account and expected to stay off.** The case
 it exists for is a Mac running a separate iCloud account, where sending is the
@@ -173,12 +236,61 @@ still send from any shell.
 
 ## 8 What is unresolved
 
-- Whether the Single Executable Application build is stable enough across Node
-  upgrades to be worth it over an `.app` bundle (§4).
 - The wire protocol. Length-prefixed JSON over the socket is the obvious start,
   and the API surface in §6 is small enough that it does not need to be clever.
-- Whether the daemon should hold the Contacts read as well. Contacts sits under
-  a different TCC service from Full Disk Access, so `--no-names` already
-  sidesteps it independently, and folding it in may not earn its complexity.
+  §3's resident daemon means it also has to carry a streaming response for
+  `watch`.
+- Whether `msgd` ships bare or inside an `.app` bundle (§4). This follows from
+  whether sending moves into the daemon, not from packaging taste: the bundle
+  earns its keep only as somewhere to put `NSAppleEventsUsageDescription`.
+- What happens when the daemon is not installed. If the CLI keeps a direct-read
+  fallback, most users will keep the terminal grant and the exercise buys
+  nothing; if it does not, `AccessDeniedError` has to become an install
+  instruction, and that is the first thing a new user hits.
 - How the install step explains adding a binary to Full Disk Access without it
-  reading as something a reasonable person should refuse to do.
+  reading as something a reasonable person should refuse to do. §9 turned up
+  three hazards to write around: the list can take minutes to show a newly added
+  entry, entries are labelled by executable filename so two installs stack as
+  identical rows, and a grant outlives its binary — deleting the app leaves
+  `auth=2` behind, and `tccutil reset SystemPolicyAllFiles <bundle-id>` is the
+  only way to withdraw one that no longer shows in the list.
+
+Resolved by the spike, and previously listed here:
+
+- Whether the SEA build is worth it over an `.app` bundle on grant-churn
+  grounds. The churn does not exist when the binary is signed with a stable
+  identity (§4).
+- Whether the daemon should hold the Contacts read. It should, and it costs
+  nothing: Full Disk Access covers the AddressBook databases, so no second grant
+  is needed. A job holding no grant could not even list the `Sources` directory,
+  so the alternative is not "names still work", it is "names do not work".
+
+## 9 What the spike measured (2026-08-07)
+
+Two throwaway experiments under launchd, run with **no terminal holding Full
+Disk Access** for the duration. Each variant was a stub that opened the
+databases and reported row counts, nothing else. Every variant was run once
+before being granted anything: the denial is the control, and it is what rules
+out a stray terminal grant as the explanation for the success that follows.
+
+| Variant | Identity TCC recorded | Read `chat.db` once granted |
+| --- | --- | --- |
+| `.app` bundle, ad-hoc signed | `client_type=0`, bundle identifier | yes |
+| bare copy of `node` plus a script | `client_type=1`, absolute path | yes |
+| SEA, signed with a stable identity | `client_type=1`, absolute path | yes |
+
+Findings, in the order they changed the plan:
+
+1. **The premise holds.** A launchd job reads `chat.db` while no terminal on the
+   machine holds Full Disk Access (§2, §3).
+2. **A rebuild keeps the grant** when the binary carries a stable signing
+   identity, changed cdhash and all (§4).
+3. **A SEA ignores a script path in argv.** A copied `node` runs it (§4).
+4. **Modifying a bundle's `Resources` broke `codesign --verify` but not the
+   grant.** The replacement code ran with Full Disk Access, unsigned and
+   unnoticed (§4).
+5. **Full Disk Access covers Contacts** (§8).
+6. **Grants outlive the binaries and apps they were granted to** (§8).
+7. **A denied attempt is what creates the TCC entry.** There is no CLI to add a
+   Full Disk Access grant — only `tccutil` to remove one — so the install flow
+   is: run the daemon, let it fail, then switch on the row that failure created.
