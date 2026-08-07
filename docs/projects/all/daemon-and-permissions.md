@@ -5,8 +5,9 @@ its own — Full Disk Access and Automation are both attributed to `msgd`, and
 each can be given or withheld without the other.
 [§9](#9-what-the-spike-measured-2026-08-07) records the spike that validated the
 permission model, [§10](#10-what-shipped-2026-08-07) what building it settled,
-and [§11](#11-what-sending-needed-2026-08-07) the one thing §7 assumed that
-turned out to need work.
+[§11](#11-what-sending-needed-2026-08-07) the one thing §7 assumed that turned
+out to need work, and [§12](#12-what-contacts-needed-2026-08-07) why a grant
+that plainly worked stopped applying halfway through a function.
 
 **Goal:** Move the privileged read into a launchd agent that holds Full Disk
 Access on its own, so the CLI needs no permission at all and a compromised shell
@@ -369,3 +370,42 @@ switch macOS enforces underneath it.
 now fails with an instruction to install one, because a send path in the CLI
 would make the Automation gate decorative — the CLI would simply send without
 asking macOS for anything, which is the situation §7 exists to end.
+
+## 12 What contacts needed (2026-08-07)
+
+Names stopped resolving the moment reading moved into the daemon. `msg read
+"<a contact name>"` answered `no chat matching`, while reading by rowid or
+handle worked, because the daemon's contact index was empty.
+
+**Full Disk Access was granted and working.** The daemon read 763,232 messages
+from `chat.db`, and its TCC row was there to see:
+`kTCCServiceSystemPolicyAllFiles type=1 auth=2 /Users/…/.local/libexec/msgd`.
+There was no Contacts row, and §9 had already measured that a launchd binary
+with Full Disk Access reads the AddressBook databases without one.
+
+**The order of two calls decided whether that stayed true.** `loadContacts`
+consulted `defaults read com.apple.AddressBook` for the preferred source before
+opening any database. Asking for those preferences appears to make TCC start
+enforcing the Contacts service against the process, and every subsequent access
+to `~/Library/Application Support/AddressBook` is then refused with `EPERM` —
+Full Disk Access notwithstanding. Two builds differing only in whether the
+directory was read before or after that call saw 1,123 handles and none.
+
+Reading the databases first and consulting the preference afterwards costs
+nothing, since the preference only decides which source wins a tie.
+
+**Three things hid it**, and all three are now fixed:
+
+- `loadContacts` caught every error and returned an empty index, so a refused
+  read looked exactly like a machine with no contacts.
+- The enumeration used `globSync`, which swallowed the `EPERM` and returned no
+  matches. `readdirSync` raises it, which is how the cause became visible at
+  all. A glob that cannot distinguish "nothing there" from "not allowed" has no
+  place on a TCC-protected path.
+- The daemon cached the empty index for ten minutes. Since the install flow
+  guarantees the daemon runs before its grant exists, the first load is expected
+  to fail, and caching that failure kept names broken long after the grant.
+
+The general lesson is worth more than the fix: **Full Disk Access is not a
+property of the process, it is a property of each access.** Something the
+process did earlier can change the answer.

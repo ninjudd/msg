@@ -77,7 +77,13 @@ export function openDatabase(
     if (message.includes('authorization denied') || message.includes('permission')) {
       throw new AccessDeniedError(deniedMessage(location));
     }
-    if (options.allowSnapshot === false) throw error;
+    if (options.allowSnapshot === false) {
+      // TCC denial reaches us as SQLite's "unable to open database file", which
+      // is indistinguishable from a locked write-ahead log. The CLI resolves
+      // that ambiguity by trying a snapshot; a daemon has no snapshot to fall
+      // back to, so for it the answer is always the permission.
+      throw new AccessDeniedError(`${deniedMessage(location)}\n\n${(error as Error).message}`);
+    }
     return openSnapshot(location);
   }
 }

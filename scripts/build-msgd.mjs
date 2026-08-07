@@ -14,6 +14,7 @@ import { copyFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync 
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { ensureIdentity } from '../dist/daemon/identity.js';
 import { addInfoPlistSection, findSection } from '../dist/macho.js';
 import { VERSION } from '../dist/version.js';
 
@@ -29,9 +30,19 @@ const binary = join(out, 'msgd');
 /**
  * An ad-hoc signature is matched by cdhash, so every rebuild invalidates the
  * Full Disk Access grant. A stable identity anchors the requirement to the
- * certificate instead, and rebuilds keep the grant (§4).
+ * certificate instead, and rebuilds keep the grant (§4). One is created on
+ * first build; `MSG_SIGN_IDENTITY=-` forces ad-hoc.
  */
-const identity = process.env['MSG_SIGN_IDENTITY'] ?? '-';
+let identity = process.env['MSG_SIGN_IDENTITY'];
+if (identity === undefined) {
+  const provisioned = ensureIdentity();
+  identity = provisioned.name;
+  if (provisioned.created) {
+    process.stdout.write(
+      `created a "${provisioned.name}" code signing certificate in your login keychain\n`,
+    );
+  }
+}
 
 function run(command, args) {
   execFileSync(command, args, { stdio: ['ignore', 'ignore', 'inherit'] });
@@ -46,10 +57,10 @@ function infoPlist() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleIdentifier</key><string>${IDENTIFIER}</string>
   <key>CFBundleName</key><string>msgd</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>NSAppleEventsUsageDescription</key><string>msg sends and reads messages through Messages.</string>
+  <key>NSContactsUsageDescription</key><string>msg shows contact names instead of phone numbers.</string>
 </dict>
 </plist>
 `;
@@ -121,6 +132,6 @@ process.stdout.write(`built ${binary} (${megabytes}MB, signed ${identity})\n`);
 if (identity === '-') {
   process.stdout.write(
     'Signed ad-hoc: every rebuild changes the cdhash, so Full Disk Access has to be\n' +
-      'granted again. Set MSG_SIGN_IDENTITY to a Code Signing certificate to keep it.\n',
+      'granted again. Unset MSG_SIGN_IDENTITY to sign with a stable certificate instead.\n',
   );
 }

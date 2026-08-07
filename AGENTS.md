@@ -73,6 +73,12 @@ than by reasoning. Assume there are more.
   NSArchiver typedstream. `src/apple.ts` decodes it in plain TypeScript.
 - **Tapbacks are messages**, with `associated_message_type != 0`.
 - **Filtered chats are the Unknown Senders bucket**, `chat.is_filtered`.
+- **Reading Contacts preferences poisons Contacts file access.** Calling
+  `defaults read com.apple.AddressBook` before opening the AddressBook databases
+  makes TCC refuse them with `EPERM` for the rest of the process, even with Full
+  Disk Access. Read the databases first
+  ([daemon-and-permissions.md §12](docs/projects/all/daemon-and-permissions.md)).
+  Full Disk Access is a property of each access, not of the process.
 
 Verify a schema assumption against the database before building on it. Column
 names, value ranges, and which flags are actually populated all vary by macOS

@@ -1,7 +1,7 @@
 /** Name lookup for handles, backed by the macOS Contacts database. */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, globSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -75,16 +75,35 @@ function sourceIdOf(path: string): string | null {
   return parent === 'AddressBook' ? null : parent;
 }
 
-/** Contacts databases, primary source first so its names win. */
-function contactDatabases(preferred: string | null): string[] {
+/**
+ * Every per-account database under `Sources/`.
+ *
+ * Walked with `readdirSync` rather than matched with a glob. A glob over this
+ * path found nothing from inside the daemon while the very same files opened
+ * fine when reached by directory walk, and a lookup that silently finds no
+ * sources is indistinguishable from a machine with no contacts.
+ */
+function sourceDatabases(problems: string[]): string[] {
+  const directory = join(ADDRESS_BOOK, 'Sources');
+  let entries: string[];
+  try {
+    entries = readdirSync(directory);
+  } catch (error) {
+    problems.push(`${directory}: ${describe(error)}`);
+    return [];
+  }
+  return entries
+    .map((entry) => join(directory, entry, 'AddressBook-v22.abcddb'))
+    .filter((path) => existsSync(path))
+    .sort();
+}
+
+/** Every Contacts database: one per account, plus the legacy top-level one. */
+function contactDatabases(problems: string[]): string[] {
   if (!existsSync(ADDRESS_BOOK)) return [];
-  const sources = globSync(join(ADDRESS_BOOK, 'Sources', '*', 'AddressBook-v22.abcddb')).sort();
-  const ordered = [
-    ...sources.filter((path) => sourceIdOf(path) === preferred),
-    ...sources.filter((path) => sourceIdOf(path) !== preferred),
-    join(ADDRESS_BOOK, 'AddressBook-v22.abcddb'),
-  ];
-  return ordered.filter((path) => existsSync(path));
+  return [...sourceDatabases(problems), join(ADDRESS_BOOK, 'AddressBook-v22.abcddb')].filter(
+    (path) => existsSync(path),
+  );
 }
 
 function personName(row: Record<string, unknown>): string | null {
@@ -105,44 +124,34 @@ function personName(row: Record<string, unknown>): string | null {
  * so reading messages still works without Contacts access.
  */
 export function loadContacts(preferredSource?: string | undefined): ContactIndex {
-  const names = new Map<string, string>();
   const problems: string[] = [];
-  const preferred = preferredSource ?? process.env['MSG_CONTACTS_SOURCE'] ?? defaultSourceId();
 
   if (!existsSync(ADDRESS_BOOK)) problems.push(`no Contacts directory at ${ADDRESS_BOOK}`);
-  const databases = contactDatabases(preferred);
+
+  // Read every database before asking which source is preferred.
+  //
+  // The order matters, which is not obvious and cost a long afternoon. Asking
+  // for `com.apple.AddressBook` preferences appears to make TCC start enforcing
+  // the Contacts service against this process, and from then on these files are
+  // refused with EPERM even though the process holds Full Disk Access. Two
+  // builds differing only in whether the directory was read first behaved
+  // differently: the one that read first saw 1,123 handles, the one that read
+  // after saw none. Reading first costs nothing, since the preference only
+  // decides which source wins a tie.
+  const databases = contactDatabases(problems);
   if (databases.length === 0 && problems.length === 0) {
     problems.push(`no Contacts databases under ${ADDRESS_BOOK}`);
   }
+  const sources = databases.map((path) => ({ path, names: readSource(path, problems) }));
 
-  for (const path of databases) {
-    try {
-      const db = new DatabaseSync(path, { readOnly: true });
-      collect(
-        db,
-        `SELECT p.ZFULLNUMBER AS handle, r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
-           FROM ZABCDPHONENUMBER p
-           JOIN ZABCDRECORD r ON r.Z_PK = p.ZOWNER
-          WHERE p.ZFULLNUMBER IS NOT NULL`,
-        names,
-        problems,
-        path,
-      );
-      collect(
-        db,
-        `SELECT e.ZADDRESS AS handle, r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
-           FROM ZABCDEMAILADDRESS e
-           JOIN ZABCDRECORD r ON r.Z_PK = e.ZOWNER
-          WHERE e.ZADDRESS IS NOT NULL`,
-        names,
-        problems,
-        path,
-      );
-      db.close();
-    } catch (error) {
-      // A source that cannot be opened is skipped; the others still count.
-      problems.push(`${path}: ${describe(error)}`);
-    }
+  const preferred = preferredSource ?? process.env['MSG_CONTACTS_SOURCE'] ?? defaultSourceId();
+  const names = new Map<string, string>();
+  for (const source of [
+    ...sources.filter((source) => sourceIdOf(source.path) === preferred),
+    ...sources.filter((source) => sourceIdOf(source.path) !== preferred),
+  ]) {
+    // The preferred source is merged first, so its name for a handle wins.
+    for (const [key, name] of source.names) if (!names.has(key)) names.set(key, name);
   }
 
   return {
@@ -154,6 +163,38 @@ export function loadContacts(preferredSource?: string | undefined): ContactIndex
       return key === null ? null : (names.get(key) ?? null);
     },
   };
+}
+
+function readSource(path: string, problems: string[]): Map<string, string> {
+  const names = new Map<string, string>();
+  try {
+    const db = new DatabaseSync(path, { readOnly: true });
+    collect(
+      db,
+      `SELECT p.ZFULLNUMBER AS handle, r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
+         FROM ZABCDPHONENUMBER p
+         JOIN ZABCDRECORD r ON r.Z_PK = p.ZOWNER
+        WHERE p.ZFULLNUMBER IS NOT NULL`,
+      names,
+      problems,
+      path,
+    );
+    collect(
+      db,
+      `SELECT e.ZADDRESS AS handle, r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
+         FROM ZABCDEMAILADDRESS e
+         JOIN ZABCDRECORD r ON r.Z_PK = e.ZOWNER
+        WHERE e.ZADDRESS IS NOT NULL`,
+      names,
+      problems,
+      path,
+    );
+    db.close();
+  } catch (error) {
+    // A source that cannot be opened is skipped; the others still count.
+    problems.push(`${path}: ${describe(error)}`);
+  }
+  return names;
 }
 
 function describe(error: unknown): string {

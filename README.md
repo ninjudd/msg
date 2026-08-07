@@ -189,18 +189,23 @@ msg daemon uninstall   # stop and remove it
 directly when one is not, so nothing breaks if you never install it. `--db`
 always reads locally and never reaches the daemon.
 
-**Signing.** The build signs `msgd` ad-hoc, and an ad-hoc signature is matched by
-its hash, so every rebuild invalidates the grant and you have to add it again.
-Point `MSG_SIGN_IDENTITY` at a Code Signing certificate and the grant survives
-rebuilds, because the requirement then anchors to the certificate:
+**Signing.** The grant is pinned to the daemon's code signature, so an ad-hoc
+signature — matched by hash — dies on every rebuild and has to be granted again.
+To avoid that, **the first `pnpm build:msgd` creates a self-signed `msg dev`
+certificate in your login keychain** and signs with it; the requirement then
+anchors to the certificate and survives rebuilds. Nothing is submitted anywhere,
+`codesign` is offline, and the certificate is never added to any trust store.
+
+macOS asks before `codesign` uses that key, once per build. Answering "Always
+Allow" removes the prompt and, with it, the thing that stops local code from
+signing its own daemon and inheriting the grant — see
+[signing-identity.md](docs/projects/all/signing-identity.md).
 
 ```sh
-MSG_SIGN_IDENTITY="msg dev" pnpm build:msgd
+MSG_SIGN_IDENTITY="my identity" pnpm build:msgd   # use a different certificate
+MSG_SIGN_IDENTITY=- pnpm build:msgd               # ad-hoc, no certificate
+security delete-identity -c "msg dev"             # remove the one msg created
 ```
-
-Create one in Keychain Access > Certificate Assistant > Create a Certificate,
-type Code Signing, self-signed. No Apple Developer account is involved, and
-nothing is submitted anywhere: `codesign` is an offline operation.
 
 **What it changes.** `watch` stops polling — the daemon tails the write-ahead log
 and pushes to every watcher, so one process does the work no matter how many

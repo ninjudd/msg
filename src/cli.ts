@@ -9,7 +9,9 @@ import {
   install,
   isLoaded,
   logPath,
+  openFullDiskAccess,
   plistPath,
+  signatureOf,
   uninstall,
 } from './daemon/install.js';
 import { Daemon } from './daemon/server.js';
@@ -262,16 +264,25 @@ daemon
   .action((opts: { from: string }) => {
     try {
       const installed = install(opts.from);
+      const signature = signatureOf(installed.binary);
       process.stdout.write(
-        `installed ${installed.binary}\n` +
+        `installed ${installed.binary} (signed ${signature})\n` +
           `started ${installed.plist}\n\n` +
-          'One step left, and it cannot be automated: add the daemon to\n' +
-          'System Settings > Privacy & Security > Full Disk Access.\n\n' +
+          'One step left, and it cannot be automated: switch on the daemon under\n' +
+          'Privacy & Security > Full Disk Access, which is now open.\n\n' +
           `  ${installed.binary}\n\n` +
-          'It appears in that list because it has already tried to read and been\n' +
-          'refused, so give it a minute if it is not there yet. Then switch it on\n' +
-          'and run `msg daemon status`.\n',
+          'It is listed there because it has already tried to read and been refused —\n' +
+          'a denied access is what creates the entry — so give it a minute if it is\n' +
+          'not there yet, then run `msg daemon status`.\n',
       );
+      if (signature === 'ad-hoc') {
+        process.stdout.write(
+          '\nThis build is signed ad-hoc, so the grant is pinned to its hash and the\n' +
+            'next rebuild will need granting again. Rebuild without MSG_SIGN_IDENTITY\n' +
+            'to sign with a stable certificate instead.\n',
+        );
+      }
+      openFullDiskAccess();
     } catch (error) {
       fail(error);
     }
@@ -286,8 +297,11 @@ daemon
       for (const path of removed) process.stdout.write(`removed ${path}\n`);
       if (removed.length === 0) process.stdout.write('nothing to remove\n');
       process.stdout.write(
-        '\nThe Full Disk Access grant outlives the binary. Remove it in System Settings,\n' +
-          'or with:\n\n  sudo tccutil reset SystemPolicyAllFiles com.ninjudd.msgd\n',
+        '\nTwo things outlive the binary. The Full Disk Access grant, removed in System\n' +
+          'Settings or with:\n\n' +
+          '  sudo tccutil reset SystemPolicyAllFiles com.ninjudd.msgd\n\n' +
+          'and the certificate the build signed it with:\n\n' +
+          '  security delete-identity -c "msg dev"\n',
       );
     } catch (error) {
       fail(error);

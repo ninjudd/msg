@@ -8,7 +8,7 @@
  * (docs/projects/all/daemon-and-permissions.md §9).
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -105,13 +105,52 @@ export function install(source = builtBinary()): Installed {
   writeFileSync(agent, plist(binary, log));
 
   // Booting out first makes install idempotent, and picks up a changed plist.
+  // bootout returns before the job is actually gone, and bootstrapping into a
+  // half-torn-down service fails with a bare "Input/output error", so wait for
+  // the service to disappear before putting it back.
   launchctl(['bootout', `${domain()}/${LABEL}`]);
+  for (let attempt = 0; attempt < 50 && isLoaded(); attempt += 1) {
+    execFileSync('/bin/sleep', ['0.1']);
+  }
+
   const started = launchctl(['bootstrap', domain(), agent]);
   if (!started.ok) {
     throw new Error(`launchctl could not start ${LABEL}: ${started.output.trim()}`);
   }
 
   return { binary, plist: agent, socket: socketPath(), log };
+}
+
+/**
+ * Read `codesign -dv` output.
+ *
+ * A self-signed certificate produces no `Authority` line, so the presence of a
+ * signature is what distinguishes it from ad-hoc — and the field is
+ * `Signature size=`, not `Signature=`.
+ */
+export function describeSignature(text: string): string {
+  if (/flags=[^\s]*adhoc/.test(text)) return 'ad-hoc';
+  const authority = /Authority=(.+)/.exec(text);
+  if (authority?.[1] !== undefined) return authority[1].trim();
+  return /^Signature size=/m.test(text) ? 'signed' : 'unsigned';
+}
+
+/**
+ * How the binary is signed, which decides whether its grant survives a rebuild.
+ * `codesign -dv` reports on stderr, hence spawnSync rather than execFileSync.
+ */
+export function signatureOf(binary: string): string {
+  const result = spawnSync('codesign', ['-dv', binary], { encoding: 'utf8' });
+  return describeSignature(`${result.stdout ?? ''}${result.stderr ?? ''}`);
+}
+
+/**
+ * Put the pane in front of the user. There is no API for granting Full Disk
+ * Access — only `tccutil` for removing one — so the last step of an install is
+ * always a human at System Settings (§9).
+ */
+export function openFullDiskAccess(): void {
+  spawnSync('open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles']);
 }
 
 export function uninstall(): { removed: string[]; grantRemains: boolean } {
