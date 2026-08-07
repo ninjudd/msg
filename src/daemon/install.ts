@@ -45,12 +45,23 @@ function domain(): string {
  * a CLI looking at one path and a daemon listening on another.
  */
 const DAEMON_ENVIRONMENT = [
-  'MSG_DB',
   'MSG_SOCKET',
   'MSG_STATE_DIR',
   'MSG_CONFIG',
   'MSG_CONTACTS_SOURCE',
 ] as const;
+
+/**
+ * `MSG_DB` is deliberately absent.
+ *
+ * It is documented as `--db` by another name, and the CLI answers it locally
+ * rather than asking the daemon, so carrying it here could never help the
+ * documented path — it could only outlive the shell that set it. Installing
+ * while pointed at a fixture and later unsetting the variable would leave a
+ * daemon still pinned to that fixture, answering a CLI that has no idea, which
+ * is the worst shape a wrong answer can take. Run `msgd` directly with `MSG_DB`
+ * set to serve a fixture.
+ */
 
 export function daemonEnvironment(
   environment: NodeJS.ProcessEnv = process.env,

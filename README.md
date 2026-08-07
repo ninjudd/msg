@@ -258,9 +258,14 @@ authentication, and why the daemon is a single executable rather than a copy of
 daemon — the same as `--db`, so a fixture stays a fixture even with a daemon
 running.
 
-The rest are read by the daemon, and **a launchd job inherits nothing from your
-shell**. `msg daemon install` copies whichever of them are set into the agent
-and prints what it carried; changing one afterwards means installing again.
+`MSG_SOCKET`, `MSG_STATE_DIR`, `MSG_CONFIG` and `MSG_CONTACTS_SOURCE` are read by
+the daemon, and **a launchd job inherits nothing from your shell**. `msg daemon
+install` copies whichever of them are set into the agent and prints what it
+carried; changing one afterwards means installing again.
+
+`MSG_DB` is never carried into the agent, deliberately. It would outlive the
+shell that set it, leaving a daemon pinned to a fixture and a CLI with no way to
+know. To serve one, run `msgd` yourself with `MSG_DB` set.
 
 ## How it works
 

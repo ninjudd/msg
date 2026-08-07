@@ -76,22 +76,31 @@ describe('daemon environment', () => {
   it('carries only the settings the daemon itself reads', () => {
     expect(
       daemonEnvironment({
-        MSG_DB: '/tmp/fixture.db',
         MSG_SOCKET: '/tmp/msgd.sock',
+        MSG_CONFIG: '/tmp/config.toml',
         MSG_SIGN_IDENTITY: 'msg dev',
         PATH: '/usr/bin',
         MSG_EMPTY: '',
       }),
-    ).toEqual({ MSG_DB: '/tmp/fixture.db', MSG_SOCKET: '/tmp/msgd.sock' });
+    ).toEqual({ MSG_SOCKET: '/tmp/msgd.sock', MSG_CONFIG: '/tmp/config.toml' });
+  });
+
+  it('never carries MSG_DB, which would outlive the shell that set it', () => {
+    // The CLI answers MSG_DB locally, so persisting it could only produce a
+    // daemon pinned to a fixture that a later shell knows nothing about.
+    expect(daemonEnvironment({ MSG_DB: '/tmp/fixture.db' })).toEqual({});
+    expect(
+      daemonEnvironment({ MSG_DB: '/tmp/fixture.db', MSG_SOCKET: '/tmp/msgd.sock' }),
+    ).toEqual({ MSG_SOCKET: '/tmp/msgd.sock' });
   });
 
   it('writes them into the job, since launchd inherits nothing', () => {
     const path = join(directory, 'environment.plist');
-    writeFileSync(path, plist('/opt/msgd', '/tmp/msgd.log', { MSG_DB: '/tmp/fixture.db' }));
+    writeFileSync(path, plist('/opt/msgd', '/tmp/msgd.log', { MSG_SOCKET: '/tmp/msgd.sock' }));
     const parsed = JSON.parse(
       execFileSync('plutil', ['-convert', 'json', '-o', '-', path], { encoding: 'utf8' }),
     ) as { EnvironmentVariables: Record<string, string> };
-    expect(parsed.EnvironmentVariables).toEqual({ MSG_DB: '/tmp/fixture.db' });
+    expect(parsed.EnvironmentVariables).toEqual({ MSG_SOCKET: '/tmp/msgd.sock' });
   });
 
   it('omits the key entirely when there is nothing to carry', () => {
