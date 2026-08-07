@@ -40,6 +40,7 @@ describe('handleKey', () => {
 describe('nameHandles', () => {
   const index: ContactIndex = {
     size: 2,
+    problems: [],
     lookup: (handle) => {
       const key = handle === null ? null : handleKey(handle);
       if (key === '3105551234') return 'Dana Reyes';

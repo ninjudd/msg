@@ -16,11 +16,20 @@ export interface ContactIndex {
   lookup(handle: string | null): string | null;
   /** How many handles the index knows about. */
   readonly size: number;
+  /**
+   * Why the index is emptier than expected, when it is.
+   *
+   * Contacts is best-effort — messages still read without it — but silently
+   * best-effort is how an empty index went unnoticed until names stopped
+   * resolving with no explanation anywhere.
+   */
+  readonly problems: readonly string[];
 }
 
 export const EMPTY_INDEX: ContactIndex = {
   lookup: () => null,
   size: 0,
+  problems: [],
 };
 
 /**
@@ -97,9 +106,16 @@ function personName(row: Record<string, unknown>): string | null {
  */
 export function loadContacts(preferredSource?: string | undefined): ContactIndex {
   const names = new Map<string, string>();
+  const problems: string[] = [];
   const preferred = preferredSource ?? process.env['MSG_CONTACTS_SOURCE'] ?? defaultSourceId();
 
-  for (const path of contactDatabases(preferred)) {
+  if (!existsSync(ADDRESS_BOOK)) problems.push(`no Contacts directory at ${ADDRESS_BOOK}`);
+  const databases = contactDatabases(preferred);
+  if (databases.length === 0 && problems.length === 0) {
+    problems.push(`no Contacts databases under ${ADDRESS_BOOK}`);
+  }
+
+  for (const path of databases) {
     try {
       const db = new DatabaseSync(path, { readOnly: true });
       collect(
@@ -109,6 +125,8 @@ export function loadContacts(preferredSource?: string | undefined): ContactIndex
            JOIN ZABCDRECORD r ON r.Z_PK = p.ZOWNER
           WHERE p.ZFULLNUMBER IS NOT NULL`,
         names,
+        problems,
+        path,
       );
       collect(
         db,
@@ -117,15 +135,19 @@ export function loadContacts(preferredSource?: string | undefined): ContactIndex
            JOIN ZABCDRECORD r ON r.Z_PK = e.ZOWNER
           WHERE e.ZADDRESS IS NOT NULL`,
         names,
+        problems,
+        path,
       );
       db.close();
-    } catch {
+    } catch (error) {
       // A source that cannot be opened is skipped; the others still count.
+      problems.push(`${path}: ${describe(error)}`);
     }
   }
 
   return {
     size: names.size,
+    problems,
     lookup(handle) {
       if (handle === null) return null;
       const key = handleKey(handle);
@@ -134,13 +156,24 @@ export function loadContacts(preferredSource?: string | undefined): ContactIndex
   };
 }
 
-function collect(db: DatabaseSync, sql: string, names: Map<string, string>): void {
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function collect(
+  db: DatabaseSync,
+  sql: string,
+  names: Map<string, string>,
+  problems: string[],
+  path: string,
+): void {
   let rows: Array<Record<string, unknown>>;
   try {
     const statement = db.prepare(sql);
     statement.setReadBigInts(true);
     rows = statement.all() as Array<Record<string, unknown>>;
-  } catch {
+  } catch (error) {
+    problems.push(`${path}: ${describe(error)}`);
     return;
   }
 

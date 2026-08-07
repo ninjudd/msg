@@ -122,6 +122,8 @@ export interface StatusReply {
   database: string;
   messageCount: number;
   contactCount: number;
+  /** Why the contact index is empty, when it is. Empty when all is well. */
+  contactProblems: readonly string[];
   watchers: number;
 }
 

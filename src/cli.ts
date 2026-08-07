@@ -326,6 +326,7 @@ daemon
         `database   ${status.database}`,
         `messages   ${String(status.messageCount)}`,
         `contacts   ${String(status.contactCount)} handles`,
+        ...status.contactProblems.map((problem) => `           ${problem}`),
         `watchers   ${String(status.watchers)}`,
       );
     }

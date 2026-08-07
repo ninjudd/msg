@@ -49,6 +49,9 @@ const SETTLE_MS = 100;
 /** Contacts changes are rare, so the index is reloaded on a slow timer. */
 const CONTACTS_TTL_MS = 10 * 60 * 1000;
 
+/** How soon to try again when the index came back empty. */
+const CONTACTS_RETRY_MS = 10_000;
+
 /** How many new messages a single tick will hand to one watcher. */
 const WATCH_BATCH = 200;
 
@@ -99,8 +102,20 @@ export class Daemon {
   contacts(wanted: boolean): ContactIndex {
     if (!wanted) return EMPTY_INDEX;
     const now = Date.now();
-    if (this.#contacts === null || now - this.#contacts.loadedAt > CONTACTS_TTL_MS) {
-      this.#contacts = { index: loadContacts(), loadedAt: now };
+    // A load that came back empty is retried soon rather than held for the full
+    // interval: the daemon runs before its grant exists, so the first attempt is
+    // expected to fail, and caching that failure makes names stay broken long
+    // after the grant is given.
+    const ttl =
+      this.#contacts !== null && this.#contacts.index.size > 0
+        ? CONTACTS_TTL_MS
+        : CONTACTS_RETRY_MS;
+    if (this.#contacts === null || now - this.#contacts.loadedAt > ttl) {
+      const index = loadContacts();
+      if (index.problems.length > 0) {
+        process.stderr.write(`msgd contacts: ${index.problems.join(' | ')}\n`);
+      }
+      this.#contacts = { index, loadedAt: now };
     }
     return this.#contacts.index;
   }
@@ -345,6 +360,7 @@ export class Daemon {
           database: databasePath(this.#dbPath),
           messageCount: latestRowid(this.database()),
           contactCount: index.size,
+          contactProblems: index.problems,
           watchers: this.#watchers.size,
         };
         return reply;
