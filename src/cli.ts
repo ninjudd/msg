@@ -1,6 +1,7 @@
 #!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { Command } from 'commander';
-import { sendFile, sendMessage } from './commands/send.js';
 import { DaemonError, socketPath } from './daemon/protocol.js';
 import {
   binaryPath,
@@ -224,25 +225,29 @@ program
   .option('--dry-run', 'show what would be sent without sending')
   .action(async (spec: string, body: string[], opts: { file?: string; dryRun?: boolean }) => {
     await withSource(async (source) => {
-      const chat = await source.resolve(spec, wantNames());
       const text = body.join(' ');
-
       if (opts.file === undefined && text.length === 0) {
         throw new Error('nothing to send, provide message text or --file');
       }
       const what = opts.file ?? text;
 
       if (opts.dryRun === true) {
+        // Unconditional, so the disabled state stays inspectable (§7).
+        const chat = await source.resolve(spec, wantNames());
         process.stdout.write(`would send to ${chat.name}: ${what}\n`);
         return;
       }
 
-      if (opts.file === undefined) {
-        sendMessage(chat.guid, text);
-      } else {
-        sendFile(chat.guid, opts.file);
-      }
-      process.stdout.write(`sent to ${chat.name}: ${what}\n`);
+      // The client reads the attachment with its own permissions and hands over
+      // the bytes. The daemon holds Full Disk Access and must never be given a
+      // path to read (§6).
+      const file =
+        opts.file === undefined
+          ? undefined
+          : { name: basename(opts.file), base64: readFileSync(opts.file).toString('base64') };
+
+      const sent = await source.send({ chat: spec, body: text, file, names: wantNames() });
+      process.stdout.write(`sent to ${sent.name}: ${what}\n`);
     });
   });
 

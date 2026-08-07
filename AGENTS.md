@@ -23,14 +23,16 @@ write.
   the explicit task is to send a message the user asked for.
 - A send attempt has a second consequence beyond the message: the first one
   triggers a macOS Automation prompt, and approving it permanently grants the
-  terminal the right to drive Messages. That already happened once here
+  asking process the right to drive Messages. That already happened once here
   (`com.googlecode.iterm2 | com.apple.MobileSMS`, 2026-08-06), from a
   verification command labeled `--dry-run` that omitted the flag. It only failed
-  to send because the fixture chat id did not exist.
-- Sending is planned to be off by default behind a config key
+  to send because the fixture chat id did not exist. That grant has since been
+  revoked.
+- Sending now runs in the daemon, off unless `send = true` is in
+  `~/.config/msg/config.toml` *and* macOS has granted `msgd` Automation
   ([daemon-and-permissions.md §7](docs/projects/all/daemon-and-permissions.md)).
-  Until that lands, the only thing between a careless command and a real message
-  is the flag.
+  Neither gate is a substitute for the flag: on a machine where both are open,
+  a missing `--dry-run` texts someone.
 
 ## This repository is public
 

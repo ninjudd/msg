@@ -25,6 +25,7 @@ import {
   reviveChat,
   reviveMessage,
   type ContactsReply,
+  type SendReply,
   type StatusReply,
 } from './daemon/protocol.js';
 
@@ -61,6 +62,14 @@ export interface WatchQuery {
   interval: number;
 }
 
+export interface SendQuery {
+  chat: string;
+  body?: string | undefined;
+  /** Bytes rather than a path: the daemon never reads a path a client named (§6). */
+  file?: { name: string; base64: string } | undefined;
+  names: boolean;
+}
+
 export interface Source {
   readonly kind: 'daemon' | 'direct';
   chats(query: ChatsQuery): Promise<Chat[]>;
@@ -68,6 +77,7 @@ export interface Source {
   search(query: SearchQuery): Promise<Message[]>;
   watch(query: WatchQuery, onMessage: (message: Message) => void): Promise<void>;
   resolve(chat: string, names: boolean): Promise<Chat>;
+  send(query: SendQuery): Promise<SendReply>;
   contacts(handles: string[]): Promise<ContactsReply>;
   close(): void;
 }
@@ -152,6 +162,21 @@ export function directSource(dbPath?: string | undefined): Source {
       return Promise.resolve(resolveChat(database(), chat, contacts(wantNames)));
     },
 
+    /**
+     * Sending needs Automation, and the CLI deliberately no longer asks for it.
+     * A gate the sending process enforces on itself is not a gate, so the only
+     * way to send is through a daemon macOS has been told may drive Messages
+     * (§7).
+     */
+    send() {
+      return Promise.reject(
+        new Error(
+          'sending needs the daemon, which holds the Automation permission.\n' +
+            'Install it with `msg daemon install`.',
+        ),
+      );
+    },
+
     contacts(handles) {
       const names = loadContacts();
       return Promise.resolve({
@@ -228,6 +253,16 @@ export function daemonSource(): Source {
 
     async resolve(chat, names) {
       return reviveChat(await call({ cmd: 'resolve', chat, names }));
+    },
+
+    async send(query) {
+      return (await call({
+        cmd: 'send',
+        chat: query.chat,
+        body: query.body,
+        file: query.file,
+        names: query.names,
+      })) as SendReply;
     },
 
     async contacts(handles) {

@@ -1,10 +1,12 @@
 # Plan: A daemon, so the terminal stops holding Full Disk Access
 
-**Status:** Shipped, except for sending. The daemon reads, and the CLI needs no
-grant of its own. `msg send` still drives Messages.app from the CLI, so §7 is
-unimplemented and the Automation gate it describes does not exist yet.
+**Status:** Shipped. The daemon reads and sends, and the CLI holds no grant of
+its own — Full Disk Access and Automation are both attributed to `msgd`, and
+each can be given or withheld without the other.
 [§9](#9-what-the-spike-measured-2026-08-07) records the spike that validated the
-permission model, [§10](#10-what-shipped-2026-08-07) what building it settled.
+permission model, [§10](#10-what-shipped-2026-08-07) what building it settled,
+and [§11](#11-what-sending-needed-2026-08-07) the one thing §7 assumed that
+turned out to need work.
 
 **Goal:** Move the privileged read into a launchd agent that holds Full Disk
 Access on its own, so the CLI needs no permission at all and a compromised shell
@@ -109,15 +111,15 @@ Rejected alternatives:
 - **Copy the node binary and pass it a script path.** Works, and needs no build
   step at all — §9 measured it reading `chat.db` under launchd. It is the
   confused deputy above.
-- **Wrap it in a minimal `.app` bundle.** Open rather than rejected. §9
-  confirmed it registers as `client_type=0`, keyed by bundle identifier, so its
-  grant is independent of where the app lives. It is also the only way to carry
-  an `Info.plist`, which §7 needs if sending moves into the daemon, since Apple
-  Events require `NSAppleEventsUsageDescription` and a bare executable has
-  nowhere to put one. The install-step advantage it was expected to have did not
-  materialize: it appears in the Full Disk Access list under its executable's
-  filename rather than the bundle name, which is what made it unfindable during
-  the spike.
+- **Wrap it in a minimal `.app` bundle.** Rejected, though it was left open for
+  a while. §9 confirmed it works and registers as `client_type=0`, keyed by
+  bundle identifier, so its grant is independent of where the app lives. What
+  kept it open was the belief that a bundle is the only way to carry an
+  `Info.plist`, which §7 needs for Apple Events. That is wrong, and §11 replaces
+  it: a bare executable carries one in `__TEXT,__info_plist`. The install-step
+  advantage it was expected to have did not materialize either — it appears in
+  the Full Disk Access list under its executable's filename rather than the
+  bundle name, which is what made it unfindable during the spike.
 
 **Correction (2026-08-07).** This section previously stated that an unsigned or
 ad-hoc-signed binary is matched by cdhash, so rebuilding can invalidate the
@@ -236,9 +238,6 @@ still send from any shell.
 
 ## 8 What is unresolved
 
-- Whether `msgd` ships bare or inside an `.app` bundle (§4). This follows from
-  whether sending moves into the daemon, not from packaging taste: the bundle
-  earns its keep only as somewhere to put `NSAppleEventsUsageDescription`.
 - How the install step explains adding a binary to Full Disk Access without it
   reading as something a reasonable person should refuse to do. §9 turned up
   three hazards to write around: the list can take minutes to show a newly added
@@ -252,6 +251,9 @@ Resolved by building it, and previously listed here:
 - The wire protocol, and whether it could stay simple. It did: see §10.
 - What happens when the daemon is not installed. The CLI reads the database
   itself, for the reason in §10.
+- Whether `msgd` ships bare or inside an `.app` bundle. Bare. The bundle was
+  only ever wanted as somewhere to put `NSAppleEventsUsageDescription`, and a
+  bare executable can carry one: see §11.
 
 Resolved by the spike, and previously listed here:
 
@@ -316,10 +318,8 @@ the first thing a new user meets, and without the fallback a machine that has
 not installed the daemon has no working `msg` at all. `--db` is answered locally
 in every case, so a path argument never reaches the daemon.
 
-**Sending stayed in the CLI**, which means the Automation lever §7 describes is
-not yet holding anything. Moving it needs the `.app` bundle question in §4
-settled first, since Apple Events require an `Info.plist` to carry
-`NSAppleEventsUsageDescription`.
+**Sending stayed in the CLI in the first pass**, and moved into the daemon in
+the second. §11 records what that took.
 
 **Two things building it turned up.** A unix socket path is capped at 104 bytes
 on macOS and the kernel reports a bare `EINVAL`, so the daemon checks the length
@@ -327,3 +327,45 @@ and says so itself. And the snapshot fallback in `openDatabase` threw a raw
 `EPERM` from `copyFileSync` rather than `AccessDeniedError`: the documented
 "exits 2 with an explanation" path had been broken for as long as the
 development machine held the grant, and revoking it is what exposed that.
+
+## 11 What sending needed (2026-08-07)
+
+§7 assumed the Automation grant was there to be withheld. It was not there to be
+given either, and finding out took a second round of measurement.
+
+**A client with no usage description cannot ask.** A bare SEA under launchd was
+refused with `-1743`, with **no prompt and no entry created** in Privacy &
+Security > Automation. That last part is what makes it different from Full Disk
+Access, where §9 found that the denial is exactly what creates the row to switch
+on. Here there is nothing to switch on, so the grant is unreachable rather than
+merely absent.
+
+**A bare executable can carry `NSAppleEventsUsageDescription` after all.** It
+goes in a `__TEXT,__info_plist` section, which is what `/usr/bin/osascript` and
+`/usr/libexec/sshd-keygen-wrapper` do — the same wrapper §2 cites for holding
+Full Disk Access without a bundle. This retires the `.app` question in §8: the
+bundle was only ever wanted as somewhere to put this string.
+
+**Nothing on a stock machine can add that section**, which is the part that cost
+real work. `postject` refuses, because it needs a sentinel in the binary that
+only exists for the SEA blob, and there is no `llvm-objcopy`. `src/macho.ts`
+does it directly: a `section_64` is inserted into `__TEXT`'s section list, the
+load commands after it shift, and the payload goes in the padding between the
+load commands and the first section's data. Nothing outside the header moves and
+the file does not change length.
+
+**The payload goes at the far end of that padding, not the near end.** Placed
+immediately after the load commands it was silently overwritten, because
+`codesign` appends `LC_CODE_SIGNATURE` there afterwards. The only symptom was
+`codesign --verify` reporting an invalid Info.plist, which reads like a signing
+problem rather than a layout one.
+
+With the section embedded, the same binary prompts — naming `msgd`, not the
+terminal — and the event goes through once approved. Both halves of §7 are now
+real: the config key is checked by the daemon, and the Automation grant is a
+switch macOS enforces underneath it.
+
+**What the CLI lost.** `src/commands/send.ts` is gone. Sending without a daemon
+now fails with an instruction to install one, because a send path in the CLI
+would make the Automation gate decorative — the CLI would simply send without
+asking macOS for anything, which is the situation §7 exists to end.

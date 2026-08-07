@@ -78,17 +78,25 @@ let databasePath: string;
 let socketPath: string;
 let daemon: Daemon;
 
+let previousConfig: string | undefined;
+
 beforeAll(async () => {
   directory = mkdtempSync(join(tmpdir(), 'msg-daemon-'));
   databasePath = join(directory, 'chat.db');
   socketPath = join(directory, 'msgd.sock');
   buildFixture(databasePath);
+  // Point the daemon at a config that does not exist, so sending is off. No
+  // test here may enable it: doing so would drive Messages for real.
+  previousConfig = process.env['MSG_CONFIG'];
+  process.env['MSG_CONFIG'] = join(directory, 'config.toml');
   daemon = new Daemon({ dbPath: databasePath });
   await daemon.listen(socketPath);
 });
 
 afterAll(async () => {
   await daemon.close();
+  if (previousConfig === undefined) delete process.env['MSG_CONFIG'];
+  else process.env['MSG_CONFIG'] = previousConfig;
   rmSync(directory, { recursive: true, force: true });
 });
 
@@ -184,6 +192,32 @@ describe('resolve', () => {
     await expect(ask({ cmd: 'resolve', chat: 'nothing-matches', names: false })).rejects.toThrow(
       /no chat matching/,
     );
+  });
+});
+
+describe('send', () => {
+  // Nothing here enables sending. The gate being shut is what is testable
+  // without texting a real person; the open path is covered by --dry-run and by
+  // the Automation grant macOS enforces underneath it.
+  it('refuses when the config key is absent, and names the key', async () => {
+    await expect(
+      ask({ cmd: 'send', chat: 'iMessage;-;+13105551234', body: 'hi', names: false }),
+    ).rejects.toThrow(/send = true/);
+  });
+
+  it('reports the refusal as its own code, not as a generic failure', async () => {
+    const socket = await connectDaemon(socketPath);
+    await expect(
+      request(socket!, { cmd: 'send', chat: 'iMessage;-;+13105551234', body: 'hi' }),
+    ).rejects.toMatchObject({ code: 'send-disabled' });
+  });
+
+  it('refuses before it would have to read the database', async () => {
+    // A guid needs no lookup, so this would still be refused on a daemon that
+    // holds Automation and no Full Disk Access at all.
+    await expect(
+      ask({ cmd: 'send', chat: 'iMessage;+;chat9', body: 'hi', names: false }),
+    ).rejects.toThrow(/sending is disabled/);
   });
 });
 

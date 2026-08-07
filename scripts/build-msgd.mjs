@@ -10,10 +10,12 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { addInfoPlistSection, findSection } from '../dist/macho.js';
+import { VERSION } from '../dist/version.js';
 
 /** Fixed by Node; postject looks for this string to find where the blob goes. */
 const FUSE = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
@@ -37,6 +39,20 @@ function run(command, args) {
 
 function bin(name) {
   return join(root, 'node_modules', '.bin', name);
+}
+
+function infoPlist() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>${IDENTIFIER}</string>
+  <key>CFBundleName</key><string>msgd</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>NSAppleEventsUsageDescription</key><string>msg sends and reads messages through Messages.</string>
+</dict>
+</plist>
+`;
 }
 
 mkdirSync(out, { recursive: true });
@@ -81,9 +97,24 @@ run(bin('postject'), [
   '--macho-segment-name',
   'NODE_SEA',
 ]);
+// Apple Events need a usage description from the process asking for them, and
+// macOS denies with -1743 rather than prompting when there is none — so without
+// this the daemon could never be granted Automation, and sending could not move
+// off the CLI (§7). A bare executable carries it in __TEXT,__info_plist, the
+// way /usr/bin/osascript does.
+writeFileSync(
+  binary,
+  addInfoPlistSection(readFileSync(binary), Buffer.from(infoPlist(), 'utf8')),
+);
+
+// Signing comes last: everything above invalidates a signature.
 // Without --identifier the signing identifier defaults to the filename, and a
 // rename would void the grant.
 run('codesign', ['--force', '--sign', identity, '--identifier', IDENTIFIER, binary]);
+
+if (findSection(readFileSync(binary), '__TEXT', '__info_plist') === null) {
+  throw new Error('the embedded Info.plist did not survive signing');
+}
 
 const megabytes = (statSync(binary).size / 1024 / 1024).toFixed(0);
 process.stdout.write(`built ${binary} (${megabytes}MB, signed ${identity})\n`);

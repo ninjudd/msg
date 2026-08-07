@@ -21,6 +21,8 @@ import {
   resolveChat,
 } from '../db.js';
 import { VERSION } from '../version.js';
+import { disabledMessage, readConfig } from './config.js';
+import { sendAttachment, sendMessage } from './send.js';
 import {
   encode,
   lines,
@@ -30,9 +32,13 @@ import {
   type Envelope,
   type Frame,
   type Request,
+  type SendReply,
   type StatusReply,
   type WatchRequest,
 } from './protocol.js';
+
+/** Sending is switched off in the config, which is a different thing from failing. */
+class SendDisabledError extends Error {}
 
 /** How often to look for new messages when the filesystem says nothing. */
 const POLL_MS = 2_000;
@@ -239,7 +245,11 @@ export class Daemon {
       const denied = error instanceof AccessDeniedError;
       send({
         type: 'error',
-        code: denied ? 'access-denied' : 'error',
+        code: denied
+          ? 'access-denied'
+          : error instanceof SendDisabledError
+            ? 'send-disabled'
+            : 'error',
         message: denied ? DENIED : describe(error),
       });
     }
@@ -288,6 +298,34 @@ export class Daemon {
       case 'resolve': {
         const contacts = this.contacts(request.names !== false);
         return resolveChat(this.database(), request.chat, contacts);
+      }
+      case 'send': {
+        // The config key is checked here rather than in the client, because a
+        // check the caller runs on itself is advice rather than a gate (§7).
+        if (!readConfig().send) throw new SendDisabledError(disabledMessage());
+
+        // A guid needs no lookup, so a daemon holding Automation but not Full
+        // Disk Access can still send.
+        let { chat: guid, chat: name } = request;
+        if (!request.chat.includes(';')) {
+          const chat = resolveChat(
+            this.database(),
+            request.chat,
+            this.contacts(request.names !== false),
+          );
+          guid = chat.guid;
+          name = chat.name;
+        }
+
+        if (request.file !== undefined) {
+          sendAttachment(guid, request.file.name, Buffer.from(request.file.base64, 'base64'));
+        } else {
+          const body = request.body ?? '';
+          if (body.length === 0) throw new Error('nothing to send');
+          sendMessage(guid, body);
+        }
+        const reply: SendReply = { guid, name };
+        return reply;
       }
       case 'contacts': {
         const index = this.contacts(true);

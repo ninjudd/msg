@@ -116,10 +116,33 @@ msg send dana --file ~/diagram.png
 msg send dana "hi" --dry-run   # print what would be sent, send nothing
 ```
 
-Sending is handled by Messages.app through AppleScript. The chat identifier and
-the message body are passed to the script as arguments rather than interpolated
-into it, so quotes, backslashes, and newlines in a message need no escaping and
-cannot alter the script.
+**Sending is off until you switch it on, and it goes through
+[the daemon](#the-daemon).** Two independent gates stand in front of it:
+
+```toml
+# ~/.config/msg/config.toml
+send = true
+```
+
+and macOS has to allow `msgd` to control Messages, under System Settings >
+Privacy & Security > Automation. The first is a switch you can find and read;
+the second is enforced by the operating system, so it holds even when something
+rewrites the config. The daemon checks the config key, not the CLI — a check a
+program runs on itself is advice rather than a gate.
+
+Automation is a separate permission from Full Disk Access, so the two can be set
+independently: a daemon allowed to send but refused the database, or the
+reverse. Sending by chat guid needs no database read at all.
+
+`--dry-run` works whatever the gates say, so the disabled state stays
+inspectable.
+
+The chat identifier and the message body are passed to AppleScript as arguments
+rather than interpolated into it, so quotes, backslashes, and newlines in a
+message need no escaping and cannot alter the script. `--file` is read by the
+CLI with your own permissions and handed to the daemon as bytes; the daemon
+never opens a path a caller named, since it holds Full Disk Access and that
+would make it read anything.
 
 ### Names
 
@@ -182,7 +205,13 @@ nothing is submitted anywhere: `codesign` is an offline operation.
 **What it changes.** `watch` stops polling — the daemon tails the write-ahead log
 and pushes to every watcher, so one process does the work no matter how many
 terminals are following. Contact names are resolved by the daemon too, so
-Contacts needs no permission of its own.
+Contacts needs no permission of its own. And [sending](#sending) runs from the
+daemon, which is what makes "may this tool text people?" an operating system
+permission rather than a flag a program honours about itself.
+
+The two permissions are independent. Granting Full Disk Access does not let
+`msgd` send, granting Automation does not let it read, and each is a separate
+switch in a separate list.
 
 **Uninstalling does not withdraw the grant.** A Full Disk Access entry outlives
 the binary it was granted to. Remove it in System Settings, or with
@@ -216,6 +245,7 @@ authentication, and why the daemon is a single executable rather than a copy of
 | `MSG_DB` | path to an alternate `chat.db`, same as `--db` |
 | `MSG_CONTACTS_SOURCE` | UUID of the Contacts source whose names win |
 | `MSG_SOCKET` | where the daemon listens, default `~/.local/state/msg/msgd.sock` |
+| `MSG_CONFIG` | config file, default `~/.config/msg/config.toml` |
 | `MSG_SIGN_IDENTITY` | Code Signing identity for `pnpm build:msgd` |
 
 ## How it works
@@ -303,14 +333,15 @@ src/
   db.ts          read-only queries against chat.db
   format.ts      terminal and JSON rendering
   source.ts      the daemon when one is listening, the database when not
+  macho.ts       embedding an Info.plist in the daemon executable
   cli.ts         command definitions
   msgd.ts        the daemon process
-  commands/
-    send.ts      sending through Messages.app
   daemon/
     protocol.ts  the wire: requests, frames, socket path
     server.ts    the daemon itself
     client.ts    connecting and reading answers
+    config.ts    the one config key, read by the daemon
+    send.ts      driving Messages.app over Apple Events
     install.ts   the launchd agent and where the binary lives
 ```
 

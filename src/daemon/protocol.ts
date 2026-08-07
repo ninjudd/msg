@@ -64,6 +64,27 @@ export interface WatchRequest {
   names?: boolean | undefined;
 }
 
+/**
+ * Sending, which needs Automation rather than Full Disk Access.
+ *
+ * `chat` may be a guid, in which case the daemon addresses it without reading
+ * the database at all — so a daemon granted Automation and refused Full Disk
+ * Access can still send. An attachment arrives as bytes rather than a path,
+ * because a path argument would make the daemon read arbitrary files (§6).
+ */
+export interface SendRequest {
+  cmd: 'send';
+  chat: string;
+  body?: string | undefined;
+  file?: { name: string; base64: string } | undefined;
+  names?: boolean | undefined;
+}
+
+export interface SendReply {
+  guid: string;
+  name: string;
+}
+
 /** Naming one conversation, which is what `send` needs before it can address it. */
 export interface ResolveRequest {
   cmd: 'resolve';
@@ -86,6 +107,7 @@ export type Request =
   | SearchRequest
   | WatchRequest
   | ResolveRequest
+  | SendRequest
   | ContactsRequest
   | StatusRequest;
 
@@ -112,7 +134,7 @@ export interface ContactsReply {
  * `access-denied` is the one code the CLI acts on, since it maps to the exit
  * status the README documents.
  */
-export type ErrorCode = 'access-denied' | 'error' | 'version';
+export type ErrorCode = 'access-denied' | 'send-disabled' | 'error' | 'version';
 
 export type Frame =
   | { type: 'result'; value: unknown }
