@@ -1,10 +1,10 @@
 # Plan: A daemon, so the terminal stops holding Full Disk Access
 
-**Status:** Designed, not started, permission model validated. A spike on
-2026-08-07 confirmed the premise the whole design rests on and settled two of
-the open questions ([§9](#9-what-the-spike-measured-2026-08-07)); §3 and §4
-carry corrections from it. No daemon code is written. `msg` currently requires
-Full Disk Access on the terminal, which is what this replaces.
+**Status:** Shipped, except for sending. The daemon reads, and the CLI needs no
+grant of its own. `msg send` still drives Messages.app from the CLI, so §7 is
+unimplemented and the Automation gate it describes does not exist yet.
+[§9](#9-what-the-spike-measured-2026-08-07) records the spike that validated the
+permission model, [§10](#10-what-shipped-2026-08-07) what building it settled.
 
 **Goal:** Move the privileged read into a launchd agent that holds Full Disk
 Access on its own, so the CLI needs no permission at all and a compromised shell
@@ -236,17 +236,9 @@ still send from any shell.
 
 ## 8 What is unresolved
 
-- The wire protocol. Length-prefixed JSON over the socket is the obvious start,
-  and the API surface in §6 is small enough that it does not need to be clever.
-  §3's resident daemon means it also has to carry a streaming response for
-  `watch`.
 - Whether `msgd` ships bare or inside an `.app` bundle (§4). This follows from
   whether sending moves into the daemon, not from packaging taste: the bundle
   earns its keep only as somewhere to put `NSAppleEventsUsageDescription`.
-- What happens when the daemon is not installed. If the CLI keeps a direct-read
-  fallback, most users will keep the terminal grant and the exercise buys
-  nothing; if it does not, `AccessDeniedError` has to become an install
-  instruction, and that is the first thing a new user hits.
 - How the install step explains adding a binary to Full Disk Access without it
   reading as something a reasonable person should refuse to do. §9 turned up
   three hazards to write around: the list can take minutes to show a newly added
@@ -254,6 +246,12 @@ still send from any shell.
   identical rows, and a grant outlives its binary — deleting the app leaves
   `auth=2` behind, and `tccutil reset SystemPolicyAllFiles <bundle-id>` is the
   only way to withdraw one that no longer shows in the list.
+
+Resolved by building it, and previously listed here:
+
+- The wire protocol, and whether it could stay simple. It did: see §10.
+- What happens when the daemon is not installed. The CLI reads the database
+  itself, for the reason in §10.
 
 Resolved by the spike, and previously listed here:
 
@@ -294,3 +292,38 @@ Findings, in the order they changed the plan:
 7. **A denied attempt is what creates the TCC entry.** There is no CLI to add a
    Full Disk Access grant — only `tccutil` to remove one — so the install flow
    is: run the daemon, let it fail, then switch on the row that failure created.
+
+## 10 What shipped (2026-08-07)
+
+Everything in §1 through §6, and none of §7.
+
+**The wire is newline-delimited JSON, one request per connection.** `chats`,
+`read`, `search`, `resolve`, `contacts` and `status` answer with a single
+`result` frame and close; `watch` streams `item` frames until the client
+disconnects. The request carries its protocol version and a mismatch is refused
+by name, so a CLI left behind by an upgrade gets an instruction rather than a
+parse error. Length-prefixing was never needed.
+
+**`resolve` was not in §6's list of commands.** `send` has to turn a name into a
+chat guid before it can address anything, and that lookup is the one every other
+command already does internally. It returns a chat and takes no path, so the
+rule §6 sets still holds.
+
+**The CLI still reads the database when no daemon is listening.** §8 asked which
+way this should go, and the fallback wins for a reason external to this plan:
+AGENTS.md requires the `AccessDeniedError` path to keep working because it is
+the first thing a new user meets, and without the fallback a machine that has
+not installed the daemon has no working `msg` at all. `--db` is answered locally
+in every case, so a path argument never reaches the daemon.
+
+**Sending stayed in the CLI**, which means the Automation lever §7 describes is
+not yet holding anything. Moving it needs the `.app` bundle question in §4
+settled first, since Apple Events require an `Info.plist` to carry
+`NSAppleEventsUsageDescription`.
+
+**Two things building it turned up.** A unix socket path is capped at 104 bytes
+on macOS and the kernel reports a bare `EINVAL`, so the daemon checks the length
+and says so itself. And the snapshot fallback in `openDatabase` threw a raw
+`EPERM` from `copyFileSync` rather than `AccessDeniedError`: the documented
+"exits 2 with an explanation" path had been broken for as long as the
+development machine held the grant, and revoking it is what exposed that.

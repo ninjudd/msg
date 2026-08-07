@@ -106,9 +106,16 @@ change is not live until `pnpm build`.
 
 ## Permissions
 
-Reading requires Full Disk Access on the terminal, which is why
-[the daemon plan](docs/projects/all/daemon-and-permissions.md) exists. TCC
-attributes access to the responsible process, so granting it to `node` or to a
-CLI-spawned child does nothing. Without the grant, `openDatabase` throws
-`AccessDeniedError` and the CLI exits with status 2 and an explanation; keep
-that path working, since it is the first thing a new user hits.
+Reading requires Full Disk Access, held either by
+[the daemon](docs/projects/all/daemon-and-permissions.md) or by the terminal.
+TCC attributes access to the responsible process, so granting it to `node` or to
+a CLI-spawned child does nothing; a launchd job is its own responsible process,
+which is why `msgd` exists.
+
+The CLI reads the database itself when no daemon is listening. With a grant on
+neither side, `openDatabase` throws `AccessDeniedError` and the CLI exits with
+status 2 and an explanation. Keep that path working, since it is the first thing
+a new user hits — and it had already broken once: the snapshot fallback raised a
+raw `EPERM` from `copyFileSync` instead of the explanation, and nothing caught it
+because the development machine held the grant. Revoke it before trusting that
+path.

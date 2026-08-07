@@ -46,11 +46,23 @@ export function databasePath(override?: string | undefined): string {
   return override ?? process.env['MSG_DB'] ?? DEFAULT_DB;
 }
 
+export interface OpenOptions {
+  /**
+   * Copy the database when the write-ahead log cannot be opened alongside it.
+   * A one-shot CLI wants this; a resident daemon does not, since the copy it
+   * reads would never see another message arrive.
+   */
+  allowSnapshot?: boolean | undefined;
+}
+
 /**
  * Open the Messages database read-only, falling back to a temporary snapshot
  * when the write-ahead log cannot be opened alongside it.
  */
-export function openDatabase(path?: string | undefined): DatabaseSync {
+export function openDatabase(
+  path?: string | undefined,
+  options: OpenOptions = {},
+): DatabaseSync {
   const location = databasePath(path);
   if (!existsSync(location)) {
     throw new AccessDeniedError(`no Messages database at ${location}`);
@@ -63,21 +75,45 @@ export function openDatabase(path?: string | undefined): DatabaseSync {
   } catch (error) {
     const message = (error as Error).message.toLowerCase();
     if (message.includes('authorization denied') || message.includes('permission')) {
-      throw new AccessDeniedError(
-        `cannot read ${location}\n` +
-          'Grant Full Disk Access to your terminal in System Settings > Privacy & Security > ' +
-          'Full Disk Access, then restart the terminal.',
-      );
+      throw new AccessDeniedError(deniedMessage(location));
     }
+    if (options.allowSnapshot === false) throw error;
     return openSnapshot(location);
   }
+}
+
+/**
+ * Two ways out, and the daemon is the better one: it holds the grant instead of
+ * the terminal, so nothing else run from that shell inherits it. See
+ * docs/projects/all/daemon-and-permissions.md §1.
+ */
+function deniedMessage(location: string): string {
+  return (
+    `cannot read ${location}\n\n` +
+    'Install the daemon, which holds Full Disk Access so your terminal does not:\n' +
+    '  msg daemon install\n\n' +
+    'Or grant Full Disk Access to your terminal in System Settings > Privacy & Security >\n' +
+    'Full Disk Access, then restart it.'
+  );
+}
+
+function isPermissionError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'EPERM' || code === 'EACCES';
 }
 
 function openSnapshot(location: string): DatabaseSync {
   const directory = mkdtempSync(join(tmpdir(), 'msg-'));
   const copy = join(directory, 'chat.db');
-  for (const suffix of ['', '-wal', '-shm']) {
-    if (existsSync(location + suffix)) copyFileSync(location + suffix, copy + suffix);
+  try {
+    for (const suffix of ['', '-wal', '-shm']) {
+      if (existsSync(location + suffix)) copyFileSync(location + suffix, copy + suffix);
+    }
+  } catch (error) {
+    // TCC refuses the copy the same way it refused the open, but as an errno
+    // rather than a SQLite message. Without this the user meets a raw EPERM.
+    if (isPermissionError(error)) throw new AccessDeniedError(deniedMessage(location));
+    throw error;
   }
   return new DatabaseSync(copy, { readOnly: true });
 }
