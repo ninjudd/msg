@@ -1,18 +1,23 @@
-# Plan: Rewrite the daemon in Rust
+# Plan: Rewrite `msg` in Rust
 
-**Status:** Idea, not committed to. The daemon works as a Node Single Executable
-Application and nothing here is a defect report. This records why a rewrite is
-worth considering, what it would actually buy, and what it would cost, so the
-argument does not have to be had again from scratch.
+**Status:** Idea, not committed to. Everything works as it is and nothing here
+is a defect report. This records why a rewrite is worth considering, what it
+would actually buy, and what it would cost, so the argument does not have to be
+had again from scratch.
 
-**Goal:** Decide when the daemon's runtime stops being worth its size and its
-build.
+**Goal:** Decide when the runtime stops being worth its size, its build, and the
+install it forces on anyone else.
+
+**The whole tool, not just the daemon.** A Rust daemon behind a TypeScript CLI
+would put the schema knowledge and the typedstream decoder in two languages,
+because the CLI still reads the database itself when no daemon is listening.
+That is worse than either end state. If this happens, it happens to all of it.
 
 ## 1 What it buys
 
 **A smaller trusted computing base.** The daemon holds Full Disk Access, and
-today that grant covers node, V8, libuv and OpenSSL — millions of lines, almost
-none of which this program uses. A Rust daemon links sqlite and std. Every bug
+that grant today covers node, V8, libuv and OpenSSL — millions of lines, almost
+none of which this program uses. A Rust binary links sqlite and std. Every bug
 in the parts we do not use runs with the grant anyway.
 
 **No JIT.** V8 needs writable-then-executable memory, so a hardened runtime
@@ -33,6 +38,15 @@ rather than 200 lines of load-command arithmetic pinned to node's binary layout.
 So do esbuild, postject, `--experimental-sea-config`, the sentinel fuse, and the
 rule that signing must come last because everything before it invalidates the
 signature. It becomes `cargo build`.
+
+**The install stops being a developer setup.** Today it is clone, `pnpm
+install`, `npm link`, and Node 24 or newer for `node:sqlite`. A Rust `msg` is a
+binary, installable the way people install command-line tools, with no runtime
+to have first. That matters more than it sounds: it is the difference between a
+tool this repository's author uses and a tool anyone can.
+
+**Startup.** Every `msg chats` pays node's startup before it does anything. A
+command that runs in milliseconds feels different from one that runs in tenths.
 
 **Size.** 5MB rather than 116MB, twice over, since a copy lives in `build/` and
 another in `~/.local/libexec`.
@@ -55,47 +69,56 @@ not currently the likely one. Worth doing, but it does not reorder the risks.
 **One file carries almost all of the risk.** `src/apple.ts` decodes the Apple
 epoch and the NSArchiver typedstream, it is the hardest-won code in the
 repository, and its tests encode findings from a real database. Everything else
-— sqlite, the socket, the protocol, the launchd plist — ports mechanically.
-
-**It is close to all-or-nothing.** A Rust daemon with a TypeScript CLI
-duplicates the schema knowledge and the decoder in two languages, because the
-CLI still reads the database itself when no daemon is listening, and AGENTS.md
-wants that path kept. Either the fallback goes, or both sides need the decoder.
+— sqlite, the socket, the protocol, the rendering, the launchd plist — ports
+mechanically.
 
 **The tests are the specification.** They should be ported before the code they
 cover, and they are worth more than the code.
 
-## 4 The protocol is already the seam
+**Two dependencies get chosen rather than avoided.** `node:sqlite` and commander
+become `rusqlite` and `clap`, and the hand-written typedstream decoder stays
+hand-written because nothing else decodes it. The current no-runtime-dependency
+rule survives in spirit but not in letter.
+
+## 4 The protocol is the seam to port against
 
 The CLI talks to the daemon over newline-delimited JSON and knows nothing about
-how it is implemented. A Rust daemon speaking the same protocol needs no change
-to `src/cli.ts` at all. That is worth stating because it means this stays cheap
-to do later and gets no cheaper by doing it now.
+how the other end is implemented. That is useful during the port rather than
+after it: a Rust daemon can be checked against the existing TypeScript client
+and vice versa, one end at a time, with the protocol tests as the contract.
 
-## 5 Port order, when it happens
+## 5 Port order
 
 1. `apple.ts` — epoch conversion and the typedstream decoder, tests first.
 2. `db.ts` — the queries, against the same fixture the daemon tests build.
 3. `contacts.ts`, including the access ordering in
    [§12](daemon-and-permissions.md).
-4. The protocol and the socket, checked against the existing TypeScript client.
-5. The launchd plist, the `Info.plist` link flag, and signing — unchanged in
+4. The protocol and the socket, checked against the TypeScript client while both
+   exist.
+5. `format.ts` and the CLI — rendering, then `clap` in place of commander.
+6. The launchd plist, the `Info.plist` link flag, and signing: unchanged in
    substance, much smaller in code.
-6. Decide the CLI's fate only then (§6).
+7. Delete `src/`, `dist/`, and the Node toolchain in one commit, not gradually.
 
 ## 6 What is unresolved
 
-- Whether the CLI stays TypeScript. If it does, the direct-read fallback has to
-  go or the decoder lives twice.
 - Whether `msg send` keeps shelling out to `osascript` or talks Apple Events
   directly through the Objective-C bridge. The subprocess is simpler and is what
   works today.
 - Whether hardened runtime is worth adopting once the JIT entitlements are no
   longer needed, and whether that changes the TCC requirement in a way that
   costs another re-grant.
+- How `msg` gets distributed once it is a binary, and whether that pulls in
+  notarisation — which would end the self-signed certificate in
+  [signing-identity.md](signing-identity.md) and its trade.
 
 ## 7 When to do it
 
-Not on size alone, and not on security alone. The trigger is the Mach-O
-injection breaking on a Node upgrade, which turns §1's build argument from
-aesthetics into maintenance. Adopting a hardened runtime would be the other.
+Not on size alone, and not on security alone. Two triggers, either of which is
+enough:
+
+- **The Mach-O injection breaks on a Node upgrade**, which turns §1's build
+  argument from aesthetics into maintenance.
+- **Anyone other than the author is expected to install this**, at which point
+  "clone the repo and have Node 24" stops being a reasonable ask and §1's
+  install argument becomes the main one.
