@@ -34,6 +34,7 @@ export interface Chat {
   displayName: string | null;
   handles: string | null;
   namedHandles: string | null;
+  isFiltered: boolean;
   memberCount: number;
   isGroup: boolean;
   lastDate: Date | null;
@@ -150,6 +151,7 @@ export interface FetchMessagesOptions {
   query?: string | undefined;
   limit?: number | undefined;
   includeTapbacks?: boolean | undefined;
+  includeFiltered?: boolean | undefined;
   contacts?: ContactIndex | undefined;
 }
 
@@ -162,6 +164,7 @@ export function fetchMessages(db: DatabaseSync, options: FetchMessagesOptions = 
     query,
     limit = 50,
     includeTapbacks = false,
+    includeFiltered = false,
     contacts = EMPTY_INDEX,
   } = options;
   const clauses: string[] = [];
@@ -170,6 +173,9 @@ export function fetchMessages(db: DatabaseSync, options: FetchMessagesOptions = 
   if (chatId !== undefined) {
     clauses.push('chat_message_join.chat_id = ?');
     params.push(BigInt(chatId));
+  } else if (!includeFiltered) {
+    // Only when sweeping every conversation; naming one is explicit enough.
+    clauses.push('chat.is_filtered = 0');
   }
   if (afterDate !== undefined) {
     clauses.push('message.date > ?');
@@ -212,16 +218,19 @@ export function fetchChats(
   query?: string | undefined,
   limit = 30,
   contacts: ContactIndex = EMPTY_INDEX,
+  includeFiltered = false,
 ): Chat[] {
   const params: SQLInputValue[] = [];
+  const conditions: string[] = includeFiltered ? [] : ['isFiltered = 0'];
   let where = '';
   // Contact names live in the Contacts database, so a query that might match
   // one is filtered after the rows are named rather than in SQL.
   const filterByName = query !== undefined && contacts.size > 0;
   if (query !== undefined && !filterByName) {
-    where = 'WHERE (displayName LIKE ? OR chatIdentifier LIKE ? OR handles LIKE ?)';
+    conditions.push('(displayName LIKE ? OR chatIdentifier LIKE ? OR handles LIKE ?)');
     params.push(`%${query}%`, `%${query}%`, `%${query}%`);
   }
+  if (conditions.length > 0) where = `WHERE ${conditions.join(' AND ')}`;
 
   const rows = prepare(
     db,
@@ -230,6 +239,7 @@ export function fetchChats(
       SELECT chat.rowid AS rowid, chat.guid AS guid,
              chat.chat_identifier AS chatIdentifier,
              NULLIF(chat.display_name, '') AS displayName,
+             chat.is_filtered AS isFiltered,
              (SELECT GROUP_CONCAT(handle.id) FROM chat_handle_join
                 JOIN handle ON handle.rowid = chat_handle_join.handle_id
                WHERE chat_handle_join.chat_id = chat.rowid) AS handles,
@@ -260,6 +270,9 @@ export function fetchChats(
       displayName,
       handles,
       namedHandles,
+      // Messages sorts filtered conversations into categories, so any nonzero
+      // value means the conversation is filtered.
+      isFiltered: asNumber(row['isFiltered']) !== 0,
       memberCount,
       isGroup: memberCount > 1,
       lastDate: fromAppleDate(asBigInt(row['lastDate'])),
@@ -284,9 +297,10 @@ export function resolveChat(
   spec: string,
   contacts: ContactIndex = EMPTY_INDEX,
 ): Chat {
+  // Naming a chat outright reaches it even when Messages filters it.
   const matches = /^\d+$/.test(spec)
-    ? fetchChats(db, undefined, 10_000, contacts).filter((c) => c.rowid === Number(spec))
-    : fetchChats(db, spec, 50, contacts);
+    ? fetchChats(db, undefined, 10_000, contacts, true).filter((c) => c.rowid === Number(spec))
+    : fetchChats(db, spec, 50, contacts, true);
 
   if (matches.length === 0) throw new Error(`no chat matching ${spec}`);
   if (matches.length === 1) return matches[0] as Chat;
