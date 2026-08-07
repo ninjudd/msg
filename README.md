@@ -61,7 +61,13 @@ straight from the TypeScript sources via tsx.
 msg chats                      # by most recent activity
 msg chats dana                 # filter by contact name, handle, or identifier
 msg chats -n 100               # more of them
+msg chats --unknown            # include the ones Messages filters away
 ```
+
+Conversations that Messages filters as unknown senders are hidden, matching
+what your phone shows. On one real database that removed 1,395 of 2,559
+conversations: verification codes, delivery notifications, and one-off numbers
+that were never saved as contacts.
 
 A chat can be named by its rowid, by a handle, or by any substring of its name.
 When a substring matches more than one conversation, `msg` lists the candidates
@@ -132,6 +138,7 @@ msg search "invoice" --json | jq '.[] | {date, sender, body}'
 | --- | --- | --- |
 | `--db <path>` | all | read a different `chat.db` |
 | `--no-names` | all | skip Contacts, show raw handles |
+| `--unknown` | `chats`, `search`, `watch` | include filtered unknown senders |
 | `-n, --limit <count>` | `chats`, `read`, `search` | how many results |
 | `--since <when>` | `read`, `search` | duration or date lower bound |
 | `-c, --chat <chat>` | `search`, `watch` | restrict to one conversation |
@@ -169,6 +176,12 @@ deprecated `NSUnarchiver`. It decoded every one of those 19,524 blobs.
 **Tapbacks are messages.** A reaction is stored as an ordinary row with
 `associated_message_type != 0`, so a naive query mixes `Liked "see you then"`
 into the conversation. They are filtered out unless `--tapbacks` is passed.
+
+**Filtering is a category, not a flag.** `chat.is_filtered` is not a boolean.
+It holds `0` for ordinary conversations and a nonzero category for the ones
+Messages sets aside, so a `= 1` test silently lets a whole category through. One
+database here used `1` for 1,352 conversations and `2` for another 43, none of
+which had a saved contact. `msg` treats any nonzero value as filtered.
 
 **A chat's name is often absent.** `display_name` is set for named group chats
 and empty for everything else, so direct messages fall back to participant

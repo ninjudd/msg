@@ -35,7 +35,12 @@ program
   .description('read and send iMessages from the command line')
   .version('0.1.0')
   .option('--db <path>', 'path to chat.db (defaults to the Messages database)')
-  .option('--no-names', 'show raw handles instead of looking up contact names');
+  .option('--no-names', 'show raw handles instead of looking up contact names')
+  .option('--unknown', 'include conversations Messages filters as unknown senders');
+
+function includeFiltered(): boolean {
+  return program.opts<{ unknown?: boolean }>().unknown === true;
+}
 
 function database() {
   return openDatabase(program.opts<{ db?: string }>().db);
@@ -58,7 +63,7 @@ program
   .option('--json', 'emit JSON')
   .action((query: string | undefined, opts: { limit: number; json?: boolean }) => {
     try {
-      const chats = fetchChats(database(), query, opts.limit, contacts());
+      const chats = fetchChats(database(), query, opts.limit, contacts(), includeFiltered());
       process.stdout.write(opts.json === true ? toJson(chats) : renderChats(chats));
     } catch (error) {
       fail(error);
@@ -123,6 +128,7 @@ program
           chatId,
           limit: opts.limit,
           contacts: index,
+          includeFiltered: includeFiltered(),
           afterDate: opts.since === undefined ? undefined : sinceToAppleDate(opts.since),
         });
         process.stdout.write(
@@ -155,6 +161,7 @@ program
           afterRowid: watermark,
           limit: 200,
           includeTapbacks: opts.tapbacks,
+          includeFiltered: includeFiltered(),
           contacts: index,
         });
         for (const message of messages) {
