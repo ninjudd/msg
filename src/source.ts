@@ -149,6 +149,7 @@ export function directSource(dbPath?: string | undefined): Source {
           includeTapbacks: query.tapbacks,
           includeFiltered: query.unknown,
           contacts: names,
+          oldestFirst: true,
         });
         for (const message of messages) {
           watermark = Math.max(watermark, message.rowid);
@@ -249,6 +250,11 @@ export function daemonSource(): Source {
         names: query.names,
       });
       for await (const message of messages) onMessage(reviveMessage(message));
+
+      // Reaching the end means the daemon went away — stopped, upgraded, or
+      // crashed. `watch` runs until interrupted, so returning quietly here
+      // would have a pipeline or supervisor believe it is still following.
+      throw new Error('msgd stopped, so watch ended. Check `msg daemon status`.');
     },
 
     async resolve(chat, names) {
@@ -288,7 +294,11 @@ export interface SourceOptions {
 }
 
 export async function openSource(options: SourceOptions = {}): Promise<Source> {
-  if (options.db !== undefined) return directSource(options.db);
+  // MSG_DB is documented as `--db` by another name, so it has to steer the same
+  // way. Without this, pointing it at a fixture while a daemon is listening
+  // reads the real database instead, which is the opposite of what it is for.
+  const database = options.db ?? process.env['MSG_DB'];
+  if (database !== undefined) return directSource(database);
   const socket = await connectDaemon();
   if (socket === null) return directSource();
   socket.destroy();

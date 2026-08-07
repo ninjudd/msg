@@ -265,9 +265,14 @@ daemon
     try {
       const installed = install(opts.from);
       const signature = signatureOf(installed.binary);
+      const carried = Object.entries(installed.environment)
+        .map(([name, value]) => `carried ${name}=${value}\n`)
+        .join('');
       process.stdout.write(
         `installed ${installed.binary} (signed ${signature})\n` +
-          `started ${installed.plist}\n\n` +
+          `started ${installed.plist}\n` +
+          carried +
+          '\n' +
           'One step left, and it cannot be automated: switch on the daemon under\n' +
           'Privacy & Security > Full Disk Access, which is now open.\n\n' +
           `  ${installed.binary}\n\n` +

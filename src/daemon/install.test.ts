@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LABEL } from './protocol.js';
-import { describeSignature, plist } from './install.js';
+import { daemonEnvironment, describeSignature, plist } from './install.js';
 
 let directory: string;
 
@@ -69,5 +69,47 @@ describe('describeSignature', () => {
 
   it('reports an unsigned binary as unsigned', () => {
     expect(describeSignature('Identifier=x\nFormat=Mach-O thin (arm64)\n')).toBe('unsigned');
+  });
+});
+
+describe('daemon environment', () => {
+  it('carries only the settings the daemon itself reads', () => {
+    expect(
+      daemonEnvironment({
+        MSG_DB: '/tmp/fixture.db',
+        MSG_SOCKET: '/tmp/msgd.sock',
+        MSG_SIGN_IDENTITY: 'msg dev',
+        PATH: '/usr/bin',
+        MSG_EMPTY: '',
+      }),
+    ).toEqual({ MSG_DB: '/tmp/fixture.db', MSG_SOCKET: '/tmp/msgd.sock' });
+  });
+
+  it('writes them into the job, since launchd inherits nothing', () => {
+    const path = join(directory, 'environment.plist');
+    writeFileSync(path, plist('/opt/msgd', '/tmp/msgd.log', { MSG_DB: '/tmp/fixture.db' }));
+    const parsed = JSON.parse(
+      execFileSync('plutil', ['-convert', 'json', '-o', '-', path], { encoding: 'utf8' }),
+    ) as { EnvironmentVariables: Record<string, string> };
+    expect(parsed.EnvironmentVariables).toEqual({ MSG_DB: '/tmp/fixture.db' });
+  });
+
+  it('omits the key entirely when there is nothing to carry', () => {
+    const path = join(directory, 'bare.plist');
+    writeFileSync(path, plist('/opt/msgd', '/tmp/msgd.log'));
+    const parsed = JSON.parse(
+      execFileSync('plutil', ['-convert', 'json', '-o', '-', path], { encoding: 'utf8' }),
+    ) as Record<string, unknown>;
+    expect(parsed['EnvironmentVariables']).toBeUndefined();
+  });
+
+  it('escapes values rather than producing invalid XML', () => {
+    const path = join(directory, 'escaped.plist');
+    writeFileSync(path, plist('/opt/msgd', '/tmp/msgd.log', { MSG_DB: '/tmp/a&b<c>.db' }));
+    expect(() => execFileSync('plutil', ['-lint', path], { stdio: 'ignore' })).not.toThrow();
+    const parsed = JSON.parse(
+      execFileSync('plutil', ['-convert', 'json', '-o', '-', path], { encoding: 'utf8' }),
+    ) as { EnvironmentVariables: Record<string, string> };
+    expect(parsed.EnvironmentVariables['MSG_DB']).toBe('/tmp/a&b<c>.db');
   });
 });

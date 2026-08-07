@@ -25,6 +25,7 @@ import { disabledMessage, readConfig } from './config.js';
 import { sendAttachment, sendMessage } from './send.js';
 import {
   encode,
+  isChatGuid,
   lines,
   PROTOCOL_VERSION,
   socketPath,
@@ -78,7 +79,6 @@ export class Daemon {
   #timer: NodeJS.Timeout | null = null;
   #fsWatcher: FSWatcher | null = null;
   #settle: NodeJS.Timeout | null = null;
-  #lastSeen = 0;
 
   constructor(options: DaemonOptions = {}) {
     this.#dbPath = options.dbPath;
@@ -185,35 +185,74 @@ export class Daemon {
     let latest: number;
     try {
       latest = latestRowid(this.database());
-    } catch {
+    } catch (error) {
+      // A watcher that stops receiving with a live connection looks like a
+      // quiet conversation. Say so instead.
+      this.#failWatchers(error);
       return;
     }
     // Rowids only climb, so one query answers "is there anything new" for
-    // every watcher at once. This is the reason to have a daemon at all.
-    if (latest <= this.#lastSeen) return;
-    this.#lastSeen = latest;
-
-    for (const watcher of this.#watchers) this.#deliver(watcher);
+    // every watcher at once. This is the reason to have a daemon at all. The
+    // question is per watcher, though: one that is still behind has messages
+    // waiting even when nothing has arrived since the last tick.
+    for (const watcher of this.#watchers) {
+      if (watcher.watermark < latest) this.#deliver(watcher, latest);
+    }
   }
 
-  #deliver(watcher: Watcher): void {
-    let messages;
-    try {
-      messages = fetchMessages(this.database(), {
-        chatId: watcher.chatId,
-        afterRowid: watcher.watermark,
-        limit: WATCH_BATCH,
-        includeTapbacks: watcher.request.tapbacks === true,
-        includeFiltered: watcher.request.unknown === true,
-        contacts: watcher.contacts,
-      });
-    } catch {
-      return;
+  /**
+   * Send everything the watcher has not seen, a batch at a time.
+   *
+   * Draining matters: a single batch is capped, and stopping after one would
+   * strand the rest until another message happened to arrive.
+   */
+  #deliver(watcher: Watcher, latest: number): void {
+    while (watcher.watermark < latest) {
+      let messages;
+      try {
+        messages = fetchMessages(this.database(), {
+          chatId: watcher.chatId,
+          afterRowid: watcher.watermark,
+          limit: WATCH_BATCH,
+          includeTapbacks: watcher.request.tapbacks === true,
+          includeFiltered: watcher.request.unknown === true,
+          contacts: watcher.contacts,
+          oldestFirst: true,
+        });
+      } catch (error) {
+        this.#failWatcher(watcher, error);
+        return;
+      }
+
+      for (const message of messages) {
+        watcher.watermark = Math.max(watcher.watermark, message.rowid);
+        watcher.socket.write(encode({ type: 'item', value: message }));
+      }
+
+      // Filters can hide every row in a batch, so advance past what was read
+      // rather than only past what was sent, or this loop never ends.
+      if (messages.length < WATCH_BATCH) {
+        watcher.watermark = latest;
+        return;
+      }
     }
-    for (const message of messages) {
-      watcher.watermark = Math.max(watcher.watermark, message.rowid);
-      watcher.socket.write(encode({ type: 'item', value: message }));
-    }
+  }
+
+  #failWatcher(watcher: Watcher, error: unknown): void {
+    const denied = error instanceof AccessDeniedError;
+    watcher.socket.write(
+      encode({
+        type: 'error',
+        code: denied ? 'access-denied' : 'error',
+        message: denied ? DENIED : describe(error),
+      }),
+    );
+    watcher.socket.end();
+    this.#watchers.delete(watcher);
+  }
+
+  #failWatchers(error: unknown): void {
+    for (const watcher of [...this.#watchers]) this.#failWatcher(watcher, error);
   }
 
   async #accept(socket: Socket): Promise<void> {
@@ -320,9 +359,11 @@ export class Daemon {
         if (!readConfig().send) throw new SendDisabledError(disabledMessage());
 
         // A guid needs no lookup, so a daemon holding Automation but not Full
-        // Disk Access can still send.
+        // Disk Access can still send. Matched by shape rather than by
+        // punctuation: chat names contain semicolons often enough, and treating
+        // one as a guid would hand a display name to AppleScript as an address.
         let { chat: guid, chat: name } = request;
-        if (!request.chat.includes(';')) {
+        if (!isChatGuid(request.chat)) {
           const chat = resolveChat(
             this.database(),
             request.chat,
@@ -373,8 +414,10 @@ export class Daemon {
     const contacts = this.contacts(request.names !== false);
     const chatId =
       request.chat === undefined ? undefined : resolveChat(db, request.chat, contacts).rowid;
+    // Where this watcher starts. There is no shared cursor: each watcher is
+    // compared against the current maximum on every tick, so one subscribing
+    // mid-burst cannot be skipped by another's progress.
     const watermark = latestRowid(db);
-    this.#lastSeen = Math.max(this.#lastSeen, watermark);
 
     const watcher: Watcher = { socket, request, chatId, contacts, watermark };
     this.#watchers.add(watcher);

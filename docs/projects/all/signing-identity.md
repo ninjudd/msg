@@ -1,6 +1,11 @@
 # Plan: What the signing identity costs, and what to fix before this is public
 
-**Status:** Written down, nothing changed. The identity ships today: the first
+**Status:** Partly acted on. The two cheapest options in §6 have since landed —
+the README says what the build creates and how to remove it, and `msg daemon
+uninstall` prints the `security delete-identity` line beside the `tccutil` one.
+The trade in §2 stands as described and nothing has been done about it.
+
+**Previously:** written down, nothing changed. The identity ships today: the first
 `pnpm build:msgd` creates a self-signed `msg dev` certificate in the login
 keychain and signs `msgd` with it. Nothing here is a defect report — it works —
 but the cost has not been written down anywhere, and one of the gaps below is
@@ -106,12 +111,12 @@ down before anyone asked. The plan documents are the asset here, not the code.
 
 Not decided. Roughly in order of how much they cost:
 
-- **Announce it.** `pnpm build:msgd` already prints that it created a
-  certificate. The README says nothing. One paragraph, and the surprise is gone.
-- **Document removal**, and consider `msg daemon uninstall` printing the
-  `security delete-identity` line next to the `tccutil` one it already prints.
-  Grants and keys both outlive the binary; the uninstall already says so about
-  one of them.
+- **Announce it.** *Done.* The README now says the first build creates the
+  certificate, and that answering the keychain prompt with "Always Allow"
+  trades away what §2 relies on.
+- **Document removal.** *Done.* `msg daemon uninstall` prints the
+  `security delete-identity` line beside the `tccutil` one, since grants and
+  keys both outlive the binary.
 - **Make creation opt-in.** A first build could refuse to create anything and
   print the two choices — `MSG_SIGN_IDENTITY=-` for ad-hoc and a re-grant per
   build, or a flag to create the identity. Costs one round trip the first time,
@@ -123,11 +128,13 @@ Not decided. Roughly in order of how much they cost:
 
 ## 7 What is unresolved
 
-- **Whether a rebuild actually keeps the grant with this certificate.** It was
-  measured with an Apple Development identity ([§9](daemon-and-permissions.md)),
-  not with `msg dev`, and the grant given after the switch to `msg dev` has not
-  survived a rebuild yet because none has happened since. This is the cheapest
-  thing on the list to confirm and the one everything else assumes.
+- ~~Whether a rebuild actually keeps the grant with this certificate.~~
+  **Measured, 2026-08-07.** The grant was given once to a `msg dev`-signed
+  binary and survived eight rebuild-and-reinstall cycles without being touched
+  again, including builds that changed the embedded `Info.plist` and the code.
+  Full Disk Access kept answering throughout. The earlier measurement in
+  [§9](daemon-and-permissions.md) used an Apple Development identity; this one
+  used the certificate the build actually creates.
 - The exact requirement TCC stored. The behaviour — cdhash changes, grant holds
   — is measured; the `csreq` blob itself has never been dumped, so "anchored to
   the certificate" is inference from behaviour rather than from the record.

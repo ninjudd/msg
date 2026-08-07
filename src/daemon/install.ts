@@ -37,11 +37,54 @@ function domain(): string {
 }
 
 /**
+ * Settings the daemon reads for itself.
+ *
+ * A launchd job inherits nothing from the shell that installed it, so anything
+ * set here has to be written into the plist or it silently does not apply. The
+ * failure is confusing rather than loud: installing with `MSG_SOCKET` set gives
+ * a CLI looking at one path and a daemon listening on another.
+ */
+const DAEMON_ENVIRONMENT = [
+  'MSG_DB',
+  'MSG_SOCKET',
+  'MSG_STATE_DIR',
+  'MSG_CONFIG',
+  'MSG_CONTACTS_SOURCE',
+] as const;
+
+export function daemonEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const carried: Record<string, string> = {};
+  for (const name of DAEMON_ENVIRONMENT) {
+    const value = environment[name];
+    if (value !== undefined && value.length > 0) carried[name] = value;
+  }
+  return carried;
+}
+
+function xmlText(value: string): string {
+  return value.replace(/[&<>]/g, (character) =>
+    character === '&' ? '&amp;' : character === '<' ? '&lt;' : '&gt;',
+  );
+}
+
+/**
  * The agent is user-owned, which is safe only because the daemon is a single
  * executable application: pointing this plist somewhere else runs a binary
  * that holds no grant (§4).
  */
-export function plist(binary: string, log: string): string {
+export function plist(
+  binary: string,
+  log: string,
+  environment: Record<string, string> = {},
+): string {
+  const entries = Object.entries(environment)
+    .map(([name, value]) => `    <key>${name}</key><string>${xmlText(value)}</string>`)
+    .join('\n');
+  const block =
+    entries.length > 0 ? `  <key>EnvironmentVariables</key>\n  <dict>\n${entries}\n  </dict>\n` : '';
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -49,12 +92,12 @@ export function plist(binary: string, log: string): string {
   <key>Label</key><string>${LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${binary}</string>
+    <string>${xmlText(binary)}</string>
   </array>
-  <key>RunAtLoad</key><true/>
+${block}  <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ProcessType</key><string>Background</string>
-  <key>StandardErrorPath</key><string>${log}</string>
+  <key>StandardErrorPath</key><string>${xmlText(log)}</string>
 </dict>
 </plist>
 `;
@@ -81,6 +124,8 @@ export interface Installed {
   plist: string;
   socket: string;
   log: string;
+  /** What was carried into the job from the installing shell's environment. */
+  environment: Record<string, string>;
 }
 
 export function install(source = builtBinary()): Installed {
@@ -100,9 +145,10 @@ export function install(source = builtBinary()): Installed {
   const log = logPath();
   mkdirSync(stateDirectory(), { recursive: true, mode: 0o700 });
 
+  const environment = daemonEnvironment();
   const agent = plistPath();
   mkdirSync(dirname(agent), { recursive: true });
-  writeFileSync(agent, plist(binary, log));
+  writeFileSync(agent, plist(binary, log, environment));
 
   // Booting out first makes install idempotent, and picks up a changed plist.
   // bootout returns before the job is actually gone, and bootstrapping into a
@@ -118,7 +164,7 @@ export function install(source = builtBinary()): Installed {
     throw new Error(`launchctl could not start ${LABEL}: ${started.output.trim()}`);
   }
 
-  return { binary, plist: agent, socket: socketPath(), log };
+  return { binary, plist: agent, socket: socketPath(), log, environment };
 }
 
 /**

@@ -16,6 +16,7 @@ import { toAppleDate } from '../apple.js';
 import type { Chat, Message } from '../db.js';
 import { connectDaemon, request, stream } from './client.js';
 import { encode, PROTOCOL_VERSION, type Request, type StatusReply } from './protocol.js';
+import { daemonSource, openSource } from '../source.js';
 import { Daemon } from './server.js';
 
 const SCHEMA = `
@@ -274,4 +275,102 @@ describe('watch', () => {
     const message = await arrived;
     expect(message?.body).toBe('just landed');
   }, 10_000);
+});
+
+describe('watch delivery', () => {
+  it('drains a burst larger than one batch, oldest first', async () => {
+    const socket = await connectDaemon(socketPath);
+    const received: Message[] = [];
+    const target = 250;
+
+    const done = new Promise<void>((resolve, reject) => {
+      void (async () => {
+        try {
+          for await (const value of stream(socket!, { cmd: 'watch', names: false })) {
+            received.push(value as Message);
+            if (received.length >= target) {
+              resolve();
+              return;
+            }
+          }
+          reject(new Error('stream ended early'));
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      })();
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const writer = new DatabaseSync(databasePath);
+    const insert = writer.prepare(
+      `INSERT INTO message (rowid, guid, text, is_from_me, handle_id, date, service)
+       VALUES (?, ?, 'burst', 0, 1, ?, 'iMessage')`,
+    );
+    const join = writer.prepare('INSERT INTO chat_message_join (chat_id, message_id) VALUES (1, ?)');
+    for (let index = 0; index < target; index += 1) {
+      const rowid = 1000 + index;
+      insert.run(rowid, `burst-${String(rowid)}`, at(10 + index));
+      join.run(rowid);
+    }
+    writer.close();
+
+    await done;
+    expect(received).toHaveLength(target);
+    // A batch is capped below this, so arriving in order proves the drain
+    // walked forwards rather than jumping to the newest and stranding the rest.
+    const rowids = received.map((message) => message.rowid);
+    expect(rowids).toEqual([...rowids].sort((a, b) => a - b));
+    expect(new Set(rowids).size).toBe(target);
+  }, 20_000);
+
+  it('reports the daemon going away rather than ending quietly', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'msg-eof-'));
+    const server = new Daemon({ dbPath: databasePath });
+    const path = join(other, 'msgd.sock');
+    await server.listen(path);
+
+    // daemonSource is the layer that turns end-of-stream into an error; the
+    // generator underneath it ends quietly, which is correct there.
+    const previous = process.env['MSG_SOCKET'];
+    process.env['MSG_SOCKET'] = path;
+    try {
+      const watching = daemonSource().watch(
+        { tapbacks: false, unknown: false, names: false, interval: 3 },
+        () => undefined,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await server.close();
+      await expect(watching).rejects.toThrow(/msgd stopped/);
+    } finally {
+      if (previous === undefined) delete process.env['MSG_SOCKET'];
+      else process.env['MSG_SOCKET'] = previous;
+      rmSync(other, { recursive: true, force: true });
+    }
+  }, 10_000);
+});
+
+describe('openSource', () => {
+  it('answers MSG_DB locally rather than through a listening daemon', async () => {
+    const previousSocket = process.env['MSG_SOCKET'];
+    const previousDb = process.env['MSG_DB'];
+    process.env['MSG_SOCKET'] = socketPath;
+    try {
+      process.env['MSG_DB'] = databasePath;
+      const direct = await openSource();
+      expect(direct.kind).toBe('direct');
+      direct.close();
+
+      // Without it, the same call finds the daemon — so the difference above is
+      // MSG_DB steering and not the socket being unreachable.
+      delete process.env['MSG_DB'];
+      const daemonBacked = await openSource();
+      expect(daemonBacked.kind).toBe('daemon');
+      daemonBacked.close();
+    } finally {
+      if (previousSocket === undefined) delete process.env['MSG_SOCKET'];
+      else process.env['MSG_SOCKET'] = previousSocket;
+      if (previousDb === undefined) delete process.env['MSG_DB'];
+      else process.env['MSG_DB'] = previousDb;
+    }
+  });
 });

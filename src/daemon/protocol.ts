@@ -143,6 +143,16 @@ export type Frame =
   | { type: 'item'; value: unknown }
   | { type: 'error'; code: ErrorCode; message: string };
 
+/**
+ * Whether a string is a chat guid rather than a name to look up.
+ *
+ * Messages writes them as `<service>;<kind>;<identifier>`, as in
+ * `iMessage;-;+13105551234` or `iMessage;+;chat9`.
+ */
+export function isChatGuid(value: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9]*;[-+];.+$/.test(value);
+}
+
 export function encode(value: Envelope | Frame): string {
   return `${JSON.stringify(value)}\n`;
 }

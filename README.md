@@ -250,8 +250,17 @@ authentication, and why the daemon is a single executable rather than a copy of
 | `MSG_DB` | path to an alternate `chat.db`, same as `--db` |
 | `MSG_CONTACTS_SOURCE` | UUID of the Contacts source whose names win |
 | `MSG_SOCKET` | where the daemon listens, default `~/.local/state/msg/msgd.sock` |
+| `MSG_STATE_DIR` | socket and log directory, default `~/.local/state/msg` |
 | `MSG_CONFIG` | config file, default `~/.config/msg/config.toml` |
 | `MSG_SIGN_IDENTITY` | Code Signing identity for `pnpm build:msgd` |
+
+`MSG_DB` steers the CLI, which reads that database itself rather than asking the
+daemon — the same as `--db`, so a fixture stays a fixture even with a daemon
+running.
+
+The rest are read by the daemon, and **a launchd job inherits nothing from your
+shell**. `msg daemon install` copies whichever of them are set into the agent
+and prints what it carried; changing one afterwards means installing again.
 
 ## How it works
 

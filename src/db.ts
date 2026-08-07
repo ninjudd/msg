@@ -195,6 +195,15 @@ export interface FetchMessagesOptions {
   includeTapbacks?: boolean | undefined;
   includeFiltered?: boolean | undefined;
   contacts?: ContactIndex | undefined;
+  /**
+   * Take the oldest matches rather than the newest.
+   *
+   * Following a conversation wants this: the newest N above a watermark
+   * silently skips everything between, so a burst larger than one batch would
+   * lose its beginning. Reading wants the default, since a limit there means
+   * "the last N".
+   */
+  oldestFirst?: boolean | undefined;
 }
 
 /** Fetch messages newest-first from the database, returned oldest-first. */
@@ -208,6 +217,7 @@ export function fetchMessages(db: DatabaseSync, options: FetchMessagesOptions = 
     includeTapbacks = false,
     includeFiltered = false,
     contacts = EMPTY_INDEX,
+    oldestFirst = false,
   } = options;
   const clauses: string[] = [];
   const params: SQLInputValue[] = [];
@@ -238,9 +248,12 @@ export function fetchMessages(db: DatabaseSync, options: FetchMessagesOptions = 
   }
 
   const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+  // Ordering by rowid rather than date when taking the oldest: a watcher walks
+  // rowids, and the two orders disagree for messages that arrive out of order.
+  const order = oldestFirst ? 'ORDER BY message.rowid ASC' : 'ORDER BY message.date DESC';
   const rows = prepare(
     db,
-    `SELECT ${MESSAGE_COLUMNS} ${MESSAGE_FROM} ${where} ORDER BY message.date DESC LIMIT ?`,
+    `SELECT ${MESSAGE_COLUMNS} ${MESSAGE_FROM} ${where} ${order} LIMIT ?`,
   ).all(...params, BigInt(limit)) as Row[];
 
   let messages = rows.map((row) => toMessage(row, contacts));
@@ -248,7 +261,7 @@ export function fetchMessages(db: DatabaseSync, options: FetchMessagesOptions = 
     const needle = query.toLowerCase();
     messages = messages.filter((m) => m.body !== null && m.body.toLowerCase().includes(needle));
   }
-  return messages.reverse();
+  return oldestFirst ? messages : messages.reverse();
 }
 
 /** How many chats to consider when a query has to be matched against names. */
