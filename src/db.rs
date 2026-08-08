@@ -1421,7 +1421,15 @@ pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Res
         .iter()
         .filter(|chat| {
             chat.name.to_lowercase() == lowered
+                // Only where the conversation *is* that person, which is what
+                // the case above says for a name and what a group can never
+                // say. A group is found by a member's whole name or nickname —
+                // that is the clause in `fetch_chats` — but being one of the
+                // people in a room is not being the room, so counting it here
+                // would leave every tie unbroken for anyone you also share an
+                // unnamed group with. Which is most people you talk to.
                 || (chat.display_name.is_none()
+                    && !chat.is_group
                     && contacts.any_named(chat.handles.as_deref(), &lowered))
         })
         .cloned()
@@ -1872,6 +1880,75 @@ mod tests {
         assert_eq!(chat.rowid, rowid, "{chat:?}");
         let person = resolve_person(&db, "rocket", &contacts).unwrap();
         assert_eq!(person.handles, ["+16175550147"], "{person:?}");
+    }
+
+    /// The same person, in a group that has no name of its own.
+    ///
+    /// The ordinary case, and the one that breaks a tie-break reaching into
+    /// membership: someone you message directly and also share a group with.
+    fn also_in_an_unnamed_group(db: &Connection, member: i64) {
+        db.execute(
+            "INSERT INTO handle (rowid, id) VALUES (9, '+16175550148')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat (rowid, guid, chat_identifier, display_name, is_filtered)
+             VALUES (9, 'iMessage;+;chat9x', 'chat9x', '', 0)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (9, ?), (9, 9)",
+            [member],
+        )
+        .unwrap();
+    }
+
+    /// A whole name still picks the one-to-one, even when that person is also in
+    /// a group with no name of its own.
+    ///
+    /// Breaking that tie is the entire job of the exact filter, and asking about
+    /// membership without asking whether the conversation *is* that person made
+    /// it stop doing the job: the one-to-one qualified by its name, the group
+    /// qualified on the member's behalf, and resolving anyone you share an
+    /// unnamed group with started erroring instead of answering. No nickname is
+    /// involved, which is what makes it a regression rather than a rough edge.
+    #[test]
+    fn a_whole_name_still_picks_the_one_to_one() {
+        let db = fixture();
+        let alone = one_to_one(&db, 4, "+16175550147");
+        also_in_an_unnamed_group(&db, 4);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("+16175550148", "source:8", "Kit Alvarez"),
+        ]);
+
+        let chat = resolve_chat(&db, "Robin Adeyemi", &contacts).unwrap();
+        assert_eq!(chat.rowid, alone, "{chat:?}");
+    }
+
+    /// And so does a whole nickname, which is the headline of this branch and
+    /// fails in exactly the same shape — a nickname is only worth typing if
+    /// typing it lands somewhere.
+    #[test]
+    fn a_whole_nickname_still_picks_the_one_to_one() {
+        let db = fixture();
+        let alone = one_to_one(&db, 4, "+16175550147");
+        also_in_an_unnamed_group(&db, 4);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("+16175550148", "source:8", "Kit Alvarez"),
+        ])
+        .nicknamed("+16175550147", "Rocket");
+
+        // The group is still *found* by the nickname, the way it is found by the
+        // member's name — it is only the tie-break that must not count it.
+        let matched = fetch_chats(&db, Some("rocket"), 30, &contacts, false).unwrap();
+        assert_eq!(matched.len(), 2, "{matched:?}");
+
+        let chat = resolve_chat(&db, "Rocket", &contacts).unwrap();
+        assert_eq!(chat.rowid, alone, "{chat:?}");
     }
 
     /// A conversation with a name of its own is found by that name rather than
