@@ -29,9 +29,14 @@ direction if two thirds of them should not be there.
 
 ## 2 The rule: a hit starts where a word starts
 
-A match qualifies when the character immediately before it is not alphanumeric,
-or when the match is at the very start of the body. Nothing is asserted about
-where the match *ends*.
+An occurrence qualifies when the character immediately before it is not
+alphanumeric, or when it sits at the very start of the body. Nothing is asserted
+about where the occurrence *ends*.
+
+**A message qualifies when *any* of its occurrences does.** The quantifier is
+part of the rule rather than a detail of implementing it: a body can contain the
+needle several times, and finding the first occurrence and testing that one is
+both the obvious implementation and wrong.
 
 That asymmetry is the whole design and is worth being explicit about, because
 the symmetric rule is the one that first suggests itself. Requiring both ends to
@@ -42,9 +47,24 @@ another. Requiring only the start keeps that working while removing every hit of
 the kind §1 shows, because an interior match is precisely one that does not
 begin at a word start.
 
-So the three cases a test should pin, in one line each: `start` matches
-`starting`, and `art` matches neither `started` nor `apartment` but does match
-`art deco`.
+So the four cases a test should pin, in one line each. `start` matches
+`starting`; `art` matches neither `started` nor `apartment`; `art` does match
+`art deco`; and `art` matches the body
+
+```
+we started at six, is that art deco
+```
+
+whose first occurrence is interior to `started` and whose second is a real hit.
+That fourth case is the one that separates the rule from a plausible
+implementation of it — the first three all pass under a first-occurrence-only
+check — and it is not a contrived body, being §1's noise example and §1's real
+example in the same message, which is what a conversation about one subject
+actually looks like.
+
+`run_contains` already has the right shape to carry this: it scans
+`haystack.char_indices().any(...)`, so the boundary test belongs inside that
+`any`, not in a wrapper around a single found position.
 
 ## 3 It has to run on the decoded body, not the blob
 
@@ -65,11 +85,28 @@ width marker and a little-endian length whose last byte lands in the same place;
 that byte is usually a small high byte rather than a letter, which makes the
 failure rarer but not rarer in a way anything should depend on.
 
+There is a second argument for the same placement, and it is the simpler one:
+the decoded body is a `String`, so the character before an occurrence is a
+character. On the raw blob the preceding bytes are not guaranteed to sit on a
+character boundary at all, so `char::is_alphanumeric` from §4 has nothing
+well-defined to be applied to.
+
 So the prefilter keeps the substring test exactly as it is, and the boundary
 rule goes in the decoded filter alone — the single `messages.retain` in
 `fetch_messages`. The comment above it currently says the two predicates are
 deliberately identical so they cannot disagree; it becomes the superset
 statement instead, which is what `register_body_match` already documents.
+
+**This is a new function, not a wrapper.** `contains_ignoring_case`,
+`run_contains`, and `contains_ignoring_ascii_case` all return `bool`, and
+nothing in the tree yields an occurrence offset — so there is no match position
+for a caller to look before, and the rule cannot be applied by wrapping the
+existing call. The decoded side needs a boundary-aware variant of the predicate
+itself, after which the two call sites call different functions rather than the
+same one twice. Design that variant's signature once, here: §7 asks that a
+future chat-name version share one predicate rather than grow a second
+definition of what a word start is, and that is a constraint on this function's
+shape.
 
 ## 4 What counts as a word character
 
@@ -129,19 +166,26 @@ This plan increases the drop rate by construction — every interior match is no
 a prefilter hit that the decoded filter rejects — so needles that are common
 inside words and rare at word starts are the new worst case. `ing` is the
 obvious one: overwhelmingly a suffix, so nearly every candidate row would be
-fetched, decoded, and thrown away, and the loop could go 100 → 400 → 1600 with a
-full body scan each pass before `exhausted` stops it.
+fetched, decoded, and thrown away.
+
+The first ask is already generous, which matters for reading any measurement of
+this. `asking` starts at `limit * 4 + 64` whenever there is a query, not at
+`limit`, and then multiplies by four per round — so `-n 100` walks **464 →
+1,856 → 7,424**, with a full body scan each pass, before `exhausted` stops it.
 
 Worth measuring rather than guessing — `query-performance.md` exists because a
 subquery that looked free was not. If it bites, the fix is not to weaken the
-rule but to raise the first ask when the needle is short, since needle length is
+rule but to widen that same first ask for short needles, since needle length is
 known before the query runs and short needles are exactly the ones that pay.
+Note that it is the *same* expression, whose comment already argues for
+generosity on the first ask for this reason — a second widening stacked on top
+of one that went unnoticed is the easy mistake here.
 
 ## 7 Scope: message bodies only
 
 Chat and contact name matching is a separate substring test — `answers_to` on
 `Contact`, and the `displayName`/`chatIdentifier`/`handles` clause in
-`matching_chats`. Those already have exact-match precedence in front of them,
+`fetch_chats`. Those already have exact-match precedence in front of them,
 which is what settled the case that prompted the nickname work, and the noise
 this plan removes has not been observed there. Leave them alone until it is.
 
