@@ -108,8 +108,22 @@ msg read dana --tapbacks       # include reactions
 ```sh
 msg search "dinner"                       # across every conversation
 msg search "deploy" -c "Ship Room"        # within one
+msg search "dinner" --with dana           # one person, wherever you talk
+msg search "dinner" --from dana           # only what they sent
 msg search "invoice" --since 30d -n 50
 ```
+
+`-c` scopes to a conversation; `--with` and `--from` scope to a *person*, which
+is not the same thing. Someone you message one to one and in three group chats
+is four conversations and one contact, and Messages stores each of their
+addresses — phone, email, a second number — as a separate handle. Both flags
+gather all of them, so a search is of the person rather than of whichever
+address happened to be used.
+
+The two differ in whose messages come back. `--from` is only theirs. `--with` is
+the exchange: theirs everywhere, plus your own where the conversation is just
+the two of you — in a group your messages went to the room rather than to them,
+so they are left out.
 
 ### Following
 

@@ -30,6 +30,22 @@ impl ContactIndex {
         Self::default()
     }
 
+    /// An index built from handle-to-name pairs, for tests.
+    ///
+    /// Keyed through [`handle_key`] like the real loader, so a test that writes
+    /// a number in one shape and looks it up in another behaves the same way the
+    /// program does.
+    #[cfg(test)]
+    pub fn for_test(names: std::collections::HashMap<String, String>) -> Self {
+        Self {
+            names: names
+                .into_iter()
+                .filter_map(|(handle, name)| Some((handle_key(&handle)?, name)))
+                .collect(),
+            problems: Vec::new(),
+        }
+    }
+
     /// The name for a handle, or `None` when it is unknown.
     pub fn lookup(&self, handle: Option<&str>) -> Option<&str> {
         let key = handle_key(handle?)?;

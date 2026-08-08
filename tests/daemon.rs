@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use msg::apple::to_apple_date;
 use msg::daemon::client::{connect_daemon, connect_daemon_within, request};
 use msg::daemon::protocol::{
-    ChatsRequest, ContactsRequest, Empty, ReadRequest, Request, ResolveRequest, SearchRequest,
-    SendRequest, WatchRequest, envelope,
+    ChatsRequest, ContactsRequest, Empty, PROTOCOL_VERSION, ReadRequest, Request, ResolveRequest,
+    SearchRequest, SendRequest, WatchRequest, envelope,
 };
 use msg::daemon::server::{Daemon, DaemonOptions};
 use rusqlite::Connection;
@@ -283,6 +283,64 @@ fn skips_filtered_conversations_unless_asked() {
     assert_eq!(search("123456", true).len(), 1);
 }
 
+/// The person filters over the wire, since a filter that is dropped in
+/// transit reads as "they never said it" rather than as an error.
+///
+/// `names: false` throughout, so the fixture's addresses are the only thing
+/// being matched and nobody's real Contacts database is touched.
+#[test]
+fn searches_one_person_across_conversations() {
+    let person = |with: Option<&str>, from: Option<&str>| {
+        ask(&Request::Search(SearchRequest {
+            // Every fixture body contains a vowel; the point here is the
+            // person filter, not the text match.
+            query: "e".into(),
+            with: with.map(str::to_string),
+            from: from.map(str::to_string),
+            names: Some(false),
+            ..Default::default()
+        }))
+        .map(|value| {
+            value
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["isFromMe"].as_bool().unwrap())
+                .collect::<Vec<_>>()
+        })
+    };
+
+    let theirs = person(None, Some("+13105551234")).unwrap();
+    assert!(!theirs.is_empty(), "found nothing to check");
+    assert!(
+        theirs.iter().all(|from_me| !from_me),
+        "--from returned my own messages: {theirs:?}"
+    );
+
+    let both = person(Some("+13105551234"), None).unwrap();
+    assert!(
+        both.len() > theirs.len(),
+        "--with should add my side: {both:?} vs {theirs:?}"
+    );
+    assert!(both.iter().any(|from_me| *from_me));
+}
+
+/// The daemon answers whatever a client sends, and a client is not the CLI, so
+/// the flags being mutually exclusive cannot rest on argument parsing alone.
+#[test]
+fn refuses_both_person_filters_at_once() {
+    let error = ask(&Request::Search(SearchRequest {
+        query: "e".into(),
+        with: Some("+13105551234".into()),
+        from: Some("+13105551234".into()),
+        names: Some(false),
+        ..Default::default()
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("--with and --from"), "{error}");
+}
+
 // -------------------------------------------------------------- resolve
 
 #[test]
@@ -399,7 +457,9 @@ fn refuses_a_version_it_does_not_speak() {
 /// backstop for forgetting to.
 #[test]
 fn refuses_a_command_it_does_not_know_rather_than_answering_nothing() {
-    let frame = raw("{\"cmd\":\"nonesuch\",\"v\":2}\n");
+    let frame = raw(&format!(
+        "{{\"cmd\":\"nonesuch\",\"v\":{PROTOCOL_VERSION}}}\n"
+    ));
     assert_eq!(frame["type"], serde_json::json!("error"));
     assert_eq!(frame["code"], serde_json::json!("error"));
     assert!(
@@ -422,7 +482,7 @@ fn refuses_a_request_that_is_not_json() {
 /// unknown command, and saying so is what the TypeScript build could not.
 #[test]
 fn reports_a_malformed_known_request_as_such() {
-    let frame = raw("{\"cmd\":\"read\",\"v\":2}\n");
+    let frame = raw(&format!("{{\"cmd\":\"read\",\"v\":{PROTOCOL_VERSION}}}\n"));
     assert_eq!(frame["type"], serde_json::json!("error"));
     let message = frame["message"].as_str().unwrap();
     assert!(

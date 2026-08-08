@@ -2,7 +2,8 @@
 
 **Status:** The chat list is fixed; `search` is not. §1 to §4 are the diagnosis
 as it was written, before any of it was acted on. §6 records what was done, what
-it cost, and what is left.
+it cost, and what is left. §8 corrects a claim §7 made about early exit that
+turned out to be false when measured, and §9 is the plan that replaces it.
 
 Nothing here was a regression from [the Rust rewrite](rust-rewrite.md): the same
 numbers came out of the TypeScript build, and that work simply removed
@@ -166,3 +167,53 @@ now cheap enough not to matter — `read` went from 2341ms to 290ms, roughly hal
 of which is still this — but pushing the chat id into the aggregate would make
 it a single-row lookup. It needs a second SQL string, which is a second thing to
 keep in step, so it is worth doing only if `read` starts to feel slow again.
+
+## 8 §7 was wrong about the early exit
+
+Measured on the same database, warm daemon, three runs:
+
+| Query | Time |
+| --- | --- |
+| a word in a large share of all messages, `-n 20` | 1382ms |
+| the same word, `-n 200` | 1401ms |
+| no match at all, `-n 20` | 1440ms |
+| no match, `--since 30d` | 92ms |
+| no match, `--since 1y` | 87ms |
+
+§7 said a query that matches plenty stops early and is therefore much faster.
+**It does not, and it is not.** Matching heavily costs the same as matching
+nothing, and raising the limit tenfold changes nothing either — the tell that no
+early exit is happening. What `ORDER BY date DESC LIMIT n` gets is a sort of the
+whole result, not a walk that stops.
+
+The row that matters is the last one. A bound on `message.date` *is* used, and it
+cuts the work by twenty times, which says the cost is proportional to the span
+searched rather than to the matches found. That is the lever.
+
+## 9 Searching backwards through time, and streaming
+
+The plan, not yet built. Walk backwards in widening windows — a week, a month, a
+quarter, a year, then everything older — each one a bounded query of the kind §8
+measured at under 100ms, and emit matches as each window lands.
+
+Two properties make it worth doing rather than merely faster-feeling:
+
+- **It can stop.** Windows run newest first, so once `limit` matches are in hand
+  the older windows cannot contain a newer match by definition. This is the early
+  exit §7 wrongly assumed was already there — as a property of how the search is
+  driven, rather than something the query planner has to be talked into.
+- **It streams.** The newest matches are usually the wanted ones, and they arrive
+  from the first window rather than after the whole history is read. The daemon
+  already has the frame for it: `watch` sends `item` frames and the client reads
+  them as they come.
+
+The windows must be half-open and non-overlapping, or a message on a boundary is
+returned twice or skipped. A no-match query still reads everything and so stays
+around the current cost, plus a few milliseconds per window; that is the trade,
+and it is the right way round, because the case that gets slower is the one where
+there is nothing to show anyway.
+
+One thing to keep straight: the SQL `LIMIT` applies to raw blob matches, and the
+decoded-body filter narrows them afterwards, so a window can return fewer results
+than it looked like it would. Counting toward the limit has to happen after that
+filter, not before.

@@ -23,7 +23,13 @@ use crate::db::{Chat, Message};
 /// command is a new protocol.
 ///
 /// 2 added `automation`.
-pub const PROTOCOL_VERSION: u32 = 2;
+///
+/// 3 added `with` and `from` to `search`. A new *field* is a new protocol here
+/// for the same reason a new command is, and a sharper one: a daemon that does
+/// not know the field ignores it and answers with everyone's messages when one
+/// person was asked for. A stale daemon crashing is better than a stale daemon
+/// quietly answering a question nobody asked.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";
@@ -79,6 +85,12 @@ pub struct SearchRequest {
     pub query: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat: Option<String>,
+    /// One person, across every conversation: their messages and mine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub with: Option<String>,
+    /// One person, across every conversation: only what they sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -376,7 +388,13 @@ mod tests {
     #[test]
     fn omits_unset_options_rather_than_writing_null() {
         let line = envelope(&Request::Chats(ChatsRequest::default())).unwrap();
-        assert_eq!(line.trim(), r#"{"cmd":"chats","v":2}"#);
+        // Built from the constant rather than written out, so a protocol bump
+        // does not look like a regression in what this is actually asserting:
+        // that every unset field is absent, leaving only `cmd` and `v`.
+        assert_eq!(
+            line.trim(),
+            format!(r#"{{"cmd":"chats","v":{PROTOCOL_VERSION}}}"#)
+        );
     }
 
     #[test]

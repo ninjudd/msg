@@ -18,8 +18,8 @@ use crate::daemon::protocol::{
     WatchRequest,
 };
 use crate::db::{
-    Chat, FetchMessages, Message, fetch_chats, fetch_messages, latest_rowid, open_database,
-    resolve_chat,
+    Chat, FetchMessages, Message, PersonFilter, fetch_chats, fetch_messages, latest_rowid,
+    open_database, person_filter, resolve_chat,
 };
 use crate::{Error, Result};
 
@@ -44,6 +44,10 @@ pub struct ReadQuery {
 pub struct SearchQuery {
     pub query: String,
     pub chat: Option<String>,
+    /// One person, across every conversation: their messages and mine.
+    pub with: Option<String>,
+    /// One person, across every conversation: only what they sent.
+    pub from: Option<String>,
     pub limit: i64,
     pub since: Option<String>,
     pub unknown: bool,
@@ -207,6 +211,8 @@ impl Source {
             let value = call(&Request::Search(SearchRequest {
                 query: query.query.clone(),
                 chat: query.chat.clone(),
+                with: query.with.clone(),
+                from: query.from.clone(),
                 limit: Some(query.limit),
                 since: query.since.clone(),
                 unknown: query.unknown.then_some(true),
@@ -219,9 +225,11 @@ impl Source {
             .as_deref()
             .map(since_to_apple_date)
             .transpose()?;
-        let (text, spec, limit, unknown) = (
+        let (text, spec, with, from, limit, unknown) = (
             query.query.clone(),
             query.chat.clone(),
+            query.with.clone(),
+            query.from.clone(),
             query.limit,
             query.unknown,
         );
@@ -230,11 +238,16 @@ impl Source {
             .as_deref()
             .map(|spec| resolve_chat(db, spec, contacts).map(|chat| chat.rowid))
             .transpose()?;
+        let person = person_filter(db, with.as_deref(), from.as_deref(), contacts)?;
         fetch_messages(
             db,
             &FetchMessages {
                 query: Some(&text),
                 chat_id,
+                person: person.as_ref().map(|(person, sender)| PersonFilter {
+                    person,
+                    sender: *sender,
+                }),
                 after_date,
                 limit,
                 include_filtered: unknown,
