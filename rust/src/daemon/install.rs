@@ -172,7 +172,7 @@ pub struct Installed {
 pub fn install(source: &Path) -> Result<Installed> {
     if !source.join("Contents/MacOS/msgd").exists() {
         return Err(Error::other(format!(
-            "no daemon bundle at {}\nBuild it first with `./build.sh`.",
+            "no daemon bundle at {}\nBuild it first with `./scripts/build.sh`.",
             source.display()
         )));
     }

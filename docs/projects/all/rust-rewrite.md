@@ -315,3 +315,39 @@ readable-but-refused database raised a raw errno instead of the explanation.
 **`built_bundle()` changed meaning.** It resolved from the source file's own URL,
 which only made sense inside a checkout. A shipped `msg` has no checkout, so the
 bundle now travels beside the binary and `--from` names it otherwise.
+
+**§5.6 is done, and §1's central claim held.** `scripts/build.sh` replaces
+`scripts/build-msgd.mjs`: a compile, a directory, and a signature. Gone with it
+are esbuild, `--experimental-sea-config`, postject, the sentinel fuse, and the
+rule that signing must come last because everything before it invalidated the
+signature. The bundle layout, the `Info.plist`, and the `codesign --identifier`
+invocation carry over unchanged, exactly as predicted.
+
+The claim worth checking was that the grant survives the language change. It
+does, and not by argument — the requirement is byte-identical:
+
+```
+designated => identifier "com.ninjudd.msgd" and certificate leaf = H"33473595…"
+```
+
+Neither term mentions a language or a hash of the executable, so the Rust daemon
+signed with the same certificate under the same identifier satisfies the same
+requirement the installed one does. `codesign --verify --strict` agrees. Nothing
+has to be re-granted.
+
+Sizes, for the record: the bundle is **2.9MB against 116MB**, and `msg` is 2.9MB
+against a second copy of the same runtime.
+
+**Checked against the real database, without reading it.** Both CLIs were run
+against the live daemon — 763,304 messages, 1,123 contact handles — across seven
+query shapes including a 1,164-conversation sweep and three searches, and
+compared by hash of canonicalised JSON. All seven identical. Hashing rather than
+diffing is the point: it proves agreement without any message body or contact
+name leaving the process.
+
+What this does *not* yet cover is the Rust reader against real data: both runs
+went through the TypeScript daemon, so what was compared is the Rust client and
+the wire. Exercising `db.rs` and the typedstream decoder against the real
+database needs the Rust daemon installed, because it needs the Full Disk Access
+grant. That is the one remaining check, and it is the one that changes the
+machine.
