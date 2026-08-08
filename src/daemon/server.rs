@@ -489,9 +489,13 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
                 resolved: ask
                     .handles
                     .into_iter()
-                    .map(|handle| ResolvedHandle {
-                        name: index.lookup(Some(&handle)).map(str::to_string),
-                        handle,
+                    .map(|handle| {
+                        let contact = index.contact(Some(&handle));
+                        ResolvedHandle {
+                            name: contact.map(|c| c.name.clone()),
+                            filed_as: contact.and_then(|c| c.filed_as.clone()),
+                            handle,
+                        }
                     })
                     .collect(),
             })?)

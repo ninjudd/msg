@@ -298,9 +298,13 @@ impl Source {
             size: index.len(),
             resolved: handles
                 .iter()
-                .map(|handle| ResolvedHandle {
-                    handle: handle.clone(),
-                    name: index.lookup(Some(handle)).map(str::to_string),
+                .map(|handle| {
+                    let contact = index.contact(Some(handle));
+                    ResolvedHandle {
+                        handle: handle.clone(),
+                        name: contact.map(|contact| contact.name.clone()),
+                        filed_as: contact.and_then(|contact| contact.filed_as.clone()),
+                    }
                 })
                 .collect(),
         })

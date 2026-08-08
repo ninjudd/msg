@@ -91,7 +91,8 @@ When a substring matches more than one conversation, `msg` lists the candidates
 instead of guessing.
 
 A [nickname](#contacts) counts as one of those names, so someone filed under
-their full name and known to you as something else is found by either.
+their full name and known to you as something else is found by either — and is
+shown as the nickname, since that is what you call them.
 
 **Several conversations with one person are not an ambiguity.** Messages keeps a
 conversation per address, so someone you reach at a phone number and an email
@@ -473,19 +474,42 @@ sides of a comparison are stripped to digits, and numbers long enough to carry a
 country code are matched on their last ten digits. Short codes are matched
 whole, and email handles are matched case-insensitively.
 
-**A nickname is a name you can type, not a name you see.** Someone filed as
-Robert Chen with a nickname of Bob is still shown as Robert Chen — that is the
-name Messages and Contacts agree on — but `msg chats bob`, `msg read bob`, and
-`msg search "dinner" --from bob` all find him. A nickname is only shown when
-there is no real name behind it, which is the rule Contacts itself follows.
+**A nickname is what you call someone, so it is what they are called here.**
+Someone filed as Robert Chen with a nickname of Bob reads as Bob — in the chat
+list, at the head of a conversation, and against every message he sent. You told
+Contacts what he is called; a transcript that says Robert Chen throughout is
+answering a question nobody asked.
 
-Nicknames are matched exactly where names are, and nowhere else. A conversation
-with a name of its own is found by that name rather than by who is in it, so a
-group called Ship Room is not reachable through a member's nickname — the same
-way it is not reachable through their name. And because a nickname is short
-enough to be a fragment of plenty else, typing a whole one settles the
-ambiguity it creates: `bob` prefers the person whose nickname is exactly Bob
-over everyone merely containing those letters.
+Both names still find him. `msg read bob` and `msg read "Robert Chen"` open the
+same conversation, and it reads as Bob either way — the display does not follow
+whichever name you typed. The filed name is displaced, not discarded, which
+matters because it is the one you have when a nickname is all you remember of
+somebody and the one somebody else would search by.
+
+`msg contacts` shows both, because identifying somebody is its whole job rather
+than a label on something else:
+
+```
+$ msg contacts +13105551234
++13105551234    Bob (Robert Chen)
+```
+
+That is the one place the pair appears. A transcript labelled `Bob (Robert
+Chen)` on every line would be unreadable, and a chat list of them worse.
+
+`--json` keeps them apart, as `name` and `filedAs`, and omits `filedAs` when
+nothing was displaced. The line above is composed for a person to read; a
+program should not have to take it apart again.
+
+Both names are matched exactly where a name is matched, and nowhere else. A
+conversation with a name of its own is found by that name rather than by who is
+in it, so a group called Ship Room is not reachable through a member's name or
+nickname. And because a nickname is short enough to be a fragment of plenty
+else, typing a whole one settles the ambiguity it creates: `bob` prefers the
+person called exactly Bob over everyone merely containing those letters.
+
+A group of people you have nicknames for reads as those nicknames, since a group
+with no name of its own is named after its members.
 
 **Accounts disagree.** The same number can carry a different name in each
 account, so the order they are merged in decides the winner. `msg` reads

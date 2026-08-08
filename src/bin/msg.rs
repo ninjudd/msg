@@ -344,11 +344,16 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                 print(&to_json(&reply.resolved));
             } else {
                 for resolved in &reply.resolved {
-                    print(&format!(
-                        "{}\t{}\n",
-                        resolved.handle,
-                        resolved.name.as_deref().unwrap_or("(unknown)")
-                    ));
+                    // Composed here rather than on the wire. Identifying
+                    // somebody is this command's job, so a person wants both
+                    // names on the line — but a consumer wants two fields it
+                    // can read separately, and `--json` hands it those.
+                    let name = match (&resolved.name, &resolved.filed_as) {
+                        (Some(name), Some(filed)) => format!("{name} ({filed})"),
+                        (Some(name), None) => name.clone(),
+                        (None, _) => "(unknown)".to_string(),
+                    };
+                    print(&format!("{}\t{name}\n", resolved.handle));
                 }
             }
         }
