@@ -302,10 +302,14 @@ direction, and closes it.
   `Jan 15, 9:36 AM` in the system locale. There is no ICU here and it is not
   worth 10MB for two format strings, so they are fixed. Identical on this
   machine; English on a machine set to something else.
-- **Column widths count characters, not UTF-16 units.** `String.length` measured
-  `café` as four and an emoji as two, so a conversation named with either was
-  padded wrong. Rust would additionally have panicked slicing mid-character, so
-  this had to be decided rather than inherited.
+- **Column widths count terminal cells.** This took two goes and the second one
+  came from review. `String.length` is UTF-16 units, so it measured `café` as
+  four and an astral emoji as two. Switching to `chars().count()` looked like a
+  fix and was half a regression: it made `😀` measure 1 where a terminal draws 2,
+  so every column after an emoji-named conversation shifted a cell, and UTF-16
+  had been accidentally right for exactly that case. The question being asked is
+  display width, which is UAX #11, so `unicode-width` answers it. Truncation
+  drops a wide character whole rather than splitting it.
 
 **Exit status 2 was nearly lost.** The README documents 2 as "the data is there,
 the grant is not" and tells people to branch on it. `clap` exits 2 for a usage

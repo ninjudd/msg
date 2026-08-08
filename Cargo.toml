@@ -13,10 +13,17 @@ path = "src/lib.rs"
 # Both binaries are auto-discovered from src/bin/ as they land: `msg`, which is
 # what a person runs, and `msgd`, the launchd agent.
 
-# Four dependencies, three of them unavoidable. `rusqlite` and `clap` are the
-# two the rewrite plan said would get chosen rather than avoided (§3), `serde`
-# is what keeps the wire format identical to the TypeScript one, and `chrono`
-# is local-timezone arithmetic nobody should hand-write.
+# Five of these represent a real choice; the rest are plumbing.
+#
+#   rusqlite       reading chat.db, which §3 said would get chosen not avoided
+#   clap           the CLI, in place of commander
+#   serde          keeps the wire format identical to the TypeScript one
+#   chrono         local-timezone arithmetic, which nobody should hand-write
+#   unicode-width  the UAX #11 tables, which decide how many terminal cells a
+#                  name occupies. Not a dozen lines of parsing like the other
+#                  patterns here: a Unicode table that goes stale every release.
+#
+# base64, libc and serde_json are plumbing for the above.
 #
 # Deliberately absent: `regex`, because the five patterns this program matches
 # are each a dozen lines of hand-written parsing, and `tokio`, because the
@@ -29,6 +36,7 @@ libc = "0.2"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+unicode-width = "0.2.2"
 
 [profile.release]
 strip = true

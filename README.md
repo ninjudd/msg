@@ -46,13 +46,26 @@ Without either, every command exits with status 2 and an explanation.
 ```sh
 git clone git@github.com:ninjudd/msg.git
 cd msg
-./scripts/build.sh                  # compiles both binaries and signs the daemon
-ln -s "$PWD/build/msg" ~/.local/bin/msg   # or anywhere on your PATH
+./scripts/build.sh                        # both binaries, and the signed daemon
+mkdir -p ~/.local/bin                     # macOS does not create this
+ln -s "$PWD/build/msg" ~/.local/bin/msg
 ```
 
-`build/msg` is the command and `build/msgd.app` is the daemon. Copy `msg`
-wherever you keep binaries; `msg daemon install` looks for `msgd.app` beside it,
-so keep the two together or pass `--from` when installing.
+macOS puts neither `~/.local/bin` on your `PATH` nor the directory itself on
+disk, so if `msg` is not found afterwards:
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+exec zsh
+```
+
+Anywhere already on your `PATH` works just as well; `~/.local/bin` is only a
+convention that needs no `sudo`.
+
+`build/msg` is the command and `build/msgd.app` is the daemon. `msg daemon
+install` looks for `msgd.app` beside the real binary, following the symlink
+first, so a link into `~/.local/bin` is fine — but a *copy* of `msg` needs
+`msgd.app` copied alongside it, or `--from` pointing at one.
 
 To run without installing, `cargo run --bin msg -- <command>` works from the
 checkout.

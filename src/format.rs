@@ -1,6 +1,7 @@
 //! Rendering for terminal and JSON output.
 
 use chrono::{DateTime, Datelike, Local, Utc};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::db::{Chat, Message};
 
@@ -48,17 +49,36 @@ pub fn relative_age(date: Option<DateTime<Utc>>) -> String {
     }
 }
 
-/// Character count, not byte count: these widths line up columns on a terminal,
-/// and `len()` would pad a name with an accent in it one column short.
+/// How many terminal cells a string occupies.
+///
+/// Three counts disagree here and only one of them lines up a column. `len()`
+/// is bytes, so `café` measures 5. `chars().count()` is scalar values, so `😀`
+/// measures 1 where a terminal draws 2 — and that was this program's first
+/// answer, which regressed emoji-named conversations that the JavaScript
+/// build's UTF-16 `.length` had happened to get right. This is UAX #11, which
+/// is the question actually being asked.
 fn width_of(value: &str) -> usize {
-    value.chars().count()
+    UnicodeWidthStr::width(value)
 }
 
+/// Cut to `width` cells, leaving room for the ellipsis, which is one cell.
 fn truncate(value: &str, width: usize) -> String {
     if width_of(value) <= width {
         return value.to_string();
     }
-    let mut out: String = value.chars().take(width.saturating_sub(1)).collect();
+    let budget = width.saturating_sub(1);
+    let mut out = String::new();
+    let mut used = 0;
+    for character in value.chars() {
+        let cells = UnicodeWidthChar::width(character).unwrap_or(0);
+        // A wide character that would straddle the boundary is dropped whole
+        // rather than split, so the result never overruns by a cell.
+        if used + cells > budget {
+            break;
+        }
+        used += cells;
+        out.push(character);
+    }
     out.push('…');
     out
 }
@@ -132,6 +152,23 @@ pub fn to_json<T: serde::Serialize>(value: &T) -> String {
 mod tests {
     use super::*;
 
+    fn chat(name: &str) -> Chat {
+        Chat {
+            rowid: 1,
+            guid: "iMessage;+;c".into(),
+            identifier: "c".into(),
+            display_name: Some(name.into()),
+            handles: None,
+            named_handles: None,
+            is_filtered: false,
+            member_count: 1,
+            is_group: false,
+            last_date: Some(Utc::now()),
+            message_count: 1,
+            name: name.into(),
+        }
+    }
+
     fn at(iso: &str) -> Option<DateTime<Utc>> {
         Some(
             DateTime::parse_from_rfc3339(iso)
@@ -189,13 +226,64 @@ mod tests {
     }
 
     #[test]
-    fn truncation_counts_characters_rather_than_bytes() {
+    fn truncation_counts_display_cells_rather_than_bytes_or_scalars() {
         assert_eq!(truncate("hello", 10), "hello");
         assert_eq!(truncate("hello", 5), "hello");
         assert_eq!(truncate("hello", 4), "hel…");
         // Would have panicked on a byte boundary, and mis-measured before that.
-        assert_eq!(truncate("café ☕️ room", 6), "café …");
+        assert_eq!(truncate("café room", 6), "café …");
         assert_eq!(width_of(&pad_end("café", 8)), 8);
+    }
+
+    /// An emoji is one scalar value and two terminal cells. Counting scalars
+    /// pushed every column after an emoji-named conversation one cell right,
+    /// which is what the JavaScript build's UTF-16 count had accidentally got
+    /// right and this had to be taught.
+    #[test]
+    fn an_emoji_is_two_cells_wide() {
+        assert_eq!(width_of("😀"), 2);
+        assert_eq!(width_of("😀😀"), 4);
+        assert_eq!(width_of("AAAA"), 4);
+        // Padding them to the same width must produce the same cell count.
+        assert_eq!(width_of(&pad_end("😀😀", 9)), width_of(&pad_end("AAAA", 9)));
+    }
+
+    /// Every row of a rendered table has to occupy the same number of cells, or
+    /// the columns after the widest name do not line up.
+    #[test]
+    fn every_rendered_row_is_the_same_width() {
+        let names = ["AAAA", "😀😀", "Ship Room", "café", "日本語のグループ"];
+        let chats: Vec<Chat> = names.iter().map(|name| chat(name)).collect();
+        let rendered = render_chats(&chats);
+        let widths: Vec<usize> = rendered
+            .lines()
+            .map(|line| width_of(line.trim_end()) + line.len() - line.trim_end().len())
+            .collect();
+        let full: Vec<usize> = rendered.lines().map(width_of).collect();
+        assert!(
+            full.windows(2).all(|pair| pair[0] == pair[1]),
+            "rows differ in width: {full:?} (trimmed {widths:?})\n{rendered}"
+        );
+    }
+
+    /// Truncation must not overrun its budget by splitting a wide character.
+    #[test]
+    fn truncation_never_overruns_its_budget() {
+        for name in [
+            "😀😀😀😀😀",
+            "日本語のグループチャット",
+            "aaaaaaaaaa",
+            "a😀a😀a😀",
+        ] {
+            for width in 2..12 {
+                let cut = truncate(name, width);
+                assert!(
+                    width_of(&cut) <= width,
+                    "{name:?} at {width}: {cut:?} is {} cells",
+                    width_of(&cut)
+                );
+            }
+        }
     }
 
     #[test]

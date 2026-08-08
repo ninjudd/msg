@@ -551,7 +551,7 @@ mod tests {
         let start = DateTime::parse_from_rfc3339("2026-01-15T17:30:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        to_apple_date(start + chrono::Duration::minutes(minutes))
+        to_apple_date(start + chrono::Duration::minutes(minutes)).expect("in range")
     }
 
     pub(crate) fn fixture() -> Connection {

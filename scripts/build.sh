@@ -90,7 +90,14 @@ create_identity() {
 		-name "$name" -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
 		-out "$work/identity.p12" -passout "pass:$passphrase"
 
-	keychain=$(security default-keychain -d user | tr -d ' "')
+	# `security` prints the default keychain indented and quoted. Take what is
+	# between the quotes and change nothing inside it: a keychain named
+	# "My Login.keychain-db" is perfectly valid, and deleting every space would
+	# turn its path into one that does not exist.
+	keychain=$(security default-keychain -d user 2>/dev/null |
+		sed -n 's/^[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p')
+	[ -n "$keychain" ] || keychain="$HOME/Library/Keychains/login.keychain-db"
+
 	# -T lets codesign reach the key without naming every other tool.
 	security import "$work/identity.p12" -k "$keychain" -P "$passphrase" \
 		-T /usr/bin/codesign >/dev/null

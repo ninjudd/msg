@@ -30,22 +30,47 @@ pub fn from_apple_date(value: Option<i64>) -> Option<DateTime<Utc>> {
     DateTime::from_timestamp_millis(ms.checked_add(APPLE_EPOCH_OFFSET_MS)?)
 }
 
-/// Convert an instant to Apple's nanosecond timestamp.
-pub fn to_apple_date(date: DateTime<Utc>) -> i64 {
-    (date.timestamp_millis() - APPLE_EPOCH_OFFSET_MS) * NANOSECONDS_PER_MS
+/// Milliseconds since the Unix epoch to Apple's nanosecond timestamp.
+///
+/// Checked, because the range is narrower than it looks: `i64` nanoseconds
+/// spans only ±292 years around 2001, so a date a user can easily type —
+/// `1700-01-01`, `9999-01-01` — does not fit. Unchecked, this panicked in a
+/// debug build and silently wrapped in a release one, where it became an
+/// unrelated cutoff that returned the wrong messages with no error at all.
+fn millis_to_apple(millis: i64) -> Option<i64> {
+    millis
+        .checked_sub(APPLE_EPOCH_OFFSET_MS)?
+        .checked_mul(NANOSECONDS_PER_MS)
 }
 
-/// A `--since` value that is neither a duration nor a date.
+/// Convert an instant to Apple's nanosecond timestamp, or `None` if it does not
+/// fit in one.
+pub fn to_apple_date(date: DateTime<Utc>) -> Option<i64> {
+    millis_to_apple(date.timestamp_millis())
+}
+
+/// A `--since` value this cannot turn into a cutoff.
 #[derive(Debug)]
-pub struct ParseTimeError(String);
+pub enum ParseTimeError {
+    /// Neither a duration nor a date.
+    Unparsed(String),
+    /// A real date, outside what an Apple timestamp can hold.
+    OutOfRange(String),
+}
 
 impl std::fmt::Display for ParseTimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "cannot parse time {}, expected something like 2h, 7d, or 2026-08-01",
-            self.0
-        )
+        match self {
+            Self::Unparsed(spec) => write!(
+                f,
+                "cannot parse time {spec}, expected something like 2h, 7d, or 2026-08-01"
+            ),
+            Self::OutOfRange(spec) => write!(
+                f,
+                "{spec} is outside the range a Messages timestamp can hold, \
+                 which is roughly the years 1709 to 2293"
+            ),
+        }
     }
 }
 
@@ -71,6 +96,9 @@ fn is_decimal(value: &str) -> bool {
 }
 
 /// Parse `2h` or `7d` into milliseconds before now.
+///
+/// Saturating rather than wrapping: `99999999w` is a silly thing to type but it
+/// should read as "everything", not as a cutoff in the far future.
 fn parse_duration(spec: &str) -> Option<i64> {
     let unit = spec.chars().next_back()?;
     let scale_ms: i64 = match unit {
@@ -88,7 +116,8 @@ fn parse_duration(spec: &str) -> Option<i64> {
     if !scaled.is_finite() {
         return None;
     }
-    Some(Utc::now().timestamp_millis() - scaled as i64)
+    // `as i64` saturates at the bounds, and so does the subtraction.
+    Some(Utc::now().timestamp_millis().saturating_sub(scaled as i64))
 }
 
 /// Parse the date formats the TypeScript build accepted through `new Date`.
@@ -125,12 +154,12 @@ fn parse_date(spec: &str) -> Option<DateTime<Utc>> {
 /// Parse a duration like `2h` or `7d`, or a date, into an Apple timestamp.
 pub fn since_to_apple_date(spec: &str) -> Result<i64, ParseTimeError> {
     let trimmed = spec.trim();
+    let out_of_range = || ParseTimeError::OutOfRange(spec.to_string());
     if let Some(millis) = parse_duration(trimmed) {
-        return Ok((millis - APPLE_EPOCH_OFFSET_MS) * NANOSECONDS_PER_MS);
+        return millis_to_apple(millis).ok_or_else(out_of_range);
     }
-    parse_date(trimmed)
-        .map(to_apple_date)
-        .ok_or_else(|| ParseTimeError(spec.to_string()))
+    let date = parse_date(trimmed).ok_or_else(|| ParseTimeError::Unparsed(spec.to_string()))?;
+    to_apple_date(date).ok_or_else(out_of_range)
 }
 
 /// Marker bytes that open an NSArchiver typedstream.
@@ -275,10 +304,7 @@ mod tests {
         let original = DateTime::parse_from_rfc3339("2026-03-01T12:34:56Z")
             .unwrap()
             .with_timezone(&Utc);
-        assert_eq!(
-            from_apple_date(Some(to_apple_date(original))),
-            Some(original)
-        );
+        assert_eq!(from_apple_date(to_apple_date(original)), Some(original));
     }
 
     #[test]
@@ -330,11 +356,46 @@ mod tests {
         }
     }
 
+    /// `i64` nanoseconds reach only about 292 years either side of 2001, so
+    /// dates a user can easily type do not fit. Unchecked this panicked in a
+    /// debug build and, worse, wrapped silently in a release one into an
+    /// unrelated cutoff that returned the wrong messages with no error at all.
+    #[test]
+    fn refuses_a_date_outside_what_an_apple_timestamp_can_hold() {
+        for spec in ["9999-01-01", "1700-01-01", "1000-01-01", "2500-06-01"] {
+            let error = since_to_apple_date(spec).unwrap_err();
+            assert!(
+                matches!(error, ParseTimeError::OutOfRange(_)),
+                "{spec} gave {error:?}"
+            );
+            assert!(error.to_string().contains("outside the range"), "{spec}");
+        }
+    }
+
+    #[test]
+    fn accepts_the_edges_of_what_does_fit() {
+        for spec in ["1710-01-01", "2292-01-01", "2026-08-07"] {
+            assert!(since_to_apple_date(spec).is_ok(), "{spec} was refused");
+        }
+    }
+
+    /// A silly duration should read as "everything", not wrap into the future.
+    #[test]
+    fn an_enormous_duration_saturates_rather_than_wrapping() {
+        let since = since_to_apple_date("99999999999w");
+        assert!(
+            since.is_err() || since.is_ok_and(|value| value < 0),
+            "a huge duration produced a cutoff in the future"
+        );
+    }
+
     #[test]
     fn the_error_names_what_it_could_not_parse() {
-        let error = since_to_apple_date("soonish").unwrap_err().to_string();
-        assert!(error.contains("cannot parse time"), "{error}");
-        assert!(error.contains("soonish"), "{error}");
+        let error = since_to_apple_date("soonish").unwrap_err();
+        assert!(matches!(error, ParseTimeError::Unparsed(_)), "{error:?}");
+        let text = error.to_string();
+        assert!(text.contains("cannot parse time"), "{text}");
+        assert!(text.contains("soonish"), "{text}");
     }
 
     #[test]

@@ -40,7 +40,7 @@ fn at(minutes: i64) -> i64 {
     let start = chrono::DateTime::parse_from_rfc3339("2026-01-15T17:30:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
-    to_apple_date(start + chrono::Duration::minutes(minutes))
+    to_apple_date(start + chrono::Duration::minutes(minutes)).expect("in range")
 }
 
 struct Harness {
