@@ -50,9 +50,13 @@ fn build(path: &Path) {
           (2, 'iMessage;+;chat9', 'chat9', 'Ship Room');
         INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1, 1), (2, 1);
         INSERT INTO message (rowid, guid, text, is_from_me, handle_id, date, service)
-          VALUES (1, 'm1', 'are you around later', 0, 1, 790000000000000000, 'iMessage');
+          VALUES (1, 'm1', 'are you around later', 0, 1, 790000000000000000, 'iMessage'),
+                 (2, 'm2', 'after 6, yeah', 1, 1, 790000060000000000, 'iMessage'),
+                 (3, 'm3', 'works, see you then', 0, 1, 790000120000000000, 'iMessage');
         INSERT INTO chat_message_join (chat_id, message_id, message_date)
-          VALUES (1, 1, 790000000000000000);
+          VALUES (1, 1, 790000000000000000),
+                 (1, 2, 790000060000000000),
+                 (1, 3, 790000120000000000);
         ",
     )
     .unwrap();
@@ -206,6 +210,36 @@ fn dry_run_resolves_and_prints_without_sending() {
     ]);
     assert_eq!(code(&output), 0);
     assert_eq!(stdout(&output), "would send to Ship Room: hello there\n");
+}
+
+/// The flag reaches the window, the gutter marks the hit, and the messages
+/// around it come back — the whole path, through the binary rather than the
+/// library, since that is where the argument parsing lives.
+#[test]
+fn context_flags_show_the_conversation_around_a_hit() {
+    let bare = msg(&["--no-names", "search", "after 6"]);
+    assert_eq!(code(&bare), 0);
+    let bare = String::from_utf8_lossy(&bare.stdout);
+    assert_eq!(bare.lines().count(), 1, "{bare}");
+    // Nothing gains a gutter when no context was asked for.
+    assert!(!bare.starts_with("> "), "{bare}");
+
+    let output = msg(&["--no-names", "search", "after 6", "-C", "1"]);
+    assert_eq!(code(&output), 0);
+    let text = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = text.lines().collect();
+
+    assert_eq!(lines.len(), 3, "{text}");
+    assert!(lines[0].contains("are you around later"), "{text}");
+    assert!(lines[1].contains("after 6, yeah"), "{text}");
+    assert!(lines[2].contains("works, see you then"), "{text}");
+
+    // Only the hit is marked, and the context lines up under it.
+    assert!(lines[1].starts_with("> "), "{text}");
+    assert!(
+        lines[0].starts_with("  ") && lines[2].starts_with("  "),
+        "{text}"
+    );
 }
 
 #[test]

@@ -1,7 +1,9 @@
 # Plan: Show what was said around a search hit
 
-**Status:** Designed, not started. Committed to in
-[next](../next.md). Nothing built.
+**Status:** Shipped, one slice, as designed. `-A`/`-B`/`-C` on `msg search`,
+windows merged into runs, the `> ` gutter and `--`, tapbacks in the window, and
+`matched`/`group` on the wire. §2's cost estimate was wrong until the query was
+reshaped; see the note there.
 
 **Goal:** Let `msg search` print the messages on either side of each hit, the
 way `ack -A/-B/-C` does, so a match reads as part of a conversation instead of a
@@ -42,6 +44,21 @@ query from the body scan that found the hits — no `msg_body_has`, no blob
 decoding of anything outside the window — so it should disappear next to the
 search itself. Measure it against the real database before believing that;
 `query-performance.md` exists because a subquery that looked free was not.
+
+**Measured, and it was not free until the query changed. (SHIPPED)** Written the
+obvious way — `WHERE message.rowid < ?` with `ORDER BY message.rowid` — each
+window cost about 100ms against a 763,000-message database, so `-n 25 -C 3` took
+roughly 6s against 2s without context. Nothing was indexed the way the estimate
+assumed: the query reads `FROM message`, so SQLite walked message rowids
+downward from the hit and discarded every row belonging to another
+conversation, which for a quiet chat is thousands of rows to find three.
+
+The fix is to bound and order against `chat_message_join.message_id` whenever a
+chat is named. It holds the same number, but `chat_message_join` is keyed by
+(chat_id, message_id), so the same question becomes an index range scan. After
+it, `-C 3` and `-C 10` both sit inside the run-to-run noise of a search with no
+context at all — median 2,988ms and 2,809ms against 3,238ms — and the body scan
+dominates as predicted.
 
 ## 3 Decisions
 
@@ -148,22 +165,24 @@ and would break every consumer of the documented one.
 
 `SearchRequest` gains `before` and `after` as `Option<i64>`, both skipped when
 absent, and `PROTOCOL_VERSION` bumps. The test is the one recorded in that
-constant's own doc comment — builds that speak 6 without these fields exist and
-are installed right now, so 6 cannot also mean the version that has them. A new
-client against an older daemon must be told, not silently answered without
-context.
+constant's own doc comment — builds without these fields exist and are installed
+right now, so the version they speak cannot also mean the one that has them. A
+new client against an older daemon must be told, not silently answered without
+context, which here is the sharp case rather than the mild one: `before` and
+`after` are *request* fields, so a daemon that does not know them ignores them
+and answers with bare hits, and `-C 3` would quietly produce exactly what it was
+asked to change.
 
-**Do not assume the next number is 7.** The tapbacks plan bumps the
-version too, and both plans were written against 6. Whichever lands second takes
-the number after whatever the first one took; a plan that hard-codes 7 is wrong
-the moment the other merges first.
+**Shipped as 9.** This was written against 6 and warned against hard-coding 7,
+correctly: `filedAs` took 7 and the `contacts` lookup took 8 while this sat in
+`next`. The tapbacks plan bumps the version too and takes whatever follows.
 
 ## 6 Slices
 
 One slice. The window, the merging, the gutter and `--`, tapbacks in the window,
-the two JSON fields, and protocol 7 all ship together — the daemon is where
-search actually runs on a real machine, so a version that skips the protocol
-half would only work through `--db` against a fixture.
+the two JSON fields, and the protocol bump all ship together — the daemon is
+where search actually runs on a real machine, so a version that skips the
+protocol half would only work through `--db` against a fixture.
 
 ## 7 What this is not
 

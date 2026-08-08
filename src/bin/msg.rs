@@ -97,6 +97,15 @@ enum Command {
         /// only messages after a duration like 30d or a date
         #[arg(long)]
         since: Option<String>,
+        /// show this many messages after each hit
+        #[arg(short = 'A', long, default_value_t = 0, value_parser = counted)]
+        after: i64,
+        /// show this many messages before each hit
+        #[arg(short = 'B', long, default_value_t = 0, value_parser = counted)]
+        before: i64,
+        /// show this many on both sides of each hit
+        #[arg(short = 'C', long, default_value_t = 0, value_parser = counted)]
+        context: i64,
         #[arg(long)]
         json: bool,
     },
@@ -187,6 +196,14 @@ fn positive(value: &str) -> Result<i64, String> {
     match value.parse::<i64>() {
         Ok(count) if count > 0 => Ok(count),
         _ => Err(format!("expected a positive integer, got {value}")),
+    }
+}
+
+/// A count of messages, which may be zero but not negative.
+fn counted(value: &str) -> Result<i64, String> {
+    match value.parse::<i64>() {
+        Ok(count) if count >= 0 => Ok(count),
+        _ => Err(format!("expected a count of zero or more, got {value}")),
     }
 }
 
@@ -290,8 +307,16 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
             with,
             from,
             since,
+            after,
+            before,
+            context,
             json,
         } => {
+            // `-C` is shorthand for both, and loses to either given outright.
+            let around = msg::db::Context {
+                before: if *before > 0 { *before } else { *context },
+                after: if *after > 0 { *after } else { *context },
+            };
             let messages = source.search(&SearchQuery {
                 query: query.clone(),
                 chat: chat.clone(),
@@ -301,6 +326,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                 since: since.clone(),
                 unknown: cli.unknown,
                 names: cli.names(),
+                context: around,
             })?;
             print(&if *json {
                 to_json(&messages)

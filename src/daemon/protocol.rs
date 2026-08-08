@@ -83,7 +83,12 @@ use crate::db::{Chat, Message};
 /// which is exactly the symptom this change exists to remove, with nothing
 /// pointing at the daemon as the reason. Being told to reinstall is the whole
 /// value of the number.
-pub const PROTOCOL_VERSION: u32 = 8;
+///
+/// 9 added `before` and `after` to `search`, and `matched` and `group` to the
+/// messages it answers with. A new *request* field, which is the sharper case:
+/// a daemon that does not know them ignores them and answers with bare hits, so
+/// `-C 3` would silently produce exactly what the flag was asked to change.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";
@@ -137,6 +142,11 @@ pub struct ReadRequest {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SearchRequest {
     pub query: String,
+    /// Messages to show before and after each hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat: Option<String>,
     /// One person, across every conversation: their messages and mine.
