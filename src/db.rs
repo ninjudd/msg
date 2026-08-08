@@ -787,9 +787,10 @@ fn to_message(row: &Row<'_>, contacts: &ContactIndex) -> Message {
 pub struct Person {
     /// What to call them: the contact name when there is one, else the address.
     pub name: String,
-    /// The nickname behind that name, when Contacts holds one. Never shown; it
-    /// is here so that naming it exactly settles a tie the way a name does.
-    pub nickname: Option<String>,
+    /// The name their Contacts record is filed under, when a nickname is being
+    /// shown instead of it. Never displayed; it is here so that naming it
+    /// exactly settles a tie the way the shown name does.
+    pub filed_as: Option<String>,
     /// `handle.rowid` for every address that resolves to this person.
     pub handle_ids: Vec<i64>,
     /// The addresses themselves, for saying who was matched.
@@ -1203,11 +1204,12 @@ pub fn fetch_chats(
             || matches(chat.display_name.as_ref())
             || matches(chat.handles.as_ref())
             || matches(Some(&chat.identifier))
-            // A nickname is shown nowhere, so it is searched separately — but
-            // only where the name it stands in for is searched too. A
-            // conversation with a display name of its own is found by that name
-            // and not by its members', and a nickname that reached inside one
-            // would make itself easier to find someone by than their own name.
+            // A displaced filed name is shown nowhere, so it is searched
+            // separately — but only where the name shown in its place is
+            // searched too. A conversation with a display name of its own is
+            // found by that name and not by its members', and reaching inside
+            // one here would make a formal name easier to find someone by than
+            // the name they actually go under.
             || (chat.display_name.is_none()
                 && contacts.any_answers_to(chat.handles.as_deref(), &needle))
     });
@@ -1389,9 +1391,9 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
             name: contact
                 .as_ref()
                 .map_or_else(|| handle.clone(), |contact| contact.name.clone()),
-            nickname: contact
+            filed_as: contact
                 .as_ref()
-                .and_then(|contact| contact.nickname.clone()),
+                .and_then(|contact| contact.filed_as.clone()),
             handle_ids: Vec::new(),
             handles: Vec::new(),
         });
@@ -1408,17 +1410,17 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
 
     // An exact name breaks a tie, the same way it does for a chat — unless two
     // records answer to it, which is the case this cannot silently pick from.
-    // A nickname counts as one of those names: typing someone's whole nickname
-    // is as definite as typing their whole name, and it is the shape a nickname
-    // is usually typed in.
+    // Either of someone's two names counts: whichever is shown, and the filed
+    // name a nickname displaced. Typing the whole of one is as definite as
+    // typing the whole of the other.
     let exact: Vec<Person> = people
         .values()
         .filter(|person| {
             person.name.to_lowercase() == lowered
                 || person
-                    .nickname
+                    .filed_as
                     .as_ref()
-                    .is_some_and(|nickname| nickname.to_lowercase() == lowered)
+                    .is_some_and(|filed| filed.to_lowercase() == lowered)
         })
         .cloned()
         .collect();
@@ -1940,28 +1942,38 @@ mod tests {
         n
     }
 
-    /// A nickname is shown nowhere, so typing it is the only use it has.
+    /// A conversation reads as what you call the person, and answers to both
+    /// names. The filed name is displaced, not discarded.
     #[test]
-    fn a_conversation_is_found_by_the_nickname_behind_the_name() {
+    fn a_conversation_is_shown_as_the_nickname_and_found_by_either_name() {
         let db = fixture();
         let rowid = one_to_one(&db, 4, "+16175550147");
         let contacts = ContactIndex::for_test([("+16175550147", "source:7", "Robin Adeyemi")])
             .nicknamed("+16175550147", "Rocket");
 
-        let chats = fetch_chats(&db, Some("rocket"), 30, &contacts, false).unwrap();
-        let names: Vec<&str> = chats.iter().map(|chat| chat.name.as_str()).collect();
-        // Found by the nickname, and still shown as the name.
-        assert_eq!(names, ["Robin Adeyemi"]);
+        // Either name finds it, and it reads as the nickname whichever was
+        // typed — the display does not follow the query.
+        for spec in ["rocket", "adeyemi"] {
+            let chats = fetch_chats(&db, Some(spec), 30, &contacts, false).unwrap();
+            let names: Vec<&str> = chats.iter().map(|chat| chat.name.as_str()).collect();
+            assert_eq!(names, ["Rocket"], "searching {spec}");
+        }
 
         // Which is what reading and sending resolve through, so both take it.
-        let chat = resolve_chat(&db, "Rocket", &contacts).unwrap();
-        assert_eq!((chat.rowid, chat.name.as_str()), (rowid, "Robin Adeyemi"));
+        for spec in ["Rocket", "Robin Adeyemi"] {
+            let chat = resolve_chat(&db, spec, &contacts).unwrap();
+            assert_eq!(
+                (chat.rowid, chat.name.as_str()),
+                (rowid, "Rocket"),
+                "{spec}"
+            );
+        }
     }
 
-    /// A person is found by their nickname too, so `--with` and `--from` take
-    /// one — and gather every address, since what resolved is the contact.
+    /// The same for a person, so `--with` and `--from` take either name — and
+    /// gather every address, since what resolved is the contact.
     #[test]
-    fn a_person_is_found_by_the_nickname_behind_the_name() {
+    fn a_person_is_shown_as_the_nickname_and_found_by_either_name() {
         let db = fixture();
         let contacts = ContactIndex::for_test([
             ("+13105551234", "source:7", "Robin Adeyemi"),
@@ -1970,9 +1982,11 @@ mod tests {
         .nicknamed("+13105551234", "Rocket")
         .nicknamed("someone@example.com", "Rocket");
 
-        let person = resolve_person(&db, "rocket", &contacts).unwrap();
-        assert_eq!(person.name, "Robin Adeyemi", "{person:?}");
-        assert_eq!(person.handle_ids.len(), 2, "{person:?}");
+        for spec in ["rocket", "robin adeyemi"] {
+            let person = resolve_person(&db, spec, &contacts).unwrap();
+            assert_eq!(person.name, "Rocket", "resolving {spec}: {person:?}");
+            assert_eq!(person.handle_ids.len(), 2, "resolving {spec}: {person:?}");
+        }
     }
 
     /// A nickname is short, so it is a fragment of plenty else. Typing the whole

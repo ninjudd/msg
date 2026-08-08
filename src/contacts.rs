@@ -24,19 +24,24 @@ pub struct Contact {
     /// one run: these are Core Data primary keys, stable within a database but
     /// not across accounts, hence the source in front.
     pub id: String,
-    pub name: String,
-    /// The nickname Contacts holds, when it is not already the name above.
+    /// What to call them: the nickname when Contacts holds one, else the name
+    /// the record is filed under.
     ///
-    /// Someone filed as their full name and known to everyone as something else
-    /// is still shown as their full name — that is the name Messages and
-    /// Contacts agree on — but the nickname is what you would type to find them,
-    /// so it is kept beside the name rather than thrown away.
-    pub nickname: Option<String>,
+    /// The nickname wins because it is what you call the person. Someone filed
+    /// as their full name and known to everyone as something else should read
+    /// as the something else, in a transcript as much as in conversation —
+    /// Contacts was told the nickname for exactly that reason.
+    pub name: String,
+    /// The name on the record, when a nickname is being shown instead of it.
+    ///
+    /// Kept so that the formal name still finds them. Both names reach the
+    /// person; only one of them is shown.
+    pub filed_as: Option<String>,
 }
 
 impl Contact {
     /// Whether this contact answers to `needle`: part of the name they are shown
-    /// as, or part of the nickname they are not.
+    /// as, or part of the one they are filed under.
     ///
     /// `needle` must already be lowercased, since one query is matched against
     /// every contact rather than the other way round.
@@ -52,7 +57,7 @@ impl Contact {
 
     /// Every name this contact can be found by, lowercased for comparison.
     fn names(&self) -> impl Iterator<Item = String> {
-        [Some(&self.name), self.nickname.as_ref()]
+        [Some(&self.name), self.filed_as.as_ref()]
             .into_iter()
             .flatten()
             .map(|name| name.to_lowercase())
@@ -91,7 +96,7 @@ impl ContactIndex {
                     let contact = Contact {
                         id: id.to_string(),
                         name: name.to_string(),
-                        nickname: None,
+                        filed_as: None,
                     };
                     Some((handle_key(handle)?, contact))
                 })
@@ -100,14 +105,18 @@ impl ContactIndex {
         }
     }
 
-    /// Give a handle's contact a nickname, for the tests about being found by
-    /// one. Separate from [`Self::for_test`] so the many tests that do not care
+    /// Give a handle's contact a nickname, which takes over as what they are
+    /// shown as and pushes the name they had into `filed_as` — the same swap
+    /// the loader performs, so a test cannot accidentally describe a contact
+    /// the loader would never build.
+    ///
+    /// Separate from [`Self::for_test`] so the many tests that do not care
     /// about nicknames do not have to say so.
     #[cfg(test)]
     pub fn nicknamed(mut self, handle: &str, nickname: &str) -> Self {
         let key = handle_key(handle).expect("a handle to nickname");
         let contact = self.contacts.get_mut(&key).expect("a contact to nickname");
-        contact.nickname = Some(nickname.to_string());
+        contact.filed_as = Some(std::mem::replace(&mut contact.name, nickname.to_string()));
         self
     }
 
@@ -127,8 +136,9 @@ impl ContactIndex {
     /// chat queries build — belongs to someone who answers to `needle`.
     ///
     /// The names these handles render as are already searched, because they are
-    /// what the conversation is shown as. This is what reaches the nickname
-    /// behind them, which is shown nowhere and so can only be found on purpose.
+    /// what the conversation is shown as. This is what reaches the other name —
+    /// the one a nickname is displayed instead of, which appears nowhere and so
+    /// can only be found on purpose.
     pub fn any_answers_to(&self, handles: Option<&str>, needle: &str) -> bool {
         self.any(handles, &|contact| contact.answers_to(needle))
     }
@@ -360,7 +370,7 @@ fn collect(
         let Ok(record) = row.get::<_, i64>("record") else {
             continue;
         };
-        let Some((name, nickname)) = person_names(row) else {
+        let Some((name, filed_as)) = person_names(row) else {
             continue;
         };
         // Sources are visited primary first, so the first name for a handle is
@@ -368,7 +378,7 @@ fn collect(
         contacts.entry(key).or_insert(Contact {
             id: format!("{source}:{record}"),
             name,
-            nickname,
+            filed_as,
         });
     }
     Ok(())
@@ -376,12 +386,14 @@ fn collect(
 
 /// What to call a record, and what else it answers to.
 ///
-/// A nickname is a display name only when there is no real one, which is the
-/// rule Contacts itself follows: someone filed under a nickname alone is shown
-/// as it, and someone filed under their full name is shown as that however they
-/// are actually addressed. Either way it stays searchable, which is the second
-/// half of the pair — the half that is otherwise unreachable, since a nickname
-/// that is not the display name appears nowhere at all.
+/// A nickname wins the display, because it is what the person is actually
+/// called and recording it in Contacts is how you say so. The filed name comes
+/// back as the second half of the pair so that it still finds them: both names
+/// reach the person, and only the nickname is shown.
+///
+/// When there is no nickname the filed name is shown and there is no second
+/// name at all, which is also the shape for a record that is only an
+/// organization.
 fn person_names(row: &rusqlite::Row<'_>) -> Option<(String, Option<String>)> {
     let text = |column: &str| -> Option<String> {
         row.get::<_, Option<String>>(column)
@@ -390,16 +402,18 @@ fn person_names(row: &rusqlite::Row<'_>) -> Option<(String, Option<String>)> {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
     };
-    let nickname = text("ZNICKNAME");
     let first = text("ZFIRSTNAME");
     let last = text("ZLASTNAME");
-    if first.is_some() || last.is_some() {
+    let filed = if first.is_some() || last.is_some() {
         let parts: Vec<String> = [first, last].into_iter().flatten().collect();
-        return Some((parts.join(" "), nickname));
+        Some(parts.join(" "))
+    } else {
+        text("ZORGANIZATION")
+    };
+    match text("ZNICKNAME") {
+        Some(nickname) => Some((nickname, filed)),
+        None => Some((filed?, None)),
     }
-    // With no real name the nickname is what is shown, so there is nothing left
-    // for it to also be found by.
-    Some((nickname.or_else(|| text("ZORGANIZATION"))?, None))
 }
 
 /// Replace handles with names where they are known, keeping order.
@@ -480,7 +494,7 @@ mod tests {
     /// The name/nickname split, read through the SQL that ships, so the column
     /// names being right is part of what passes.
     #[test]
-    fn keeps_a_nickname_beside_a_real_name_and_shows_one_that_stands_alone() {
+    fn shows_the_nickname_and_keeps_the_filed_name_to_be_found_by() {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch(
             "CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT,
@@ -501,18 +515,20 @@ mod tests {
             problems: Vec::new(),
         };
 
-        // A real name is what shows; the nickname is kept to be found by.
+        // The nickname is what shows; the filed name is kept to be found by.
         let named = index.contact(Some("+13105551234")).unwrap();
-        assert_eq!(named.name, "Robin Adeyemi");
-        assert_eq!(named.nickname.as_deref(), Some("Rocket"));
+        assert_eq!(named.name, "Rocket");
+        assert_eq!(named.filed_as.as_deref(), Some("Robin Adeyemi"));
 
-        // Without one, the nickname is the name, and nothing is left over.
+        // With no filed name there is only the nickname, and nothing left over.
         let unnamed = index.contact(Some("+14155559876")).unwrap();
         assert_eq!(unnamed.name, "Rocket");
-        assert_eq!(unnamed.nickname, None);
+        assert_eq!(unnamed.filed_as, None);
 
-        // Either way, both are found by it.
+        // Either way both are found by the nickname, and the one with a filed
+        // name is still found by that too — displacing it must not hide it.
         assert!(named.answers_to("rocket") && unnamed.answers_to("rocket"));
+        assert!(named.answers_to("adeyemi"));
     }
 
     #[test]
