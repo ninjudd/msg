@@ -787,6 +787,9 @@ fn to_message(row: &Row<'_>, contacts: &ContactIndex) -> Message {
 pub struct Person {
     /// What to call them: the contact name when there is one, else the address.
     pub name: String,
+    /// The nickname behind that name, when Contacts holds one. Never shown; it
+    /// is here so that naming it exactly settles a tie the way a name does.
+    pub nickname: Option<String>,
     /// `handle.rowid` for every address that resolves to this person.
     pub handle_ids: Vec<i64>,
     /// The addresses themselves, for saying who was matched.
@@ -1200,6 +1203,13 @@ pub fn fetch_chats(
             || matches(chat.display_name.as_ref())
             || matches(chat.handles.as_ref())
             || matches(Some(&chat.identifier))
+            // A nickname is shown nowhere, so it is searched separately — but
+            // only where the name it stands in for is searched too. A
+            // conversation with a display name of its own is found by that name
+            // and not by its members', and a nickname that reached inside one
+            // would make itself easier to find someone by than their own name.
+            || (chat.display_name.is_none()
+                && contacts.any_answers_to(chat.handles.as_deref(), &needle))
     });
     chats.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
     Ok(chats)
@@ -1277,7 +1287,7 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
         _ => false,
     };
     let loosely = |handle: &str, contact: Option<&Contact>| {
-        contact.is_some_and(|contact| contact.name.to_lowercase().contains(&lowered))
+        contact.is_some_and(|contact| contact.answers_to(&lowered))
             || handle.to_lowercase().contains(&lowered)
     };
 
@@ -1320,6 +1330,9 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
             name: contact
                 .as_ref()
                 .map_or_else(|| handle.clone(), |contact| contact.name.clone()),
+            nickname: contact
+                .as_ref()
+                .and_then(|contact| contact.nickname.clone()),
             handle_ids: Vec::new(),
             handles: Vec::new(),
         });
@@ -1336,9 +1349,18 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
 
     // An exact name breaks a tie, the same way it does for a chat — unless two
     // records answer to it, which is the case this cannot silently pick from.
+    // A nickname counts as one of those names: typing someone's whole nickname
+    // is as definite as typing their whole name, and it is the shape a nickname
+    // is usually typed in.
     let exact: Vec<Person> = people
         .values()
-        .filter(|person| person.name.to_lowercase() == lowered)
+        .filter(|person| {
+            person.name.to_lowercase() == lowered
+                || person
+                    .nickname
+                    .as_ref()
+                    .is_some_and(|nickname| nickname.to_lowercase() == lowered)
+        })
         .cloned()
         .collect();
     if exact.len() == 1 {
@@ -1397,7 +1419,11 @@ pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Res
     let lowered = spec.to_lowercase();
     let mut exact: Vec<Chat> = matches
         .iter()
-        .filter(|chat| chat.name.to_lowercase() == lowered)
+        .filter(|chat| {
+            chat.name.to_lowercase() == lowered
+                || (chat.display_name.is_none()
+                    && contacts.any_named(chat.handles.as_deref(), &lowered))
+        })
         .cloned()
         .collect();
     if exact.len() == 1 {
@@ -1765,6 +1791,102 @@ mod tests {
                 ["are you around later", "deploy is green"],
                 "resolving {spec}"
             );
+        }
+    }
+
+    /// A one-to-one conversation with somebody new, numbered `n` in both tables.
+    ///
+    /// The fixture's first handle is spread across three conversations, so
+    /// resolving anyone by it is ambiguous however they were named — which is
+    /// the fixture's doing and would hide what these tests are about.
+    fn one_to_one(db: &Connection, n: i64, address: &str) -> i64 {
+        db.execute(
+            "INSERT INTO handle (rowid, id) VALUES (?, ?)",
+            rusqlite::params![n, address],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat (rowid, guid, chat_identifier, display_name, is_filtered)
+             VALUES (?, ?, ?, '', 0)",
+            rusqlite::params![n, format!("iMessage;-;{address}"), address],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)",
+            rusqlite::params![n, n],
+        )
+        .unwrap();
+        n
+    }
+
+    /// A nickname is shown nowhere, so typing it is the only use it has.
+    #[test]
+    fn a_conversation_is_found_by_the_nickname_behind_the_name() {
+        let db = fixture();
+        let rowid = one_to_one(&db, 4, "+16175550147");
+        let contacts = ContactIndex::for_test([("+16175550147", "source:7", "Robin Adeyemi")])
+            .nicknamed("+16175550147", "Rocket");
+
+        let chats = fetch_chats(&db, Some("rocket"), 30, &contacts, false).unwrap();
+        let names: Vec<&str> = chats.iter().map(|chat| chat.name.as_str()).collect();
+        // Found by the nickname, and still shown as the name.
+        assert_eq!(names, ["Robin Adeyemi"]);
+
+        // Which is what reading and sending resolve through, so both take it.
+        let chat = resolve_chat(&db, "Rocket", &contacts).unwrap();
+        assert_eq!((chat.rowid, chat.name.as_str()), (rowid, "Robin Adeyemi"));
+    }
+
+    /// A person is found by their nickname too, so `--with` and `--from` take
+    /// one — and gather every address, since what resolved is the contact.
+    #[test]
+    fn a_person_is_found_by_the_nickname_behind_the_name() {
+        let db = fixture();
+        let contacts = ContactIndex::for_test([
+            ("+13105551234", "source:7", "Robin Adeyemi"),
+            ("someone@example.com", "source:7", "Robin Adeyemi"),
+        ])
+        .nicknamed("+13105551234", "Rocket")
+        .nicknamed("someone@example.com", "Rocket");
+
+        let person = resolve_person(&db, "rocket", &contacts).unwrap();
+        assert_eq!(person.name, "Robin Adeyemi", "{person:?}");
+        assert_eq!(person.handle_ids.len(), 2, "{person:?}");
+    }
+
+    /// A nickname is short, so it is a fragment of plenty else. Typing the whole
+    /// of one is as definite as typing a whole name, and settles the tie.
+    #[test]
+    fn an_exact_nickname_settles_the_tie_a_fragment_creates() {
+        let db = fixture();
+        let rowid = one_to_one(&db, 4, "+16175550147");
+        one_to_one(&db, 5, "rocketry@example.com");
+        let contacts = ContactIndex::for_test([("+16175550147", "source:7", "Robin Adeyemi")])
+            .nicknamed("+16175550147", "Rocket");
+
+        // Both match the fragment: one by nickname, one by address.
+        let matched = fetch_chats(&db, Some("rocket"), 30, &contacts, false).unwrap();
+        assert_eq!(matched.len(), 2, "{matched:?}");
+
+        let chat = resolve_chat(&db, "rocket", &contacts).unwrap();
+        assert_eq!(chat.rowid, rowid, "{chat:?}");
+        let person = resolve_person(&db, "rocket", &contacts).unwrap();
+        assert_eq!(person.handles, ["+16175550147"], "{person:?}");
+    }
+
+    /// A conversation with a name of its own is found by that name rather than
+    /// by who is in it. A nickname must not be a way around that, or it would be
+    /// easier to find someone by the name they are never shown as.
+    #[test]
+    fn a_named_group_is_no_more_findable_by_a_nickname_than_by_a_name() {
+        let db = fixture();
+        // Handle 2 is only in the Ship Room, which carries a display name.
+        let contacts = ContactIndex::for_test([("someone@example.com", "source:7", "Kit Alvarez")])
+            .nicknamed("someone@example.com", "Sparrow");
+
+        for spec in ["sparrow", "Kit Alvarez"] {
+            let chats = fetch_chats(&db, Some(spec), 30, &contacts, false).unwrap();
+            assert!(chats.is_empty(), "searching {spec}: {chats:?}");
         }
     }
 

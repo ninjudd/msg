@@ -90,6 +90,9 @@ A chat can be named by its rowid, by a handle, or by any substring of its name.
 When a substring matches more than one conversation, `msg` lists the candidates
 instead of guessing.
 
+A [nickname](#contacts) counts as one of those names, so someone filed under
+their full name and known to you as something else is found by either.
+
 ### Reading
 
 ```sh
@@ -440,6 +443,20 @@ ten distinct formats for the same kind of number, including `+13105551234`,
 sides of a comparison are stripped to digits, and numbers long enough to carry a
 country code are matched on their last ten digits. Short codes are matched
 whole, and email handles are matched case-insensitively.
+
+**A nickname is a name you can type, not a name you see.** Someone filed as
+Robert Chen with a nickname of Bob is still shown as Robert Chen — that is the
+name Messages and Contacts agree on — but `msg chats bob`, `msg read bob`, and
+`msg search "dinner" --from bob` all find him. A nickname is only shown when
+there is no real name behind it, which is the rule Contacts itself follows.
+
+Nicknames are matched exactly where names are, and nowhere else. A conversation
+with a name of its own is found by that name rather than by who is in it, so a
+group called Ship Room is not reachable through a member's nickname — the same
+way it is not reachable through their name. And because a nickname is short
+enough to be a fragment of plenty else, typing a whole one settles the
+ambiguity it creates: `bob` prefers the person whose nickname is exactly Bob
+over everyone merely containing those letters.
 
 **Accounts disagree.** The same number can carry a different name in each
 account, so the order they are merged in decides the winner. `msg` reads
