@@ -3,10 +3,10 @@
 Wanted, nobody has committed to it. One line each, same rules as [now](now.md).
 See [README](README.md) for how these lists work.
 
-- [Stop `msg search` reading every message](all/query-performance.md) — searching
-  backwards in windows ([next](next.md)) makes it stop early, but a query that
-  matches nothing still reads every blob, because `attributedBody` cannot be
-  indexed.
+- [Index message bodies ourselves](all/search-index.md) — nothing else indexes
+  them: Spotlight does not, `chat.db` does not, and BlueBubbles injects a dylib
+  into Messages.app to avoid the problem. A partial index still helps, because a
+  search can be bounded by date.
 - [What the signing identity costs, and what to fix before this is public](all/signing-identity.md)
   — the key that keeps the grant across rebuilds is also a way to re-grant
   silently.

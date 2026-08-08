@@ -82,8 +82,77 @@ fn reads_as_permission(text: &str) -> bool {
     lower.contains("authorization denied") || lower.contains("permission")
 }
 
+/// Does `needle` occur in `haystack`, ignoring ASCII case?
+///
+/// Byte-wise on purpose. The haystack is usually a typedstream blob rather than
+/// a string, and the point is to look at all of it.
+fn contains_ignoring_case(haystack: &[u8], needle: &[u8]) -> bool {
+    let Some((first, rest)) = needle.split_first() else {
+        return true;
+    };
+    let lower = first.to_ascii_lowercase();
+    let upper = first.to_ascii_uppercase();
+    haystack.windows(needle.len()).any(|window| {
+        (window[0] == lower || window[0] == upper)
+            && window[1..]
+                .iter()
+                .zip(rest)
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    })
+}
+
+/// `msg_body_has(text, attributedBody, needle)` — is the needle in this
+/// message's body?
+///
+/// This exists because `CAST(attributedBody AS TEXT) LIKE ?` does not work, and
+/// did not work in the TypeScript build either. SQLite hands a cast blob to
+/// `LIKE` as a NUL-terminated string, and a typedstream blob is full of NULs
+/// well before the text: measured, an 88-byte blob casts to 41 bytes. So the
+/// match only ever saw the archive header, and the 97.6% of messages whose body
+/// lives in `attributedBody` were unsearchable. Only the 2.4% that also fill
+/// `message.text` ever matched, which is why searching for a common word
+/// returned something and made the bug look like sparse results rather than a
+/// broken predicate.
+///
+/// Scanning the raw blob is sound rather than approximate. `decode_attributed_body`
+/// takes a slice of these same bytes and reads it as UTF-8, so any needle that
+/// survives into the decoded body is present in the blob — this is a superset of
+/// what the decoded filter accepts, which is exactly what a prefilter must be.
+/// It over-matches when the needle also appears in an archived class name, and
+/// the decode-and-check afterwards is what narrows that.
+fn register_body_match(db: &Connection) -> rusqlite::Result<()> {
+    use rusqlite::functions::FunctionFlags;
+
+    db.create_scalar_function(
+        "msg_body_has",
+        3,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            let needle = context.get::<String>(2)?;
+            if needle.is_empty() {
+                return Ok(true);
+            }
+            let needle = needle.as_bytes();
+            // `message.text` is set for a minority of messages, and when it is
+            // set it is the cheaper of the two to look at.
+            if let Ok(text) = context.get::<String>(0)
+                && contains_ignoring_case(text.as_bytes(), needle)
+            {
+                return Ok(true);
+            }
+            if let Ok(body) = context.get::<Vec<u8>>(1)
+                && contains_ignoring_case(&body, needle)
+            {
+                return Ok(true);
+            }
+            Ok(false)
+        },
+    )
+}
+
 fn try_open(location: &Path) -> rusqlite::Result<Connection> {
     let db = Connection::open_with_flags(location, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    register_body_match(&db)?;
     {
         // Stepping rather than `query_row`, which reports an empty table as an
         // error — that would send a perfectly readable but empty database down
@@ -174,10 +243,9 @@ fn open_snapshot(location: &Path) -> Result<Connection> {
             );
         }
     }
-    Ok(Connection::open_with_flags(
-        &copy,
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?)
+    let db = Connection::open_with_flags(&copy, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    register_body_match(&db)?;
+    Ok(db)
 }
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -424,11 +492,10 @@ pub fn fetch_messages(
         }
     }
     if let Some(query) = options.query {
-        // The body lives in attributedBody when text is NULL, so match the raw
-        // blob too and filter precisely once decoded.
-        clauses.push("(message.text LIKE ? OR CAST(message.attributedBody AS TEXT) LIKE ?)".into());
-        params.push(format!("%{query}%").into());
-        params.push(format!("%{query}%").into());
+        // Not `CAST(attributedBody AS TEXT) LIKE ?`, which silently matched
+        // nothing but the archive header — see `register_body_match`.
+        clauses.push("msg_body_has(message.text, message.attributedBody, ?)".into());
+        params.push(Value::Text(query.to_string()));
     }
 
     let where_clause = if clauses.is_empty() {
@@ -855,6 +922,7 @@ mod tests {
 
     pub(crate) fn fixture() -> Connection {
         let db = Connection::open_in_memory().unwrap();
+        register_body_match(&db).unwrap();
         db.execute_batch(SCHEMA).unwrap();
         db.execute_batch(
             "
@@ -1240,6 +1308,86 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("no one matching"), "{error}");
+    }
+
+    /// The bug that made search look broken: a body that exists only in
+    /// `attributedBody`, behind the NUL bytes of the archive header.
+    ///
+    /// `CAST(... AS TEXT)` hands `LIKE` a NUL-terminated string, so it never saw
+    /// past the header and this message was unfindable. The blob here is shaped
+    /// like a real one — header, class names, NULs, then the text.
+    #[test]
+    fn finds_a_body_that_lives_only_in_the_archived_blob() {
+        let db = fixture();
+        let mut blob: Vec<u8> = Vec::new();
+        blob.extend_from_slice(b"\x04\x0bstreamtyped\x81\xe8\x03\x84\x01\x40\x84\x84\x84");
+        blob.extend_from_slice(
+            b"NSAttributedString\x00\x84\x84\x08NSObject\x00\x85\x92\x84\x84\x84",
+        );
+        blob.extend_from_slice(b"NSString\x01\x94\x84\x01\x2b");
+        let text = b"pinball tonight";
+        blob.push(u8::try_from(text.len()).unwrap());
+        blob.extend_from_slice(text);
+
+        // A NUL well before the text is what defeated the old predicate.
+        assert!(blob.contains(&0), "the fixture blob must carry a NUL");
+        assert!(
+            blob.iter().position(|b| *b == 0).unwrap() < blob.len() - text.len(),
+            "the NUL must come before the text, or this proves nothing"
+        );
+
+        db.execute(
+            "INSERT INTO message (rowid, guid, text, attributedBody, is_from_me,
+                 handle_id, associated_message_type, date, service)
+             VALUES (7, 'm7', NULL, ?, 0, 1, 0, ?, 'iMessage')",
+            rusqlite::params![blob, at(6)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+             VALUES (1, 7, ?)",
+            rusqlite::params![at(6)],
+        )
+        .unwrap();
+
+        let found = fetch_messages(
+            &db,
+            &FetchMessages {
+                query: Some("pinball"),
+                ..Default::default()
+            },
+            &ContactIndex::empty(),
+        )
+        .unwrap();
+        assert_eq!(bodies(&found), ["pinball tonight"]);
+
+        // And case-insensitively, which is what `LIKE` gave for free and a
+        // byte-wise `instr` would have quietly taken away.
+        for needle in ["PINBALL", "PinBall", "TONIGHT"] {
+            let hit = fetch_messages(
+                &db,
+                &FetchMessages {
+                    query: Some(needle),
+                    ..Default::default()
+                },
+                &ContactIndex::empty(),
+            )
+            .unwrap();
+            assert_eq!(bodies(&hit), ["pinball tonight"], "searching {needle}");
+        }
+    }
+
+    #[test]
+    fn the_body_predicate_looks_past_a_nul() {
+        // Directly, so a failure points at the predicate rather than at SQL.
+        assert!(contains_ignoring_case(b"abc\x00def", b"def"));
+        assert!(contains_ignoring_case(b"abc\x00DEF", b"def"));
+        assert!(contains_ignoring_case(b"\x00\x00hello", b"HELLO"));
+        assert!(!contains_ignoring_case(b"abc\x00def", b"xyz"));
+        // An empty needle matches, matching what a `%%` LIKE did.
+        assert!(contains_ignoring_case(b"anything", b""));
+        // Not a match that runs off the end.
+        assert!(!contains_ignoring_case(b"ab", b"abc"));
     }
 
     #[test]
