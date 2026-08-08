@@ -3,10 +3,13 @@
 Wanted, nobody has committed to it. One line each, same rules as [now](now.md).
 See [README](README.md) for how these lists work.
 
-- [Stop `msg search` reading every message](all/query-performance.md) — searching
-  backwards in windows ([next](next.md)) makes it stop early, but a query that
-  matches nothing still reads every blob, because `attributedBody` cannot be
-  indexed.
+- [Search backwards through time and stream the results](all/query-performance.md)
+  — §9. Not urgent: search is around 2.5s unscoped and 236ms scoped to a person,
+  which was judged fast enough.
+- [Index message bodies ourselves](all/search-index.md) — would make search
+  instant, and is the only way to, since nothing else indexes message bodies.
+  Deliberately not being built: see §7 of that plan for what it would cost, which
+  is more than the current speed is hurting.
 - [What the signing identity costs, and what to fix before this is public](all/signing-identity.md)
   — the key that keeps the grant across rebuilds is also a way to re-grant
   silently.
