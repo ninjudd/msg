@@ -48,11 +48,21 @@ pub fn log_path() -> PathBuf {
 /// The TypeScript build resolved this from the source file's own URL, which only
 /// ever made sense inside a checkout. A shipped `msg` has no checkout, so the
 /// bundle travels next to it and `--from` names it explicitly otherwise.
+///
+/// The symlink is resolved first, and that is not a detail: the README tells
+/// people to install by symlinking `build/msg` onto their PATH, and
+/// `current_exe` on macOS reports the path used to launch rather than its
+/// target. Without this, `msg daemon install` looked next to the *symlink* —
+/// `~/.local/bin/msgd.app` — and reported a bundle that was never going to be
+/// there.
 pub fn built_bundle() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("msgd.app")))
-        .unwrap_or_else(|| PathBuf::from("msgd.app"))
+    let Ok(exe) = std::env::current_exe() else {
+        return PathBuf::from("msgd.app");
+    };
+    let resolved = std::fs::canonicalize(&exe).unwrap_or(exe);
+    resolved
+        .parent()
+        .map_or_else(|| PathBuf::from("msgd.app"), |dir| dir.join("msgd.app"))
 }
 
 fn domain() -> String {

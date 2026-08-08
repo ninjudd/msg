@@ -202,3 +202,40 @@ fn a_query_matching_nothing_says_so_rather_than_printing_nothing() {
     assert_eq!(code(&output), 0);
     assert_eq!(stdout(&output), "no messages found\n");
 }
+
+/// The README tells people to install by symlinking `build/msg` onto their PATH,
+/// and `current_exe` on macOS reports the symlink rather than its target. So
+/// `msg daemon install` has to look beside the *real* binary, not beside the
+/// link — which it did not, and which only showed up on a real install.
+#[test]
+fn install_finds_the_bundle_beside_the_real_binary_not_the_symlink() {
+    let real = PathBuf::from(env!("CARGO_BIN_EXE_msg"));
+    let beside = real.parent().unwrap().join("msgd.app");
+    if beside.exists() {
+        // Would install for real. Nothing in this suite may do that.
+        eprintln!("skipping: {} exists", beside.display());
+        return;
+    }
+
+    let directory = msg::db::temporary_directory("msg-link-").unwrap();
+    let link = directory.join("msg");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let output = Command::new(&link)
+        .args(["daemon", "install"])
+        .env("MSG_SOCKET", "/tmp/msg-tests-nothing-here.sock")
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&directory).ok();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(code(&output), 1, "{stderr}");
+    assert!(
+        stderr.contains(&beside.to_string_lossy().to_string()),
+        "looked in the wrong place: {stderr}"
+    );
+    assert!(
+        !stderr.contains(&directory.to_string_lossy().to_string()),
+        "resolved to the symlink's directory: {stderr}"
+    );
+}
