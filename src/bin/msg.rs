@@ -393,7 +393,10 @@ fn send(cli: &Cli, source: &mut Source, args: &SendArgs) -> msg::Result<()> {
     if args.dry_run {
         // Unconditional, so the disabled state stays inspectable (§7).
         let chat = source.resolve(&args.chat, cli.names())?;
-        print(&format!("would send to {}: {what}\n", chat.name));
+        print(&format!(
+            "would send to {}: {what}\n",
+            msg::db::describe_target(&chat)
+        ));
         return Ok(());
     }
 

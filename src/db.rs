@@ -1240,6 +1240,38 @@ pub fn person_filter(
     }
 }
 
+/// How to name a conversation when confirming a message sent to it.
+///
+/// The address goes in the line, for a one-to-one. `Chat::name` comes from
+/// Contacts, so somebody reachable two ways has two conversations that render
+/// as the same string, and the address is precisely what differs — which makes
+/// it precisely what a confirmation has to say. The two are not interchangeable
+/// in delivery: a number and an email are different routes, one may fall back
+/// to SMS, and resolution picks the most recently active rather than the one
+/// they actually read.
+///
+/// `--dry-run` is the reason this is not cosmetic. The repository requires one
+/// before any real send, and a check that prints the same line whichever
+/// address was chosen cannot catch the mistake it exists to catch.
+///
+/// A conversation with a name of its own is named by it. Its identifier is an
+/// opaque `chat42`, noise rather than a second fact, and a room's name is
+/// already unambiguous in the way a person's is not.
+///
+/// Keyed on having a display name rather than on `is_group`, because a room
+/// can have one participant — everybody else left, or never joined — and it is
+/// still a room rather than a conversation with a person.
+pub fn describe_target(chat: &Chat) -> String {
+    if chat.display_name.is_some()
+        || chat.is_group
+        || chat.identifier.is_empty()
+        || chat.identifier == chat.name
+    {
+        return chat.name.clone();
+    }
+    format!("{} ({})", chat.name, chat.identifier)
+}
+
 /// Who an address belongs to, as a key two addresses can share.
 ///
 /// The Contacts record where there is one, because a phone number and an email
@@ -3093,6 +3125,46 @@ mod tests {
         let db = fixture();
         let chat = resolve_chat(&db, "Ship Room", &ContactIndex::empty()).unwrap();
         assert_eq!(chat.guid, "iMessage;+;chat9");
+    }
+
+    /// A send confirmation has to name the address, because the name alone
+    /// cannot tell one person's two conversations apart — and telling them
+    /// apart is the entire job of the dry run this repository requires.
+    #[test]
+    fn a_send_target_is_named_by_its_address() {
+        let db = fixture();
+        let older = one_to_one(&db, 4, "+16175550147");
+        let newer = one_to_one(&db, 5, "robin@example.com");
+        message_in(&db, older, 10, 5);
+        message_in(&db, newer, 11, 90);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ]);
+
+        // The two render identically by name, which is the whole problem.
+        let picked = resolve_chat(&db, "adeyemi", &contacts).unwrap();
+        let other = resolve_chat(&db, "+16175550147", &contacts).unwrap();
+        assert_eq!(picked.name, other.name);
+        assert_ne!(
+            describe_target(&picked),
+            describe_target(&other),
+            "a confirmation that cannot separate these is not a confirmation"
+        );
+        assert_eq!(
+            describe_target(&picked),
+            "Robin Adeyemi (robin@example.com)"
+        );
+
+        // A room is named by its name; `chat9` would be noise, not a fact.
+        let group = resolve_chat(&db, "Ship Room", &contacts).unwrap();
+        assert_eq!(describe_target(&group), "Ship Room");
+
+        // And an unknown handle, which the name already is, is not said twice.
+        let bare = one_to_one(&db, 6, "+19995551212");
+        message_in(&db, bare, 12, 3);
+        let unknown = resolve_chat(&db, "+19995551212", &contacts).unwrap();
+        assert_eq!(describe_target(&unknown), "+19995551212");
     }
 
     #[test]

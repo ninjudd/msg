@@ -24,8 +24,8 @@ use crate::daemon::protocol::{
 };
 use crate::daemon::send::{check_automation, send_attachment, send_message};
 use crate::db::{
-    Chat, FetchMessages, Message, PersonFilter, database_path, fetch_chats, fetch_messages,
-    latest_rowid, open_database, person_filter, resolve_chat, unreadable,
+    Chat, FetchMessages, Message, PersonFilter, database_path, describe_target, fetch_chats,
+    fetch_messages, latest_rowid, open_database, person_filter, resolve_chat, unreadable,
 };
 use crate::{Error, Result, VERSION};
 
@@ -452,7 +452,9 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
             } else {
                 let contacts = shared.contacts(ask.names != Some(false));
                 let chat = shared.with_db(|db| resolve_chat(db, &ask.chat, &contacts))?;
-                (chat.guid, chat.name)
+                // Described with its address, so the confirmation names which
+                // of a person's conversations this went to.
+                (chat.guid.clone(), describe_target(&chat))
             };
 
             if let Some(file) = ask.file {

@@ -249,6 +249,22 @@ tccutil reset AppleEvents com.ninjudd.msgd
 `--dry-run` works whatever the gates say, so the disabled state stays
 inspectable.
 
+**A confirmation names the address, not just the person.**
+
+```
+$ msg send dana "on my way" --dry-run
+would send to Dana Reyes (dana@example.com): on my way
+```
+
+Somebody you reach at a phone number and an email address has two
+conversations that display the same name, and `msg` picks the one last active.
+The address is the only thing that distinguishes them, and the routes are not
+interchangeable — one of them may be an SMS fallback, and the most recent is not
+always the one that gets read. A dry run that printed only the name would be
+identical in both cases, which would make it useless as the check it is for.
+Conversations with a name of their own are named by it, since a room is not
+ambiguous the way a person is.
+
 The chat identifier and the message body are passed to AppleScript as arguments
 rather than interpolated into it, so quotes, backslashes, and newlines in a
 message need no escaping and cannot alter the script. `--file` is read by the
