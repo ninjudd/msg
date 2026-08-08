@@ -198,10 +198,15 @@ msg daemon install     # copy it into place and start it
 ```
 
 Then switch on `msgd` under System Settings > Privacy & Security > Full Disk
-Access, which the install opens for you. It appears in that list because the
-daemon has already tried to read and been refused — a denied access is what
-creates the entry, and there is no command that can add one. Give it a minute if
-it is not there yet.
+Access, which the install opens for you the first time. It appears in that list
+because the daemon has already tried to read and been refused — a denied access
+is what creates the entry, and there is no command that can add one. Give it a
+minute if it is not there yet.
+
+Reinstalling a daemon that is already granted opens nothing: the install asks it
+whether it can read before deciding there is anything left for you to do. The
+grant is keyed to the bundle identifier and the signing certificate rather than
+to the build, so it survives a rebuild.
 
 ```sh
 msg daemon status      # installed? running? granted? how many watchers?

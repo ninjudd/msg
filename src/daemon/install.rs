@@ -329,13 +329,40 @@ pub fn signature_of(target: &Path) -> String {
     describe_signature(&text)
 }
 
+/// What the freshly installed daemon said when asked whether it can read.
+///
+/// The grant is keyed to the bundle identifier and the signing certificate, not
+/// to the build, so a reinstall of an already-granted daemon needs nothing
+/// switched on (§9). Which is the common case while developing, and the reason
+/// this is worth asking rather than assuming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grant {
+    /// It read the database, so Full Disk Access is already held.
+    Held { message_count: i64 },
+    /// It answered, and was refused.
+    Missing,
+    /// It never answered, so nothing is known.
+    Unknown,
+}
+
+impl Grant {
+    /// Only a daemon known to be reading is left alone.
+    ///
+    /// `Unknown` opens the pane. The two mistakes are not symmetrical: opening
+    /// it needlessly is a window someone closes, while not opening it when the
+    /// grant is missing leaves a daemon that will never work and no sign of why.
+    pub fn needs_pane(self) -> bool {
+        !matches!(self, Grant::Held { .. })
+    }
+}
+
 fn open_pane(url: &str) {
     Command::new("open").arg(url).status().ok();
 }
 
 /// Put the pane in front of the user. There is no API for granting Full Disk
-/// Access — only `tccutil` for removing one — so the last step of an install is
-/// always a human at System Settings (§9).
+/// Access — only `tccutil` for removing one — so the last step of a *first*
+/// install is always a human at System Settings (§9).
 pub fn open_full_disk_access() {
     open_pane("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
 }
@@ -382,6 +409,17 @@ mod tests {
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| (*value).to_string())
         })
+    }
+
+    /// Reinstalling over a working daemon is the common case while developing,
+    /// and it used to open System Settings every time.
+    #[test]
+    fn only_a_daemon_that_cannot_read_gets_the_pane_opened() {
+        assert!(!Grant::Held { message_count: 1 }.needs_pane());
+        assert!(!Grant::Held { message_count: 0 }.needs_pane());
+        assert!(Grant::Missing.needs_pane());
+        // Not knowing is not the same as knowing it is fine.
+        assert!(Grant::Unknown.needs_pane());
     }
 
     #[test]

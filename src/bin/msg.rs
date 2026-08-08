@@ -10,7 +10,7 @@ use base64::Engine;
 use clap::{Args, Parser, Subcommand};
 
 use msg::daemon::install::{
-    built_bundle, bundle_path, install, is_loaded, log_path, open_automation,
+    Grant, built_bundle, bundle_path, install, is_loaded, log_path, open_automation,
     open_full_disk_access, plist_path, signature_of, uninstall,
 };
 use msg::daemon::protocol::{Attachment, socket_path};
@@ -390,13 +390,26 @@ fn daemon(cli: &Cli, command: &DaemonCommand) -> msg::Result<()> {
             for (name, value) in &installed.environment {
                 print(&format!("carried {name}={value}\n"));
             }
-            print(
-                "\nOne step left, and it cannot be automated: switch on msgd under\n\
-                 Privacy & Security > Full Disk Access, which is now open.\n\n\
-                 It is listed there because it has already tried to read and been refused —\n\
-                 a denied access is what creates the entry — so give it a minute if it is\n\
-                 not there yet, then run `msg daemon status`.\n",
-            );
+            let grant = grant_after_install();
+            match grant {
+                Grant::Held { message_count } => print(&format!(
+                    "\nNothing left to do: msgd is already reading the database, {message_count} messages in.\n\
+                     Its Full Disk Access grant is keyed to the bundle identifier and the\n\
+                     certificate, not to this build, so it survived the reinstall.\n"
+                )),
+                Grant::Missing => print(
+                    "\nOne step left, and it cannot be automated: switch on msgd under\n\
+                     Privacy & Security > Full Disk Access, which is now open.\n\n\
+                     It is listed there because it has already tried to read and been refused —\n\
+                     a denied access is what creates the entry — so give it a minute if it is\n\
+                     not there yet, then run `msg daemon status`.\n",
+                ),
+                Grant::Unknown => print(
+                    "\nmsgd did not answer, so whether it can read is unknown. Opening Privacy &\n\
+                     Security > Full Disk Access in case the grant is what it is waiting for;\n\
+                     `msg daemon status` will say once it is up.\n",
+                ),
+            }
             if installed.replaced_legacy {
                 print(
                     "\nThis replaced an unbundled daemon, whose own entries are still listed and\n\
@@ -412,7 +425,9 @@ fn daemon(cli: &Cli, command: &DaemonCommand) -> msg::Result<()> {
                      to sign with a stable certificate instead.\n",
                 );
             }
-            open_full_disk_access();
+            if grant.needs_pane() {
+                open_full_disk_access();
+            }
         }
 
         DaemonCommand::Uninstall => {
@@ -479,6 +494,32 @@ fn daemon(cli: &Cli, command: &DaemonCommand) -> msg::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Ask the just-installed daemon whether it can read, so the install knows
+/// whether anything is left for a human to do.
+///
+/// It has to poll: `install` returns as soon as `launchctl bootstrap` succeeds,
+/// which is before the daemon has created its socket. Both answers arrive
+/// quickly, because a daemon refused Full Disk Access still starts and still
+/// listens — it just says so. Only a daemon that never comes up waits out the
+/// timeout, and that is already a failed install.
+fn grant_after_install() -> Grant {
+    for _ in 0..30 {
+        match daemon_status() {
+            Ok(Some(status)) => {
+                return Grant::Held {
+                    message_count: status.message_count,
+                };
+            }
+            Err(Error::AccessDenied(_)) => return Grant::Missing,
+            // Not listening yet. Anything else — a protocol mismatch, a broken
+            // socket — is not evidence either way, so stop asking.
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(_) => return Grant::Unknown,
+        }
+    }
+    Grant::Unknown
 }
 
 fn status(json: bool) -> msg::Result<()> {
