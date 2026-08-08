@@ -854,6 +854,16 @@ pub fn with_context(
     context: Context,
     contacts: &ContactIndex,
 ) -> Result<Vec<Message>> {
+    // A width is a count of messages, and a negative count is not a smaller
+    // window but a larger one: it reaches SQLite as `LIMIT -1`, which means no
+    // limit, so the whole conversation before each hit would be fetched and
+    // decoded. The CLI cannot produce one, but the daemon takes these off a
+    // socket, and clamping here covers every caller rather than the one path
+    // that happens to be untrusted today.
+    let context = Context {
+        before: context.before.max(0),
+        after: context.after.max(0),
+    };
     if !context.wanted() || hits.is_empty() {
         return Ok(hits);
     }
@@ -2116,6 +2126,30 @@ mod tests {
             .map(|message| message.rowid)
             .collect();
         assert_eq!(hits, [106, 109]);
+    }
+
+    /// A negative width asks for nothing, not for everything.
+    ///
+    /// The CLI cannot send one — `counted` refuses it — but the daemon takes
+    /// these off a socket from a client that need not hold Full Disk Access,
+    /// which makes them the one input here not already checked by the binary
+    /// that produced it. Unclamped, `limit: -1` reaches SQLite as `LIMIT -1`,
+    /// which means no limit at all, and the whole conversation is fetched and
+    /// decoded once per hit.
+    #[test]
+    fn a_negative_width_is_no_window_rather_than_the_whole_chat() {
+        let db = fixture();
+        talkative(&db);
+
+        let out = found(
+            &db,
+            Context {
+                before: -1,
+                after: 1,
+            },
+        );
+        let rowids: Vec<i64> = out.iter().map(|message| message.rowid).collect();
+        assert_eq!(rowids, [106, 107], "{rowids:?}");
     }
 
     /// A hit inside another hit's window is still a hit.
