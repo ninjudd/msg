@@ -5,6 +5,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use clap::{Args, Parser, Subcommand};
@@ -17,7 +18,8 @@ use msg::daemon::protocol::{Attachment, socket_path};
 use msg::daemon::server::{Daemon, DaemonOptions};
 use msg::format::{render_chats, render_messages, to_json};
 use msg::source::{
-    ChatsQuery, ReadQuery, SearchQuery, SendQuery, Source, WatchQuery, daemon_status, open_source,
+    ChatsQuery, ReadQuery, SearchQuery, SendQuery, Source, WatchQuery, daemon_status,
+    daemon_status_within, open_source,
 };
 use msg::{Error, VERSION};
 
@@ -496,30 +498,51 @@ fn daemon(cli: &Cli, command: &DaemonCommand) -> msg::Result<()> {
     Ok(())
 }
 
+/// How long the install will wait to learn whether the daemon can read before
+/// giving up and opening the pane anyway.
+///
+/// A cold daemon on this machine answers its first status in about 120ms, and
+/// that first one is the expensive one because it builds the contact index. So
+/// three seconds is roughly twenty times the observed cost, which leaves room
+/// for a slower machine without leaving anyone watching a stalled install.
+const PROBE_DEADLINE: Duration = Duration::from_secs(3);
+
 /// Ask the just-installed daemon whether it can read, so the install knows
 /// whether anything is left for a human to do.
 ///
 /// It has to poll: `install` returns as soon as `launchctl bootstrap` succeeds,
-/// which is before the daemon has created its socket. Both answers arrive
-/// quickly, because a daemon refused Full Disk Access still starts and still
-/// listens — it just says so. Only a daemon that never comes up waits out the
-/// timeout, and that is already a failed install.
+/// which is before the daemon has created its socket. A daemon refused Full Disk
+/// Access still starts and still listens — it just says so — so both real
+/// answers arrive in well under the deadline.
+///
+/// The deadline bounds the whole probe rather than each attempt, and every
+/// request is given only the time still left. Bounding the attempts alone would
+/// not bound anything: a socket that accepts and then never answers is not
+/// refused and not slow, it is silent, and it would otherwise sit on the
+/// client's general thirty-second read timeout on the very first pass.
 fn grant_after_install() -> Grant {
-    for _ in 0..30 {
-        match daemon_status() {
+    let deadline = Instant::now() + PROBE_DEADLINE;
+    loop {
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            return Grant::Unknown;
+        };
+        // A read timeout of zero means "never time out" to the kernel, which is
+        // the one thing this must not ask for.
+        match daemon_status_within(left.max(Duration::from_millis(50))) {
             Ok(Some(status)) => {
                 return Grant::Held {
                     message_count: status.message_count,
                 };
             }
             Err(Error::AccessDenied(_)) => return Grant::Missing,
-            // Not listening yet. Anything else — a protocol mismatch, a broken
-            // socket — is not evidence either way, so stop asking.
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            // Not listening yet, so wait and ask again.
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            // A timed-out read, a protocol mismatch, a half-open socket: no
+            // evidence either way, and asking again would only spend the
+            // deadline twice.
             Err(_) => return Grant::Unknown,
         }
     }
-    Grant::Unknown
 }
 
 fn status(json: bool) -> msg::Result<()> {

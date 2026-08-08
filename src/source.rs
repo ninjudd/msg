@@ -11,7 +11,7 @@ use rusqlite::Connection;
 
 use crate::apple::since_to_apple_date;
 use crate::contacts::{ContactIndex, load_contacts};
-use crate::daemon::client::{connect_daemon, request, watch};
+use crate::daemon::client::{connect_daemon, connect_daemon_within, request, watch};
 use crate::daemon::protocol::{
     AutomationReply, ChatsRequest, ContactsReply, ContactsRequest, Empty, ReadReply, ReadRequest,
     Request, ResolveRequest, ResolvedHandle, SearchRequest, SendReply, SendRequest, StatusReply,
@@ -111,7 +111,17 @@ fn call(message: &Request) -> Result<serde_json::Value> {
 
 /// Ask the daemon how it is doing, or `None` when it is not listening.
 pub fn daemon_status() -> Result<Option<StatusReply>> {
-    let Some(stream) = connect_daemon(None) else {
+    status_from(connect_daemon(None))
+}
+
+/// The same question, given up on after `timeout` rather than after the general
+/// thirty seconds. For callers that would rather be told nothing than wait.
+pub fn daemon_status_within(timeout: std::time::Duration) -> Result<Option<StatusReply>> {
+    status_from(connect_daemon_within(None, timeout))
+}
+
+fn status_from(stream: Option<std::os::unix::net::UnixStream>) -> Result<Option<StatusReply>> {
+    let Some(stream) = stream else {
         return Ok(None);
     };
     let value = request(stream, &Request::Status(Empty {}))?;
