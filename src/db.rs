@@ -1051,7 +1051,7 @@ pub fn fetch_messages(
                 .map(|guid| (message.rowid, guid.clone()))
         })
         .collect();
-    let mut replies = replies_for(db, &wanted, contacts)?;
+    let replies = replies_for(db, &wanted, contacts)?;
 
     for message in &mut messages {
         // Cloned rather than taken. `MESSAGE_FROM` joins `chat_message_join`, so
@@ -1061,7 +1061,10 @@ pub fn fetch_messages(
         let found = attachments.get(&message.rowid).cloned().unwrap_or_default();
         message.body = describe_attachments(message.body.take(), &found);
         message.attachments = found;
-        message.reply_to = replies.remove(&message.rowid);
+        // Cloned for the same reason as the line above, and it is the same bug
+        // when it is not: one rowid, two rows, and `remove` gives the quote to
+        // whichever arrives first.
+        message.reply_to = replies.get(&message.rowid).cloned();
     }
 
     if !options.oldest_first {
@@ -2276,6 +2279,40 @@ mod tests {
                 .contains('\u{fffc}'),
             "{quote:?}"
         );
+    }
+
+    /// The same shape as `a_message_in_two_chats_shows_its_attachment_in_both`,
+    /// and for the same reason: one rowid comes back as two rows, so taking the
+    /// quote out of the map gives it to whichever copy is reached first.
+    #[test]
+    fn a_reply_in_two_chats_keeps_its_quote_in_both() {
+        let db = fixture();
+        db.execute(
+            "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
+                 associated_message_type, date, service, thread_originator_guid)
+             VALUES (25, 'm25', 'yes, that works', 1, 1, 0, ?, 'iMessage', 'm1')",
+            rusqlite::params![at(9)],
+        )
+        .unwrap();
+        for chat in [1, 2] {
+            db.execute(
+                "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+                 VALUES (?, 25, ?)",
+                rusqlite::params![chat, at(9)],
+            )
+            .unwrap();
+        }
+
+        let found = fetch_messages(&db, &FetchMessages::default(), &ContactIndex::empty()).unwrap();
+        let copies: Vec<_> = found.iter().filter(|m| m.rowid == 25).collect();
+        assert_eq!(copies.len(), 2, "the fixture must produce two copies");
+        for copy in copies {
+            let quote = copy
+                .reply_to
+                .as_ref()
+                .unwrap_or_else(|| panic!("chat {} lost the quote", copy.chat_id));
+            assert_eq!(quote.excerpt.as_deref(), Some("are you around later"));
+        }
     }
 
     /// An address names one person outright, even when a longer address
