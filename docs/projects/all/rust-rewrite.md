@@ -390,10 +390,12 @@ Measured, for the record:
 | Runtime to install first | Node 24 | none |
 
 **What did not get faster.** A real `msg chats` takes about 2.1 seconds on this
-database in *both* builds. That is `CHATS_SQL` running correlated subqueries per
-conversation over 1,164 of them, and it is unchanged behaviour rather than a
-regression — but it is now the slowest thing in the program by two orders of
-magnitude, and worth its own piece of work.
+database in *both* builds — unchanged behaviour rather than a regression, but now
+the slowest thing in the program by two orders of magnitude. This section first
+blamed `CHATS_SQL` alone; measuring properly afterwards showed `read`, `send`,
+and `search` are just as slow, three of them because `resolve_chat` is built on
+`fetch_chats` and one for an unrelated reason.
+[query-performance.md](query-performance.md) has the numbers and the diagnosis.
 
 **Coverage lost.** `parseIdentities` had three tests; its replacement is a
 `grep -q` inside `scripts/build.sh` and has none. The shell script as a whole is
