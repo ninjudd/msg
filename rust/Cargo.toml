@@ -1,0 +1,36 @@
+[package]
+name = "msg"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Read and send iMessages from the command line"
+publish = false
+
+[lib]
+name = "msg"
+path = "src/lib.rs"
+
+# Both binaries are auto-discovered from src/bin/ as they land: `msg`, which is
+# what a person runs, and `msgd`, the launchd agent.
+
+# Four dependencies, three of them unavoidable. `rusqlite` and `clap` are the
+# two the rewrite plan said would get chosen rather than avoided (§3), `serde`
+# is what keeps the wire format identical to the TypeScript one, and `chrono`
+# is local-timezone arithmetic nobody should hand-write.
+#
+# Deliberately absent: `regex`, because the five patterns this program matches
+# are each a dozen lines of hand-written parsing, and `tokio`, because the
+# daemon is a thread per connection and a 2-second tick.
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
