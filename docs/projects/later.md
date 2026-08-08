@@ -3,9 +3,6 @@
 Wanted, nobody has committed to it. One line each, same rules as [now](now.md).
 See [README](README.md) for how these lists work.
 
-- [Rewrite `msg` in Rust](all/rust-rewrite.md) — all of it, not just the daemon:
-  a smaller trusted computing base, no JIT under the grant, the Mach-O surgery
-  becomes a link flag, and installing stops meaning "clone this and have Node".
 - [What the signing identity costs, and what to fix before this is public](all/signing-identity.md)
   — the key that keeps the grant across rebuilds is also a way to re-grant
   silently.

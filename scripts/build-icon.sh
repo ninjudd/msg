@@ -2,7 +2,7 @@
 #
 # Rasterize assets/msgd.svg into assets/msgd.icns.
 #
-# This is not part of the build. The .icns is committed and `pnpm build:msgd`
+# This is not part of the build. The .icns is committed and `./scripts/build.sh`
 # only copies it; run this by hand after editing the SVG. That split is
 # deliberate — an icon pipeline that ran during the build would be the one thing
 # still requiring a runtime after docs/projects/all/rust-rewrite.md, so this uses

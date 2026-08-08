@@ -2,17 +2,10 @@
 
 ## Docs
 
-[README.md](README.md) describes how `msg` works today, for someone using it.
-Keep it current when behaviour changes.
-
-[`docs/projects/`](docs/projects/README.md) is the work itself: three lists
-([now](docs/projects/now.md), [next](docs/projects/next.md),
-[later](docs/projects/later.md)) pointing into
-[`all/`](docs/projects/all), where every plan lives and nothing ever moves. Read
-[docs/projects/README.md](docs/projects/README.md) before adding to it. Plans
-are cited by section (`daemon-and-permissions.md §5`), so renumbering a section
-silently breaks references, and a plan whose status line is stale is worse than
-one with no status at all.
+This repo follows the global `docs/projects/` convention, with one difference:
+there is no `docs/` overview, because [README.md](README.md) plays that role —
+it describes how `msg` works today, for someone using it. The work itself is in
+[`docs/projects/`](docs/projects/README.md).
 
 ## Never send a message you did not mean to send
 
@@ -65,12 +58,12 @@ a transcript.
 Most of the code exists to handle these, and each was found by testing rather
 than by reasoning. Assume there are more.
 
-- **Dates are nanoseconds since 2001-01-01**, around 8.1e17, past
-  `Number.MAX_SAFE_INTEGER`. `node:sqlite` throws rather than narrowing them, so
-  every statement calls `setReadBigInts(true)` and conversion happens in BigInt
-  arithmetic.
+- **Dates are nanoseconds since 2001-01-01**, around 8.1e17. An ordinary `i64`,
+  but past `Number.MAX_SAFE_INTEGER`, which is why the JavaScript build carried
+  BigInt arithmetic everywhere. Values below 1e12 are legacy seconds, not
+  nanoseconds.
 - **`message.text` is usually NULL.** The body lives in `attributedBody` as an
-  NSArchiver typedstream. `src/apple.ts` decodes it in plain TypeScript.
+  NSArchiver typedstream. `src/apple.rs` decodes it by hand.
 - **Tapbacks are messages**, with `associated_message_type != 0`.
 - **Filtered chats are the Unknown Senders bucket**, `chat.is_filtered`.
 - **Reading Contacts preferences poisons Contacts file access.** Calling
@@ -93,37 +86,43 @@ insurance. Add it back with a failing case attached if one ever appears.
 
 ## Toolchain
 
-pnpm, Node 24 or newer, TypeScript in strict mode with
-`noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. Commander for the
-CLI. No runtime dependency beyond commander: SQLite is `node:sqlite` and the
-typedstream decoder is hand-written, both deliberately.
+Rust, edition 2024. Four dependencies — `rusqlite`, `clap`, `serde`, `chrono` —
+and the reasons each was chosen, along with the two that were refused (`regex`
+and `tokio`), are in
+[rust-rewrite.md §8](docs/projects/all/rust-rewrite.md). The typedstream decoder
+is hand-written because nothing else decodes it.
 
 ```sh
-pnpm test        # vitest
-pnpm typecheck   # tsc --noEmit
-pnpm build       # compiles src/ to dist/
-pnpm msg <cmd>   # run from source via tsx
+cargo test                    # unit tests, tests/cli.rs, tests/daemon.rs
+cargo clippy --all-targets    # expected to be silent
+cargo fmt
+./scripts/build.sh            # both binaries, and the signed daemon bundle
 ```
 
-Install the command with `npm link`, not `pnpm link --global`. pnpm's global bin
-directory is not on this machine's PATH and `pnpm setup` does not fix it
-cleanly; `npm link` puts `msg` in the nvm prefix, which is already on PATH.
+`cargo run --bin msg -- <cmd>` runs from source. `build/` is gitignored, and
+`~/.local/bin/msg` is a symlink into it, so a source change is not live until
+`./scripts/build.sh`.
 
-`dist/` is gitignored, and the globally linked `msg` runs from it, so a source
-change is not live until `pnpm build`.
+**Both binaries have to be rebuilt and the daemon reinstalled** for a change to
+reach the process holding Full Disk Access: `./scripts/build.sh && msg daemon
+install`. The grant survives that, because it is anchored to the signing
+certificate and the bundle identifier rather than to the executable's hash.
+
+Do not add a lint allow to silence clippy; fix the code or say in a comment why
+the lint is wrong here.
 
 ## Permissions
 
 Reading requires Full Disk Access, held either by
 [the daemon](docs/projects/all/daemon-and-permissions.md) or by the terminal.
-TCC attributes access to the responsible process, so granting it to `node` or to
-a CLI-spawned child does nothing; a launchd job is its own responsible process,
+TCC attributes access to the responsible process, so granting it to a
+CLI-spawned child does nothing; a launchd job is its own responsible process,
 which is why `msgd` exists.
 
 The CLI reads the database itself when no daemon is listening. With a grant on
-neither side, `openDatabase` throws `AccessDeniedError` and the CLI exits with
-status 2 and an explanation. Keep that path working, since it is the first thing
-a new user hits — and it had already broken once: the snapshot fallback raised a
-raw `EPERM` from `copyFileSync` instead of the explanation, and nothing caught it
-because the development machine held the grant. Revoke it before trusting that
-path.
+neither side, `open_database` returns `Error::AccessDenied` and the CLI exits
+with status 2 and an explanation. Keep that path working, since it is the first
+thing a new user hits — and it had already broken once: the snapshot fallback
+raised a raw `EPERM` from the copy instead of the explanation, and nothing caught
+it because the development machine held the grant. `tests/cli.rs` now pins both
+that path and the exit statuses, but revoke the grant before trusting either.
