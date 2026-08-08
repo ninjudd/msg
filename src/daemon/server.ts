@@ -22,13 +22,14 @@ import {
 } from '../db.js';
 import { VERSION } from '../version.js';
 import { disabledMessage, readConfig } from './config.js';
-import { sendAttachment, sendMessage } from './send.js';
+import { checkAutomation, sendAttachment, sendMessage } from './send.js';
 import {
   encode,
   isChatGuid,
   lines,
   PROTOCOL_VERSION,
   socketPath,
+  type AutomationReply,
   type ContactsReply,
   type Envelope,
   type Frame,
@@ -383,6 +384,14 @@ export class Daemon {
         const reply: SendReply = { guid, name };
         return reply;
       }
+      case 'automation': {
+        // Not behind the config key: this sends nothing, and refusing to run it
+        // when sending is off would hide the permission exactly when someone is
+        // trying to inspect or revoke it.
+        const { allowed, detail } = checkAutomation();
+        const reply: AutomationReply = { allowed, detail, configEnabled: readConfig().send };
+        return reply;
+      }
       case 'contacts': {
         const index = this.contacts(true);
         const reply: ContactsReply = {
@@ -405,6 +414,17 @@ export class Daemon {
           watchers: this.#watchers.size,
         };
         return reply;
+      }
+      default: {
+        // Unreachable for a client of the same version, and the whole point:
+        // without this the switch runs off the end and answers `result` with no
+        // value, which the caller reads a field off and crashes on. The version
+        // check should have caught it first; this is what makes forgetting to
+        // bump it a clear error rather than a TypeError in the CLI.
+        const { cmd } = request as { cmd: string };
+        throw new Error(
+          `msgd does not understand \`${cmd}\`. Reinstall it with \`msg daemon install\`.`,
+        );
       }
     }
   }

@@ -6,8 +6,10 @@ each can be given or withheld without the other.
 [§9](#9-what-the-spike-measured-2026-08-07) records the spike that validated the
 permission model, [§10](#10-what-shipped-2026-08-07) what building it settled,
 [§11](#11-what-sending-needed-2026-08-07) the one thing §7 assumed that turned
-out to need work, and [§12](#12-what-contacts-needed-2026-08-07) why a grant
-that plainly worked stopped applying halfway through a function.
+out to need work, [§12](#12-what-contacts-needed-2026-08-07) why a grant that
+plainly worked stopped applying halfway through a function, and
+[§13](#13-what-the-automation-switch-needed-2026-08-07) why the daemon ships as
+an app bundle after all — a grant you cannot withdraw is not a permission.
 
 **Goal:** Move the privileged read into a launchd agent that holds Full Disk
 Access on its own, so the CLI needs no permission at all and a compromised shell
@@ -112,15 +114,18 @@ Rejected alternatives:
 - **Copy the node binary and pass it a script path.** Works, and needs no build
   step at all — §9 measured it reading `chat.db` under launchd. It is the
   confused deputy above.
-- **Wrap it in a minimal `.app` bundle.** Rejected, though it was left open for
-  a while. §9 confirmed it works and registers as `client_type=0`, keyed by
-  bundle identifier, so its grant is independent of where the app lives. What
-  kept it open was the belief that a bundle is the only way to carry an
-  `Info.plist`, which §7 needs for Apple Events. That is wrong, and §11 replaces
-  it: a bare executable carries one in `__TEXT,__info_plist`. The install-step
-  advantage it was expected to have did not materialize either — it appears in
-  the Full Disk Access list under its executable's filename rather than the
-  bundle name, which is what made it unfindable during the spike.
+- **Wrap it in a minimal `.app` bundle.** ~~Rejected~~ — **adopted, see §13.**
+  §9 confirmed it works and registers as `client_type=0`, keyed by bundle
+  identifier, so its grant is independent of where the app lives. What kept it
+  open was the belief that a bundle is the only way to carry an `Info.plist`,
+  which §7 needs for Apple Events. That is wrong, and §11 replaces it: a bare
+  executable carries one in `__TEXT,__info_plist`. So the bundle was rejected as
+  packaging that bought nothing.
+
+  It buys one thing, and the reasoning above never considered it: **a
+  path-keyed grant cannot be switched off.** §13 measured it. Being able to
+  carry an `Info.plist` without a bundle turned out to be the less important
+  half of the question.
 
 **Correction (2026-08-07).** This section previously stated that an unsigned or
 ad-hoc-signed binary is matched by cdhash, so rebuilding can invalidate the
@@ -409,3 +414,92 @@ nothing, since the preference only decides which source wins a tie.
 The general lesson is worth more than the fix: **Full Disk Access is not a
 property of the process, it is a property of each access.** Something the
 process did earlier can change the answer.
+
+## 13 What the Automation switch needed (2026-08-07)
+
+§7 gates sending twice: a config key the daemon checks, and the Automation grant
+macOS enforces underneath it. The second gate turned out to be one-way. Once
+approved it could not be withdrawn — the switch under Privacy & Security >
+Automation authenticated with Touch ID and then did nothing, every time, with no
+error anywhere in the UI.
+
+**The pane can only modify bundle-keyed rows.** tccd publishes an event for
+every change it makes, and the difference is visible in the event stream:
+
+```
+type=Create  kTCCServiceAppleEvents  identifier_type=Path       …/libexec/msgd
+type=Modify  kTCCServiceAppleEvents  identifier_type=Bundle ID  com.googlecode.iterm2
+type=Delete  kTCCServiceAppleEvents  identifier_type=Path       …/libexec/msgd
+```
+
+`msgd` only ever got `Create` and `Delete`. iTerm, which toggles fine, gets
+`Modify` on every flip. No `Modify` was ever published for a path-keyed row, so
+the write never reached the database: the prompt and the Touch ID were real, and
+the change had nothing to apply to.
+
+**Nothing in the plist could have fixed it.** Which key a row uses is decided
+before any service is consulted, by resolving the executable to a bundle:
+
+```
+BUNDLE_ATTRIBUTION: executable path file:///Users/…/.local/libexec/msgd
+  resolves to attributed bundle: (null)
+```
+
+A bare executable has no bundle to resolve to, so the row is keyed by path, so
+it is unmodifiable. Adding `CFBundleIdentifier` to the embedded
+`__TEXT,__info_plist` does not change this; tccd never reads it for this
+decision. The only fix is a directory that `CFBundle` recognises.
+
+**launchd pointed at the inner executable is enough.** The open question was
+whether attribution survives launchd, which runs `Contents/MacOS/msgd` directly
+rather than going through LaunchServices as `open` would. It does — a stub
+bundle, signed with the same self-signed identity under a throwaway identifier,
+measured:
+
+```
+BUNDLE_ATTRIBUTION: …/msgd-spike.app/Contents/MacOS/msgd-spike
+  is main executable for candidateBundle(…/msgd-spike.app)
+static code for: identifier com.ninjudd.msgd-spike, type: 0
+type=Create  kTCCServiceAppleEvents  identifier_type=Bundle ID  com.ninjudd.msgd-spike
+```
+
+`type: 0` against the bare executable's `type: 1`. The resulting entry was
+switched off and back on by hand, which is the whole point and the one thing no
+log line could establish. No `open`, no `LSUIElement` juggling, no app lifecycle:
+the bundle exists only so tccd has something to resolve to.
+
+**Both services move together.** Attribution is resolved once per request and
+then used for whatever service is being asked about, so Full Disk Access became
+bundle-keyed at the same time, for free:
+
+```
+type=Create  kTCCServiceSystemPolicyAllFiles  identifier_type=Bundle ID  com.ninjudd.msgd
+```
+
+**The grant is now scriptable, and narrowly.** `tccutil` takes a bundle
+identifier and could never name a path-keyed row, so the only revocation
+available before this was `tccutil reset AppleEvents` with no argument, which
+clears every application on the machine. Now:
+
+```
+tccutil reset AppleEvents com.ninjudd.msgd
+```
+
+published exactly one `type=Delete` for exactly that identifier, iTerm's row
+untouched.
+
+**What it cost.** `src/macho.ts` and its tests are deleted, 307 lines: the
+section injection existed only because a bare executable had nowhere to put
+`NSAppleEventsUsageDescription`, and `Contents/Info.plist` is a real file. The
+stable identity carried over unchanged — the requirement is
+`identifier "com.ninjudd.msgd" and certificate leaf = H"3347…"`, and tccd logged
+`status: 0` matching it against the bundle, so §4's rebuild persistence still
+holds. The install copies a directory instead of a file and deletes any
+unbundled daemon beside it.
+
+The one-time price is a grant migration. The executable path changed, so Full
+Disk Access has to be granted once more, and the old path-keyed rows survive as
+orphans pointing at a deleted file. The Full Disk Access one can be removed with
+the "−" button in the pane. The Automation one cannot be removed singly by any
+means, since `tccutil` cannot name it — which is the original defect, having the
+last word on its own way out.

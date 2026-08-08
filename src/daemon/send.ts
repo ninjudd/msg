@@ -9,7 +9,8 @@
  *
  * macOS refuses an Apple Event from a client with no
  * `NSAppleEventsUsageDescription`, without even prompting, so this only works
- * because the build embeds one: see src/macho.ts.
+ * because the daemon ships as a bundle carrying one in its `Info.plist`: see
+ * scripts/build-msgd.mjs.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -51,6 +52,34 @@ function runScript(script: string, args: string[]): void {
 
 export function sendMessage(chatGuid: string, body: string): void {
   runScript(SEND_TEXT, [chatGuid, body]);
+}
+
+/**
+ * Ask Messages how many conversations it has, which sends nothing.
+ *
+ * This exists so the Automation permission can be established and inspected
+ * without texting anyone. macOS creates the entry in Privacy & Security >
+ * Automation when a client first asks — so before this, the only way to get an
+ * entry you could switch off was to send a real message to a real person.
+ *
+ * It has to be an event that TCC actually gates. Standard Suite events like
+ * `get name` are answered without any grant at all, so probing with one reports
+ * "allowed" on a machine where sending is refused, and creates no entry.
+ * Reaching the app's own data is what triggers the check; a count reveals
+ * nothing about who anyone is talking to.
+ */
+export function checkAutomation(): { allowed: boolean; detail: string } {
+  try {
+    const count = execFileSync(
+      'osascript',
+      ['-e', 'tell application "Messages" to count of chats'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim();
+    return { allowed: true, detail: `${count} conversations visible to Messages` };
+  } catch (error) {
+    const stderr = (error as { stderr?: Buffer }).stderr?.toString().trim() ?? '';
+    return { allowed: false, detail: stderr.length > 0 ? stderr : (error as Error).message };
+  }
 }
 
 /**

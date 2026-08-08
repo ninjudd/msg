@@ -85,10 +85,15 @@ Ranked by how likely it is to come up, and how much it would sting:
 1. **"115MB for an iMessage CLI."** Certain, and funny. The answer — a Single
    Executable Application is a copy of the `node` binary — is correct and will
    not stop anyone saying it.
-2. **Hand-patching a Mach-O to inject `__TEXT,__info_plist` into a copy of
-   node.** Splits the room between "great writeup" and "cursed, and it breaks the
-   next time Node moves something". Both fair. It is also the most interesting
-   thing here, so it should be led with rather than buried.
+2. ~~**Hand-patching a Mach-O to inject `__TEXT,__info_plist` into a copy of
+   node.**~~ Gone as of
+   [daemon-and-permissions.md §13](daemon-and-permissions.md): the daemon ships
+   as an app bundle, which carries a real `Contents/Info.plist`. What replaces it
+   in this list is milder and more defensible — **an app bundle in
+   `~/.local/libexec` that nothing ever launches** — and the answer is the
+   interesting part: macOS can only revoke a permission it keyed by bundle
+   identifier, so without the bundle, granting the daemon the right to send
+   messages would be a one-way door.
 3. **A build script minting a code signing certificate in the login keychain.**
    The only item that can land as a real criticism rather than a joke, and the
    only one where the criticism would be right. It is also the cheapest to

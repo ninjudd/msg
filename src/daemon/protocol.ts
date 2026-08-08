@@ -15,7 +15,17 @@ import { join } from 'node:path';
 import type { Interface } from 'node:readline';
 import type { Chat, Message } from '../db.js';
 
-export const PROTOCOL_VERSION = 1;
+/**
+ * Bump this whenever a request is added, not only when one changes shape.
+ *
+ * A daemon that predates a command does not reject it — its switch runs off the
+ * end and answers `result` with no value, and the CLI then reads a field off
+ * `undefined` and throws. The version check is the only thing standing between
+ * a stale daemon and a crash, so a new command is a new protocol.
+ *
+ * 2 added `automation`.
+ */
+export const PROTOCOL_VERSION = 2;
 
 /** The launchd job label, and the bundle identifier the TCC grant lands on. */
 export const LABEL = 'com.ninjudd.msgd';
@@ -101,6 +111,21 @@ export interface StatusRequest {
   cmd: 'status';
 }
 
+/**
+ * Exercise the Automation permission without sending anything, so the entry in
+ * System Settings exists to be switched off.
+ */
+export interface AutomationRequest {
+  cmd: 'automation';
+}
+
+export interface AutomationReply {
+  allowed: boolean;
+  detail: string;
+  /** Whether the config would let a send through, independent of macOS. */
+  configEnabled: boolean;
+}
+
 export type Request =
   | ChatsRequest
   | ReadRequest
@@ -109,6 +134,7 @@ export type Request =
   | ResolveRequest
   | SendRequest
   | ContactsRequest
+  | AutomationRequest
   | StatusRequest;
 
 /** What the client writes: a request plus the protocol version it speaks. */

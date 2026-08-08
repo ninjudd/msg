@@ -6,7 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LABEL } from './protocol.js';
-import { daemonEnvironment, describeSignature, plist } from './install.js';
+import {
+  binaryPath,
+  builtBundle,
+  bundlePath,
+  daemonEnvironment,
+  describeSignature,
+  plist,
+} from './install.js';
 
 let directory: string;
 
@@ -40,6 +47,20 @@ describe('plist', () => {
   });
 });
 
+describe('bundle layout', () => {
+  // TCC resolves an executable back to the bundle above it by walking up from
+  // Contents/MacOS. Anywhere else and it finds nothing, falls back to keying the
+  // grant by path, and the Automation switch stops working (§13).
+  it('runs the executable from inside Contents/MacOS', () => {
+    expect(binaryPath()).toBe(join(bundlePath(), 'Contents', 'MacOS', 'msgd'));
+    expect(bundlePath().endsWith('.app')).toBe(true);
+  });
+
+  it('installs from the bundle the build produces', () => {
+    expect(builtBundle().endsWith('/build/msgd.app')).toBe(true);
+  });
+});
+
 describe('describeSignature', () => {
   // A self-signed certificate produces no Authority line, and the field is
   // `Signature size=`, not `Signature=` — reading it wrong reported a properly
@@ -69,6 +90,28 @@ describe('describeSignature', () => {
 
   it('reports an unsigned binary as unsigned', () => {
     expect(describeSignature('Identifier=x\nFormat=Mach-O thin (arm64)\n')).toBe('unsigned');
+  });
+
+  // What `--verbose=2` prints on a machine holding the bundle but not the key
+  // it was signed with. Returning the placeholder reports `signed (unavailable)`
+  // where the certificate name belongs, and says less than "signed" alone.
+  it('ignores the placeholder codesign prints for a chain it cannot build', () => {
+    expect(
+      describeSignature('Identifier=com.ninjudd.msgd\nSignature size=1660\nAuthority=(unavailable)\n'),
+    ).toBe('signed');
+  });
+
+  it('takes the leaf when a full chain is printed', () => {
+    expect(
+      describeSignature(
+        [
+          'Signature size=4813',
+          'Authority=Developer ID Application: Someone (ABCDE12345)',
+          'Authority=Developer ID Certification Authority',
+          'Authority=Apple Root CA',
+        ].join('\n'),
+      ),
+    ).toBe('Developer ID Application: Someone (ABCDE12345)');
   });
 });
 

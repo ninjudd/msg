@@ -13,6 +13,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "build:msgd": "pnpm build && node scripts/build-msgd.mjs",
+    "icon": "./scripts/build-icon.sh",
     "prepare": "pnpm build",
     "msg": "tsx src/cli.ts",
     "test": "vitest run",

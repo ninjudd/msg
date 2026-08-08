@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!--
+    The daemon's icon: an iMessage bubble with a shell prompt in it.
+
+    Source of truth for assets/msgd.icns, which is what actually ships. Edit
+    this, then run `pnpm icon` (scripts/build-icon.sh) to regenerate the .icns.
+
+    Blue, not green: green is the SMS bubble, which is the opposite of the point.
+
+    The plate fills the frame edge to edge, with square corners and no
+    transparency anywhere. macOS rounds it. Drawing our own rounded plate leaves
+    a margin that renders as a visible border in the Full Disk Access and
+    Automation lists, which is the only place this icon is ever seen.
+
+    The bubble body is centred on the plate at (512, 512). The tail hangs off it
+    and is deliberately not counted in that centring, because balancing body and
+    tail together leaves the body itself sitting visibly high and left.
+  -->
+  <defs>
+    <linearGradient id="plate" x1="512" y1="0" x2="512" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2B2D35"/>
+      <stop offset="1" stop-color="#17181D"/>
+    </linearGradient>
+    <linearGradient id="bubble" x1="512" y1="225" x2="512" y2="858" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4C9EFF"/>
+      <stop offset="1" stop-color="#0A6CF0"/>
+    </linearGradient>
+
+    <!--
+      Rounds the tail's tip and the two creases where it meets the body, in one
+      pass and at one radius.
+
+      Blurring a silhouette and then thresholding its alpha pulls every corner
+      into a fillet — convex ones like the tip, and concave ones like the
+      junctions, which is the part no amount of moving control points achieves:
+      a union of two paths meets at a crease by construction. stdDeviation sets
+      the fillet radius; 24a-12 thresholds at alpha 0.5, the value that leaves
+      the shape its original size rather than growing or shrinking it.
+
+      It runs on a mask rather than on the artwork, so the fill stays a clean
+      gradient. Filtering the coloured shapes directly blurs colour into the
+      transparent surround and leaves a dark fringe at every edge.
+    -->
+    <filter id="fillet" filterUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <feGaussianBlur stdDeviation="24" result="spread"/>
+      <feColorMatrix in="spread" type="matrix"
+                     values="0 0 0 0 1
+                             0 0 0 0 1
+                             0 0 0 0 1
+                             0 0 0 24 -12"/>
+    </filter>
+
+    <mask id="silhouette" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <g filter="url(#fillet)" fill="#fff">
+        <rect x="112" y="225" width="800" height="574" rx="225"/>
+        <!--
+          The tail. Both edges are curves and none of it is straight: the outer
+          edge swings out of the corner to the tip, the underside hooks back up
+          into the bottom edge, and the path closes through the body's interior.
+        -->
+        <path d="M204 681 C195 750 164 811 119 858 C220 862 314 834 376 790 Z"/>
+      </g>
+    </mask>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#plate)"/>
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#bubble)" mask="url(#silhouette)"/>
+
+  <!-- `>_`, centred in the body at about half its width. -->
+  <polyline points="356,427 470,512 356,597" fill="none" stroke="#F4F8FF"
+            stroke-width="68" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- The cursor sits on the chevron's baseline; one notch higher reads as `>-`. -->
+  <rect x="545" y="582" width="158" height="49" rx="25" fill="#F4F8FF" opacity="0.72"/>
+</svg>

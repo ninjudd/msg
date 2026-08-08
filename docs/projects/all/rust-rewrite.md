@@ -32,12 +32,24 @@ the daemon today lands in a process with a full interpreter: `child_process`,
 argument* problem by embedding the code in the signed binary, but the
 interpreter is still in there.
 
-**The build collapses.** `src/macho.ts` disappears entirely: in Rust the
-`Info.plist` is a link flag, `-Wl,-sectcreate,__TEXT,__info_plist,Info.plist`,
-rather than 200 lines of load-command arithmetic pinned to node's binary layout.
-So do esbuild, postject, `--experimental-sea-config`, the sentinel fuse, and the
-rule that signing must come last because everything before it invalidates the
-signature. It becomes `cargo build`.
+**The build collapses.** esbuild, postject, `--experimental-sea-config`, the
+sentinel fuse, and the rule that signing must come last because everything
+before it invalidates the signature: all gone. It becomes `cargo build`, plus
+the four lines that assemble the app bundle and sign it, which are the same in
+any language.
+
+This argument used to lead with `src/macho.ts` disappearing — 200 lines of
+load-command arithmetic pinned to node's binary layout, replaced in Rust by a
+`-Wl,-sectcreate` link flag. That was true and is now moot:
+[daemon-and-permissions.md §13](daemon-and-permissions.md) deleted the module
+outright. The daemon ships as an app bundle so its TCC grants can be revoked,
+and a bundle carries a real `Contents/Info.plist`, so nothing needs injecting
+into the executable at all. **The bundle layout, the `Info.plist`, and the
+`codesign --identifier` invocation all carry over unchanged**, and so does the
+grant: the requirement is `identifier "com.ninjudd.msgd" and certificate leaf =
+H"3347…"`, and neither term depends on what language the binary was written in.
+A Rust `msgd` signed with the same certificate under the same identifier
+inherits the permissions the current one holds, with nothing to re-grant.
 
 **The install stops being a developer setup.** Today it is clone, `pnpm
 install`, `npm link`, and Node 24 or newer for `node:sqlite`. A Rust `msg` is a

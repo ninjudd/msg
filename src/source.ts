@@ -24,6 +24,7 @@ import { connectDaemon, request, stream } from './daemon/client.js';
 import {
   reviveChat,
   reviveMessage,
+  type AutomationReply,
   type ContactsReply,
   type SendReply,
   type StatusReply,
@@ -77,6 +78,7 @@ export interface Source {
   search(query: SearchQuery): Promise<Message[]>;
   watch(query: WatchQuery, onMessage: (message: Message) => void): Promise<void>;
   resolve(chat: string, names: boolean): Promise<Chat>;
+  automation(): Promise<AutomationReply>;
   send(query: SendQuery): Promise<SendReply>;
   contacts(handles: string[]): Promise<ContactsReply>;
   close(): void;
@@ -178,6 +180,15 @@ export function directSource(dbPath?: string | undefined): Source {
       );
     },
 
+    automation() {
+      return Promise.reject(
+        new Error(
+          'the Automation permission belongs to the daemon, which is not running.\n' +
+            'Install it with `msg daemon install`.',
+        ),
+      );
+    },
+
     contacts(handles) {
       const names = loadContacts();
       return Promise.resolve({
@@ -269,6 +280,10 @@ export function daemonSource(): Source {
         file: query.file,
         names: query.names,
       })) as SendReply;
+    },
+
+    async automation() {
+      return (await call({ cmd: 'automation' })) as AutomationReply;
     },
 
     async contacts(handles) {
