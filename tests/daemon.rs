@@ -31,7 +31,9 @@ const SCHEMA: &str = "
     is_from_me INTEGER DEFAULT 0, handle_id INTEGER,
     associated_message_type INTEGER DEFAULT 0, date INTEGER, service TEXT
   );
-  CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+  CREATE TABLE chat_message_join (
+    chat_id INTEGER, message_id INTEGER, message_date INTEGER DEFAULT 0
+  );
   CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
 ";
 
@@ -130,8 +132,9 @@ fn insert(
     )
     .unwrap();
     db.execute(
-        "INSERT INTO chat_message_join (chat_id, message_id) VALUES (?, ?)",
-        rusqlite::params![chat, rowid],
+        "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+         VALUES (?, ?, ?)",
+        rusqlite::params![chat, rowid, date],
     )
     .unwrap();
 }

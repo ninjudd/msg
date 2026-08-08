@@ -1,9 +1,12 @@
 # Plan: Make the common commands stop taking two seconds
 
-**Status:** Measured, not started. Nothing here is new: the same numbers came
-out of the TypeScript build, so this is not a regression from
-[the Rust rewrite](rust-rewrite.md) — that work simply removed everything else
-that was slow, which left this as the only thing left to look at.
+**Status:** The chat list is fixed; `search` is not. §1 to §4 are the diagnosis
+as it was written, before any of it was acted on. §6 records what was done, what
+it cost, and what is left.
+
+Nothing here was a regression from [the Rust rewrite](rust-rewrite.md): the same
+numbers came out of the TypeScript build, and that work simply removed
+everything else that was slow, which left this as the only thing to look at.
 
 **Goal:** Get `msg chats` and `msg read` under a couple of hundred milliseconds
 on a database with a decade of messages in it.
@@ -85,3 +88,81 @@ two could be compared, byte for byte, at every layer. Rewriting a query would
 have made the outputs differ for a good reason, and then a real difference could
 have hidden behind it. Fixing it now, against a build with tests and a fixture,
 is both easier and safer.
+
+## 6 What was done
+
+**The chat list reads a date that Messages already denormalised.**
+`chat_message_join` carries a `message_date` column — a copy of `message.date`
+kept in step by trigger — and there is an index on
+`chat_message_join(chat_id, message_date, message_id)`. So the whole
+last-activity-and-count aggregate is answered by one covering-index scan that
+never opens `message`. The old query's `MAX(message.date)` needed one random
+probe into `message` per join row, and there are as many join rows as messages.
+
+The query plan is the clearest statement of it. Before:
+
+```
+CORRELATED SCALAR SUBQUERY 3
+  SEARCH chat_message_join USING COVERING INDEX ... (chat_id=?)
+  SEARCH message USING INTEGER PRIMARY KEY (rowid=?)      <- 733,690 times
+```
+
+After:
+
+```
+MATERIALIZE recent
+  SCAN chat_message_join USING COVERING INDEX chat_message_join_idx_message_date_id_chat_id
+```
+
+**§4 of [AGENTS.md](../../../AGENTS.md) earned its place again.** The plan above
+guessed the fix would be restructuring the correlated subqueries into grouped
+joins. That guess was half right and would have bought much less: the win came
+from a column nobody had looked for. Reading the schema first, rather than
+reasoning from the query text, is what found it. The schema was read out of the
+daemon's own log, because the terminal holds no Full Disk Access — DDL and query
+plans only, no rows.
+
+**The copy was verified before being trusted**, over the 733,690 join rows of a
+real database: none were zero, none were NULL, none disagreed with
+`message.date`, no conversation's maximum differed, and there were no orphan join
+rows. A test keeps the fixtures honest, so a fixture row added without a date
+fails loudly rather than making the chat list quietly wrong.
+
+Measured on the same database, and the outputs are hash-identical to before
+across six query shapes:
+
+| Command | Before | After |
+| --- | --- | --- |
+| `msg chats -n 1` | 2053ms | 218ms |
+| `msg chats -n 500` | 2284ms | 139ms |
+| `msg chats -n 3000` | 2263ms | 136ms |
+| `msg chats dana` | 2226ms | 152ms |
+| `msg send 1 x --dry-run` | 1721ms | 148ms |
+| `msg read 1 -n 5` | 2341ms | 290ms |
+| `msg search -n 20 -c 1 <no match>` | 2824ms | 281ms |
+| `msg search -n 20 <no match>` | 2129ms | 1491ms |
+
+The cost is also flat in the limit now, which was §2's tell that the work was
+being done regardless: `-n 1` and `-n 3000` are within 80ms of each other, and
+the larger one is *faster* because it skips the temporary B-tree less often.
+
+## 7 What is left
+
+**`search` is now the slowest thing here**, at about 1.5 seconds for a query
+that matches nothing. It is unchanged by the above and remains a full scan:
+`CAST(message.attributedBody AS TEXT) LIKE ?` cannot use an index, and a query
+with no matches has to read every blob before it can say so. A query that
+matches plenty is much faster, because `ORDER BY date DESC LIMIT n` lets it stop
+early.
+
+Two things that look like fixes and are not. Replacing `LIKE` with `instr` on
+the raw blob skips building a string per row, but `instr` is case-sensitive
+where `LIKE` is not, so it would silently stop finding case-variant matches.
+Testing `message.text` before casting the blob saves nothing, because 97.6% of
+messages have no `text` at all.
+
+**`resolve_chat` still builds the whole list to find one conversation.** It is
+now cheap enough not to matter — `read` went from 2341ms to 290ms, roughly half
+of which is still this — but pushing the chat id into the aggregate would make
+it a single-row lookup. It needs a second SQL string, which is a second thing to
+keep in step, so it is worth doing only if `read` starts to feel slow again.

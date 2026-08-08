@@ -31,7 +31,8 @@ fn build(path: &Path) {
         CREATE TABLE message (rowid INTEGER PRIMARY KEY, guid TEXT, text TEXT,
           attributedBody BLOB, is_from_me INTEGER DEFAULT 0, handle_id INTEGER,
           associated_message_type INTEGER DEFAULT 0, date INTEGER, service TEXT);
-        CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+        CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER,
+          message_date INTEGER DEFAULT 0);
         CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
         INSERT INTO handle (rowid, id) VALUES (1, '+13105551234');
         INSERT INTO chat (rowid, guid, chat_identifier, display_name) VALUES
@@ -40,7 +41,8 @@ fn build(path: &Path) {
         INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1, 1), (2, 1);
         INSERT INTO message (rowid, guid, text, is_from_me, handle_id, date, service)
           VALUES (1, 'm1', 'are you around later', 0, 1, 790000000000000000, 'iMessage');
-        INSERT INTO chat_message_join (chat_id, message_id) VALUES (1, 1);
+        INSERT INTO chat_message_join (chat_id, message_id, message_date)
+          VALUES (1, 1, 790000000000000000);
         ",
     )
     .unwrap();
