@@ -1,9 +1,11 @@
 # Plan: Rewrite `msg` in Rust
 
-**Status:** In progress on the `rust-port` branch, started 2026-08-07 on §7's
-second trigger — this is meant to be installable by someone who does not already
-have Node 24 and a clone of the repository. §8 records what has landed and the
-decisions taken while porting.
+**Status:** Done. Ported on the `rust-port` branch on 2026-08-07, on §7's second
+trigger — this is meant to be installable by someone who does not already have
+Node 24 and a clone of the repository. `msg` and `msgd` are Rust, the TypeScript
+is deleted, and the daemon running on the author's machine is the Rust one,
+holding the same Full Disk Access and Automation grants it held before with
+nothing re-granted. §8 is the log of what landed and why.
 
 Sections 1 to 7 are the argument as it was made before the work began, written
 while this was still an idea. They are left as they were: nothing in them is a
@@ -351,3 +353,52 @@ the wire. Exercising `db.rs` and the typedstream decoder against the real
 database needs the Rust daemon installed, because it needs the Full Disk Access
 grant. That is the one remaining check, and it is the one that changes the
 machine.
+
+## 9 What §5.7 removed, and what is left open
+
+The TypeScript went in one commit, as §5 asked: `src/` (25 files), `package.json`,
+`pnpm-lock.yaml`, `pnpm-workspace.yaml`, both `tsconfig`s, `vitest.config.ts`,
+and `scripts/build-msgd.mjs`. The crate moved from `rust/` to the repository
+root, so `src/` means the source again. Git recorded every move as a rename.
+
+**The claim in §1 that mattered most held, measured rather than argued.** The
+Rust daemon was installed over the Node one and started with both grants intact:
+763,304 messages read and 1,123 contact handles resolved on first run, and
+`msg daemon automation` reports *allowed*. Nothing was re-granted, because the
+designated requirement is byte-identical:
+
+```
+identifier "com.ninjudd.msgd" and certificate leaf = H"33473595…"
+```
+
+The seven query hashes taken from the *TypeScript* reader against the real
+database before the swap were re-run against the *Rust* reader after it, and all
+seven match. That is the strongest check available: same database, same
+questions, different implementations, identical answers, and no message body or
+contact name printed to get it.
+
+Measured, for the record:
+
+| | Node | Rust |
+| --- | --- | --- |
+| `msgd.app` | 116MB | 2.9MB |
+| `msg` startup (`--version`) | 67ms | 23ms |
+| Runtime to install first | Node 24 | none |
+
+**What did not get faster.** A real `msg chats` takes about 2.1 seconds on this
+database in *both* builds. That is `CHATS_SQL` running correlated subqueries per
+conversation over 1,164 of them, and it is unchanged behaviour rather than a
+regression — but it is now the slowest thing in the program by two orders of
+magnitude, and worth its own piece of work.
+
+**Coverage lost.** `parseIdentities` had three tests; its replacement is a
+`grep -q` inside `scripts/build.sh` and has none. The shell script as a whole is
+untested, which is the price of it being twenty lines instead of a module.
+
+**§6's open questions, revisited.** Sending still shells out to `osascript`, and
+should stay there until there is a reason to move: the subprocess is simpler and
+it works. Hardened runtime is now *possible* — there is no JIT to grant
+exceptions for — but adopting it changes the code requirement, which is exactly
+the thing the grant is anchored to, so it costs a re-grant and belongs in
+[signing-identity.md](signing-identity.md) rather than here. Distribution is
+untouched and still the reason notarisation may eventually matter.

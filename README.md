@@ -24,8 +24,10 @@ Dana Reyes
 ## Requirements
 
 - macOS, with Messages signed in
-- Node 24 or newer, for the built-in `node:sqlite` module
 - Full Disk Access, held by [the daemon](#the-daemon) or by your terminal
+
+`msg` is two self-contained binaries and needs no runtime installed. Building it
+needs Rust and the Xcode command line tools, for `codesign`.
 
 The Messages database is protected by TCC, so something has to hold Full Disk
 Access. The daemon is the better place for it, because a grant on your terminal
@@ -44,17 +46,16 @@ Without either, every command exits with status 2 and an explanation.
 ```sh
 git clone git@github.com:ninjudd/msg.git
 cd msg
-pnpm install     # runs the build automatically
-npm link         # puts `msg` on your PATH
+./scripts/build.sh                  # compiles both binaries and signs the daemon
+ln -s "$PWD/build/msg" ~/.local/bin/msg   # or anywhere on your PATH
 ```
 
-`pnpm install` triggers the `prepare` script, which compiles `src/` to `dist/`.
-Either `npm link` or `pnpm link --global` will install the command; if pnpm
-reports that its global bin directory is not on your PATH, `npm link` sidesteps
-the issue entirely.
+`build/msg` is the command and `build/msgd.app` is the daemon. Copy `msg`
+wherever you keep binaries; `msg daemon install` looks for `msgd.app` beside it,
+so keep the two together or pass `--from` when installing.
 
-To run without installing globally, use `pnpm msg <command>`, which executes
-straight from the TypeScript sources via tsx.
+To run without installing, `cargo run --bin msg -- <command>` works from the
+checkout.
 
 ## Usage
 
@@ -86,8 +87,8 @@ msg read dana --since 2026-01-15
 msg read dana --tapbacks       # include reactions
 ```
 
-`--since` accepts a duration (`30m`, `2h`, `7d`, `4w`) or any date Node can
-parse.
+`--since` accepts a duration (`30m`, `2h`, `7d`, `4w`), an ISO date like
+`2026-01-15`, or a full timestamp. A bare date means midnight UTC.
 
 ### Searching
 
@@ -179,7 +180,7 @@ Access on its own, answers a fixed set of questions over a unix socket, and
 takes no filesystem path from anyone. The CLI needs no permission at all.
 
 ```sh
-pnpm build:msgd        # compile msgd to a single executable in msgd.app
+./scripts/build.sh     # compile msgd and sign it inside msgd.app
 msg daemon install     # copy it into place and start it
 ```
 
@@ -204,7 +205,8 @@ granting Automation a one-way door. The reasoning and the measurements are in
 
 Being a bundle, it has an icon, which is how you find it in those two lists.
 `assets/msgd.svg` is the source and `assets/msgd.icns` is what ships; both are
-committed and the build only copies the `.icns`. `pnpm icon` regenerates it,
+committed and the build only copies the `.icns`. `./scripts/build-icon.sh`
+regenerates it,
 rasterizing with `qlmanage` so the pipeline needs nothing but macOS, and is
 deliberately not part of the build.
 
@@ -214,7 +216,7 @@ always reads locally and never reaches the daemon.
 
 **Signing.** The grant is pinned to the daemon's code signature, so an ad-hoc
 signature — matched by hash — dies on every rebuild and has to be granted again.
-To avoid that, **the first `pnpm build:msgd` creates a self-signed `msg dev`
+To avoid that, **the first `./scripts/build.sh` creates a self-signed `msg dev`
 certificate in your login keychain** and signs with it; the requirement then
 anchors to the certificate and survives rebuilds. Nothing is submitted anywhere,
 `codesign` is offline, and the certificate is never added to any trust store.
@@ -225,8 +227,8 @@ signing its own daemon and inheriting the grant — see
 [signing-identity.md](docs/projects/all/signing-identity.md).
 
 ```sh
-MSG_SIGN_IDENTITY="my identity" pnpm build:msgd   # use a different certificate
-MSG_SIGN_IDENTITY=- pnpm build:msgd               # ad-hoc, no certificate
+MSG_SIGN_IDENTITY="my identity" ./scripts/build.sh   # a different certificate
+MSG_SIGN_IDENTITY=- ./scripts/build.sh               # ad-hoc, no certificate
 security delete-identity -c "msg dev"             # remove the one msg created
 ```
 
@@ -280,7 +282,7 @@ authentication, and why the daemon is a single executable rather than a copy of
 | `MSG_SOCKET` | where the daemon listens, default `~/.local/state/msg/msgd.sock` |
 | `MSG_STATE_DIR` | socket and log directory, default `~/.local/state/msg` |
 | `MSG_CONFIG` | config file, default `~/.config/msg/config.toml` |
-| `MSG_SIGN_IDENTITY` | Code Signing identity for `pnpm build:msgd` |
+| `MSG_SIGN_IDENTITY` | Code Signing identity for `./scripts/build.sh` |
 
 `MSG_DB` steers the CLI, which reads that database itself rather than asking the
 daemon — the same as `--db`, so a fixture stays a fixture even with a daemon
@@ -301,17 +303,18 @@ The Messages schema has a number of sharp edges. Most of the code here exists
 to handle them.
 
 **Dates are nanoseconds since 2001-01-01**, not Unix seconds. Current values sit
-around 8.1e17, well past `Number.MAX_SAFE_INTEGER` at 9.0e15, and `node:sqlite`
-refuses to narrow them: reading one as a JavaScript number throws `Value is too
-large to be represented as a JavaScript number`. Every statement therefore reads
-integers as BigInt, and conversion to a `Date` happens in BigInt arithmetic.
+around 8.1e17. That is an ordinary `i64` here, but it is past
+`Number.MAX_SAFE_INTEGER` at 9.0e15, which cost the JavaScript build a layer of
+BigInt arithmetic in every query and conversion. Dividing by a thousand at the
+wrong moment is the failure mode, and the seconds/nanoseconds threshold is what
+tells the two apart: rows written before the 2011 schema change are in seconds.
 
 **`message.text` is usually NULL.** On a sample of 20,000 messages from a live
 database, 97.6% carried their body only in `attributedBody`, an NSArchiver
 typedstream blob left over from the days when messages were archived
-`NSAttributedString` objects. `src/apple.ts` decodes that format in plain
-TypeScript, with no PyObjC or Objective-C bridge and no dependency on the
-deprecated `NSUnarchiver`. It decoded every one of those 19,524 blobs.
+`NSAttributedString` objects. `src/apple.rs` decodes that format by hand, with no
+Objective-C bridge and no dependency on the deprecated `NSUnarchiver`. It decoded
+every one of those 19,524 blobs.
 
 **Tapbacks are messages.** A reaction is stored as an ordinary row with
 `associated_message_type != 0`, so a naive query mixes `Liked "see you then"`
@@ -360,35 +363,41 @@ nothing and messages still read normally.
 ## Development
 
 ```sh
-pnpm test        # vitest
-pnpm typecheck   # tsc --noEmit
-pnpm build       # tsc -p tsconfig.build.json
-pnpm build:msgd  # bundle and sign the daemon executable
+cargo test           # unit tests, the CLI, and the daemon over a real socket
+cargo clippy --all-targets
+./scripts/build.sh   # both binaries, and the signed daemon bundle
 ```
 
 Point `MSG_DB` at another database to develop against a fixture rather than your
 own messages. The tests cover the pieces with real logic in them: the Apple
-timestamp conversions and typedstream decoding in `src/apple.ts`, the handle
-normalization in `src/contacts.ts`, and the daemon end to end over a real socket
-against a database the test builds. No test reads a real database, and every
-daemon test asks for `names: false` so none of them touches Contacts.
+timestamp conversions and typedstream decoding in `src/apple.rs`, the handle
+normalization in `src/contacts.rs`, the exit statuses in `tests/cli.rs`, and the
+daemon end to end over a real socket in `tests/daemon.rs`. No test reads a real
+database, every daemon test asks for `names: false` so none of them touches
+Contacts, and the daemon tests point at a config file that does not exist so
+sending stays shut.
 
 ```
 src/
-  apple.ts       Apple epoch conversion, typedstream decoding
-  contacts.ts    Contacts lookup and handle normalization
-  db.ts          read-only queries against chat.db
-  format.ts      terminal and JSON rendering
-  source.ts      the daemon when one is listening, the database when not
-  cli.ts         command definitions
-  msgd.ts        the daemon process
+  apple.rs       Apple epoch conversion, typedstream decoding
+  contacts.rs    Contacts lookup and handle normalization
+  db.rs          read-only queries against chat.db
+  format.rs      terminal and JSON rendering
+  source.rs      the daemon when one is listening, the database when not
+  lib.rs         the error type and the shapes both binaries share
+  bin/
+    msg.rs       command definitions
+    msgd.rs      the daemon process
   daemon/
-    protocol.ts  the wire: requests, frames, socket path
-    server.ts    the daemon itself
-    client.ts    connecting and reading answers
-    config.ts    the one config key, read by the daemon
-    send.ts      driving Messages.app over Apple Events
-    install.ts   the launchd agent and where the bundle lives
+    protocol.rs  the wire: requests, frames, socket path
+    server.rs    the daemon itself
+    client.rs    connecting and reading answers
+    config.rs    the one config key, read by the daemon
+    send.rs      driving Messages.app over Apple Events
+    install.rs   the launchd agent and where the bundle lives
+tests/
+  cli.rs         the binary as a user meets it, including exit statuses
+  daemon.rs      the daemon over a real socket
 ```
 
 ## Limitations

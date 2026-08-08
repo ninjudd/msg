@@ -6,7 +6,7 @@ uninstall` prints the `security delete-identity` line beside the `tccutil` one.
 The trade in §2 stands as described and nothing has been done about it.
 
 **Previously:** written down, nothing changed. The identity ships today: the first
-`pnpm build:msgd` creates a self-signed `msg dev` certificate in the login
+`./scripts/build.sh` creates a self-signed `msg dev` certificate in the login
 keychain and signs `msgd` with it. Nothing here is a defect report — it works —
 but the cost has not been written down anywhere, and one of the gaps below is
 the kind of thing that reads as carelessness rather than as a trade.
@@ -69,9 +69,9 @@ reaches for.
 
 Worth being precise, because the distinction is exactly what people object to:
 
-- `pnpm install` runs `prepare`, which runs `build`, which is `tsc`. **It never
+- Cloning and running `cargo build` never creates a certificate. **It never
   touches the keychain.**
-- `pnpm build:msgd` is what creates the certificate, and only when one named
+- `./scripts/build.sh` is what creates the certificate, and only when one named
   `msg dev` is not already there.
 
 So this is not a postinstall script rummaging in your keychain. It is an

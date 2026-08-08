@@ -3,7 +3,7 @@
     The daemon's icon: an iMessage bubble with a shell prompt in it.
 
     Source of truth for assets/msgd.icns, which is what actually ships. Edit
-    this, then run `pnpm icon` (scripts/build-icon.sh) to regenerate the .icns.
+    this, then run `./scripts/build-icon.sh` to regenerate the .icns.
 
     Blue, not green: green is the SMS bubble, which is the opposite of the point.
 

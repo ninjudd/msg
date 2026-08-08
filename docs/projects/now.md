@@ -6,5 +6,4 @@ Delete the line when the work is genuinely over. Committed but not started lives
 in [next](next.md); uncommitted ideas in [later](later.md). See
 [README](README.md) for how these lists work.
 
-- [Rewrite `msg` in Rust](all/rust-rewrite.md) — all of it, so installing stops
-  meaning "clone this and have Node 24".
+Nothing in flight.

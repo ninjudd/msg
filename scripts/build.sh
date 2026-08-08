@@ -110,7 +110,7 @@ if [ -z "$identity" ]; then
 	fi
 fi
 
-version=$(awk -F'"' '/^version = /{print $2; exit}' "$root/rust/Cargo.toml")
+version=$(awk -F'"' '/^version = /{print $2; exit}' "$root/Cargo.toml")
 
 # NSAppleEventsUsageDescription is not decoration. macOS denies an Apple Event
 # from a client that has none with -1743, without even prompting, so without it
@@ -136,14 +136,14 @@ info_plist() {
 	EOF
 }
 
-(cd "$root/rust" && cargo build --release)
+(cd "$root" && cargo build --release)
 
 # A stale _CodeSignature from a previous build makes the bundle fail to validate,
 # so start from nothing rather than writing over it.
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
-cp "$root/rust/target/release/msgd" "$app/Contents/MacOS/msgd"
+cp "$root/target/release/msgd" "$app/Contents/MacOS/msgd"
 info_plist >"$app/Contents/Info.plist"
 
 # Committed rather than generated, so the build needs nothing but a copy.
@@ -154,7 +154,7 @@ Redraw it with ./scripts/build-icon.sh."
 cp "$icon" "$app/Contents/Resources/msgd.icns"
 
 # `msg` sits beside the bundle, which is where `msg daemon install` looks for it.
-cp "$root/rust/target/release/msg" "$out/msg"
+cp "$root/target/release/msg" "$out/msg"
 
 # Signing comes last: everything above invalidates a signature. Signing the
 # bundle rather than the executable is what produces _CodeSignature, and
