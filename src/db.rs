@@ -1,5 +1,6 @@
 //! Read-only access to the Messages database.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -8,7 +9,7 @@ use rusqlite::{Connection, OpenFlags, Row, params_from_iter};
 use serde::{Deserialize, Serialize};
 
 use crate::apple::{from_apple_date, message_body};
-use crate::contacts::{ContactIndex, name_handles};
+use crate::contacts::{Contact, ContactIndex, name_handles};
 use crate::{Error, Result};
 
 pub fn default_db() -> PathBuf {
@@ -253,11 +254,49 @@ fn to_message(row: &Row<'_>, contacts: &ContactIndex) -> Message {
     }
 }
 
+/// One person, and every address Messages knows them by.
+///
+/// A contact is not a handle. The same person arrives as a phone number in one
+/// conversation and an email address in another, and Messages keeps a separate
+/// `handle` row for each — which is why searching "what did they say" cannot be
+/// a search of one handle, or of one conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Person {
+    /// What to call them: the contact name when there is one, else the address.
+    pub name: String,
+    /// `handle.rowid` for every address that resolves to this person.
+    pub handle_ids: Vec<i64>,
+    /// The addresses themselves, for saying who was matched.
+    pub handles: Vec<String>,
+}
+
+/// Whose messages a person filter keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sender {
+    /// Only what they sent — `--from`.
+    Only,
+    /// What they sent, plus what I sent in a conversation that is just the two
+    /// of us — `--with`.
+    ///
+    /// My own messages in a group are left out on purpose: they were addressed
+    /// to the room, not to this person, so counting them would make every
+    /// `--with` in a busy group chat return most of my own history.
+    BothWays,
+}
+
+/// One person, and which direction of the traffic is wanted.
+pub struct PersonFilter<'a> {
+    pub person: &'a Person,
+    pub sender: Sender,
+}
+
 pub struct FetchMessages<'a> {
     pub chat_id: Option<i64>,
     pub after_date: Option<i64>,
     pub after_rowid: Option<i64>,
     pub query: Option<&'a str>,
+    /// Restrict to one person, across every conversation they appear in.
+    pub person: Option<PersonFilter<'a>>,
     pub limit: i64,
     pub include_tapbacks: bool,
     pub include_filtered: bool,
@@ -277,12 +316,38 @@ impl Default for FetchMessages<'_> {
             after_date: None,
             after_rowid: None,
             query: None,
+            person: None,
             limit: 50,
             include_tapbacks: false,
             include_filtered: false,
             oldest_first: false,
         }
     }
+}
+
+/// The conversations that are just me and this person.
+///
+/// A chat whose membership is exactly one handle, and that handle is theirs.
+/// `chat_handle_join` holds one row per membership rather than per message, so
+/// this is a small table however long the history is.
+fn one_to_one_chats(db: &Connection, person: &Person) -> Result<Vec<i64>> {
+    let slots = std::iter::repeat_n("?", person.handle_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT mine.chat_id FROM chat_handle_join AS mine
+          WHERE mine.handle_id IN ({slots})
+            AND (SELECT COUNT(*) FROM chat_handle_join AS everyone
+                  WHERE everyone.chat_id = mine.chat_id) = 1"
+    );
+    let mut statement = db.prepare(&sql)?;
+    let ids = statement
+        .query_map(
+            params_from_iter(person.handle_ids.iter().map(|id| Value::from(*id))),
+            |row| row.get::<_, i64>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<i64>>>()?;
+    Ok(ids)
 }
 
 /// Fetch messages newest-first from the database, returned oldest-first.
@@ -311,6 +376,52 @@ pub fn fetch_messages(
     }
     if !options.include_tapbacks {
         clauses.push("message.associated_message_type = 0".into());
+    }
+    // Before the body match, deliberately. This is an integer test against a
+    // handful of ids, and putting it ahead of the `LIKE` means the blob is never
+    // cast for a message this search was never going to return.
+    if let Some(filter) = &options.person {
+        let ids = &filter.person.handle_ids;
+        let slots = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        // `is_from_me = 0` is not redundant. Messages stamps outgoing messages
+        // with the *recipient's* handle, so matching the handle alone would
+        // return my own messages as though they had sent them — the fixture
+        // carries a row exactly like that.
+        let sent_by_them = format!("(message.is_from_me = 0 AND message.handle_id IN ({slots}))");
+        match filter.sender {
+            Sender::Only => {
+                clauses.push(sent_by_them);
+                params.extend(ids.iter().map(|id| Value::from(*id)));
+            }
+            Sender::BothWays => {
+                // Mine count only where the conversation is just the two of us.
+                // Answered once, up front, rather than as a subquery: written
+                // inline it became a correlated `COUNT` that SQLite re-ran per
+                // candidate message, which cost more than the body scan it was
+                // meant to be narrowing. `chat_handle_join` has one row per
+                // membership, so asking separately is thousands of rows, once.
+                let ours = one_to_one_chats(db, filter.person)?;
+                if ours.is_empty() {
+                    // No one-to-one with them, so there is no "my side" to add
+                    // and `IN ()` is not valid SQL anyway.
+                    clauses.push(sent_by_them);
+                    params.extend(ids.iter().map(|id| Value::from(*id)));
+                } else {
+                    let chats = std::iter::repeat_n("?", ours.len())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    clauses.push(format!(
+                        "({sent_by_them}
+                          OR (message.is_from_me = 1
+                              AND chat_message_join.chat_id IN ({chats})))"
+                    ));
+                    params.extend(ids.iter().map(|id| Value::from(*id)));
+                    params.extend(ours.iter().map(|id| Value::from(*id)));
+                }
+            }
+        }
     }
     if let Some(query) = options.query {
         // The body lives in attributedBody when text is NULL, so match the raw
@@ -488,6 +599,172 @@ pub fn fetch_chats(
     });
     chats.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
     Ok(chats)
+}
+
+/// Turn the two person flags into one resolved filter.
+///
+/// Enforced here rather than only in the argument parser, because the daemon
+/// answers whatever a client sends and a client is not obliged to be the CLI.
+/// Silently preferring one flag over the other would answer a different question
+/// from the one asked.
+pub fn person_filter(
+    db: &Connection,
+    with: Option<&str>,
+    from: Option<&str>,
+    contacts: &ContactIndex,
+) -> Result<Option<(Person, Sender)>> {
+    match (with, from) {
+        (Some(_), Some(_)) => Err(Error::other(
+            "--with and --from ask different questions; use one",
+        )),
+        (Some(spec), None) => Ok(Some((
+            resolve_person(db, spec, contacts)?,
+            Sender::BothWays,
+        ))),
+        (None, Some(spec)) => Ok(Some((resolve_person(db, spec, contacts)?, Sender::Only))),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Find one person, and gather every address they use.
+///
+/// The `handle` table is a few thousand rows even on a decade-old database, so
+/// this reads it whole and matches in Rust rather than asking SQLite to. That
+/// keeps the matching rules the same ones the rest of the program already uses:
+/// [`handle_key`] for addresses, so `+13105551234` and `(310) 555-1234` are one
+/// person, and the contact index for names.
+///
+/// Two addresses belong to the same person when they belong to the same Contacts
+/// record — the record, not the name it renders as, because two records can
+/// legitimately share a name and merging them would answer with two people's
+/// messages under one. Addresses with no contact behind them are each their own
+/// person, since there is nothing to join them by.
+///
+/// Matching happens in two passes, and the second is the point. Naming any one
+/// address has to reach the rest: someone whose phone and email are one contact
+/// is one person, so `--from <their email>` must find what they sent from their
+/// phone. So the first pass decides *who* matched and the second gathers every
+/// address those people have, whether or not it looks anything like what was
+/// typed.
+pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> Result<Person> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return Err(Error::other("no one to search for"));
+    }
+
+    let mut statement = db.prepare("SELECT rowid, id FROM handle")?;
+    let mut rows = statement.query([])?;
+    let mut known: Vec<(i64, String, Option<Contact>)> = Vec::new();
+    while let Some(row) = rows.next()? {
+        let rowid: i64 = row.get(0)?;
+        let Ok(handle) = row.get::<_, String>(1) else {
+            continue;
+        };
+        let contact = contacts.contact(Some(&handle)).cloned();
+        known.push((rowid, handle, contact));
+    }
+
+    let lowered = trimmed.to_lowercase();
+    let wanted_key = crate::contacts::handle_key(trimmed);
+    // An address given outright matches on the same key the contact index uses,
+    // so the shape it was typed in does not matter.
+    let exactly = |handle: &str| match (wanted_key.as_ref(), crate::contacts::handle_key(handle)) {
+        (Some(wanted), Some(key)) => *wanted == key,
+        _ => false,
+    };
+    let loosely = |handle: &str, contact: Option<&Contact>| {
+        contact.is_some_and(|contact| contact.name.to_lowercase().contains(&lowered))
+            || handle.to_lowercase().contains(&lowered)
+    };
+
+    let identity = |handle: &str, contact: Option<&Contact>| match contact {
+        Some(contact) => format!("contact:{}", contact.id),
+        // Two shapes of one unknown number are still one person, which is the
+        // most that can be said without a contact to join them by.
+        None => format!(
+            "handle:{}",
+            crate::contacts::handle_key(handle).unwrap_or_else(|| handle.to_string())
+        ),
+    };
+
+    let owners = |pick: &dyn Fn(&str, Option<&Contact>) -> bool| -> BTreeSet<String> {
+        known
+            .iter()
+            .filter(|(_, handle, contact)| pick(handle, contact.as_ref()))
+            .map(|(_, handle, contact)| identity(handle, contact.as_ref()))
+            .collect()
+    };
+
+    // An address typed in full names one person outright, and only when none
+    // does is the spec read as a fragment to search for. Otherwise an address
+    // that happens to read as part of a longer one — `someone@example.com`
+    // inside `notsomeone@example.com` — drags a stranger in and turns naming
+    // somebody exactly into an ambiguity, which is the opposite of what naming
+    // an address is for.
+    let mut matched = owners(&|handle, _| exactly(handle));
+    if matched.is_empty() {
+        matched = owners(&loosely);
+    }
+
+    let mut people: BTreeMap<String, Person> = BTreeMap::new();
+    for (rowid, handle, contact) in &known {
+        let key = identity(handle, contact.as_ref());
+        if !matched.contains(&key) {
+            continue;
+        }
+        let person = people.entry(key).or_insert_with(|| Person {
+            name: contact
+                .as_ref()
+                .map_or_else(|| handle.clone(), |contact| contact.name.clone()),
+            handle_ids: Vec::new(),
+            handles: Vec::new(),
+        });
+        person.handle_ids.push(*rowid);
+        person.handles.push(handle.clone());
+    }
+
+    if people.is_empty() {
+        return Err(Error::other(format!("no one matching {spec}")));
+    }
+    if people.len() == 1 {
+        return Ok(people.into_values().next().expect("one match"));
+    }
+
+    // An exact name breaks a tie, the same way it does for a chat — unless two
+    // records answer to it, which is the case this cannot silently pick from.
+    let exact: Vec<Person> = people
+        .values()
+        .filter(|person| person.name.to_lowercase() == lowered)
+        .cloned()
+        .collect();
+    if exact.len() == 1 {
+        return Ok(exact.into_iter().next().expect("one match"));
+    }
+
+    Err(Error::other(format!(
+        "{} people match {spec}: {}",
+        people.len(),
+        describe(people.values().take(6))
+    )))
+}
+
+/// Label each person well enough to tell them apart, which their names alone may
+/// not do. An address is added only where the name is ambiguous, so the usual
+/// message stays a list of names.
+fn describe<'a>(people: impl Iterator<Item = &'a Person> + Clone) -> String {
+    let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+    for person in people.clone() {
+        *seen.entry(person.name.as_str()).or_default() += 1;
+    }
+    people
+        .map(
+            |person| match (seen.get(person.name.as_str()), person.handles.first()) {
+                (Some(2..), Some(handle)) => format!("{} ({handle})", person.name),
+                _ => person.name.clone(),
+            },
+        )
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Find a single chat by rowid, identifier, or name substring.
@@ -723,6 +1000,246 @@ mod tests {
         )
         .unwrap();
         assert_eq!(bodies(&messages), ["deploy is green"]);
+    }
+
+    /// Both flags, side by side on the same fixture, because the whole point of
+    /// having two is that they answer differently.
+    ///
+    /// Handle 1 talks in chat 1, a one-to-one, and in chat 2, a group. `m2` is
+    /// mine, sent to them in the one-to-one.
+    #[test]
+    fn from_is_what_they_sent_and_with_is_the_exchange() {
+        let db = fixture();
+        let contacts = ContactIndex::empty();
+        let person = resolve_person(&db, "+13105551234", &contacts).unwrap();
+
+        let ask = |sender| {
+            fetch_messages(
+                &db,
+                &FetchMessages {
+                    person: Some(PersonFilter {
+                        person: &person,
+                        sender,
+                    }),
+                    ..Default::default()
+                },
+                &contacts,
+            )
+            .unwrap()
+        };
+
+        // Theirs only. `m2` is mine even though it carries their handle.
+        assert_eq!(bodies(&ask(Sender::Only)), ["are you around later"]);
+        // Theirs plus mine, and mine only because chat 1 is just the two of us.
+        assert_eq!(
+            bodies(&ask(Sender::BothWays)),
+            ["are you around later", "after 6, yeah"]
+        );
+    }
+
+    /// The bug this would have shipped with: Messages stamps outgoing messages
+    /// with the recipient's handle, so a filter that only tested `handle_id`
+    /// would report my own messages as theirs.
+    #[test]
+    fn a_message_i_sent_is_never_reported_as_one_they_sent() {
+        let db = fixture();
+        let contacts = ContactIndex::empty();
+        let person = resolve_person(&db, "+13105551234", &contacts).unwrap();
+        let mine: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM message WHERE is_from_me = 1 AND handle_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(mine > 0, "the fixture no longer covers the case");
+
+        let messages = fetch_messages(
+            &db,
+            &FetchMessages {
+                person: Some(PersonFilter {
+                    person: &person,
+                    sender: Sender::Only,
+                }),
+                ..Default::default()
+            },
+            &contacts,
+        )
+        .unwrap();
+        assert!(
+            messages.iter().all(|message| !message.is_from_me),
+            "a message I sent came back from --from"
+        );
+    }
+
+    /// A group is where the two flags could quietly become the same thing.
+    #[test]
+    fn with_does_not_drag_in_my_half_of_a_group_chat() {
+        let db = fixture();
+        db.execute(
+            "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
+                 associated_message_type, date, service)
+             VALUES (6, 'm6', 'shipping now', 1, 2, 0, ?, 'iMessage')",
+            rusqlite::params![at(5)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+             VALUES (2, 6, ?)",
+            rusqlite::params![at(5)],
+        )
+        .unwrap();
+
+        let contacts = ContactIndex::empty();
+        // Handle 2 is only ever in chat 2, which is a group.
+        let person = resolve_person(&db, "someone@example.com", &contacts).unwrap();
+        let messages = fetch_messages(
+            &db,
+            &FetchMessages {
+                person: Some(PersonFilter {
+                    person: &person,
+                    sender: Sender::BothWays,
+                }),
+                ..Default::default()
+            },
+            &contacts,
+        )
+        .unwrap();
+        // Not "shipping now": I said that to the room, not to them.
+        assert_eq!(bodies(&messages), ["deploy is green"]);
+    }
+
+    /// One person, two addresses, one answer — however they were named.
+    ///
+    /// The spec cases matter separately. Naming the *name* matches both handles
+    /// on its own, so it would pass even if an address reached only itself;
+    /// naming one address is what proves the rest of the contact comes with it.
+    #[test]
+    fn a_contact_is_searched_by_every_address_they_use() {
+        let db = fixture();
+        let contacts = ContactIndex::for_test([
+            ("+13105551234", "source:7", "Sam Rivera"),
+            ("someone@example.com", "source:7", "Sam Rivera"),
+        ]);
+
+        for spec in [
+            "Sam",
+            "+13105551234",
+            "someone@example.com",
+            "(310) 555-1234",
+        ] {
+            let person = resolve_person(&db, spec, &contacts).unwrap();
+            assert_eq!(person.name, "Sam Rivera", "resolving {spec}");
+            assert_eq!(person.handle_ids.len(), 2, "resolving {spec}: {person:?}");
+
+            let messages = fetch_messages(
+                &db,
+                &FetchMessages {
+                    person: Some(PersonFilter {
+                        person: &person,
+                        sender: Sender::Only,
+                    }),
+                    ..Default::default()
+                },
+                &contacts,
+            )
+            .unwrap();
+            // One from each address, gathered under the one contact.
+            assert_eq!(
+                bodies(&messages),
+                ["are you around later", "deploy is green"],
+                "resolving {spec}"
+            );
+        }
+    }
+
+    /// An address names one person outright, even when a longer address
+    /// contains it.
+    ///
+    /// `someone@example.com` reads as part of `notsomeone@example.com`, so the
+    /// substring arm matched a second, unrelated contact and naming somebody
+    /// exactly came back as an ambiguity. Nothing could recover it either: the
+    /// tie-break after it compares *display names* against what was typed, and
+    /// no name equals an email address. That contradicts the README, which says
+    /// to name an address when a name is ambiguous.
+    #[test]
+    fn an_address_typed_in_full_beats_a_longer_one_containing_it() {
+        let db = fixture();
+        db.execute(
+            "INSERT INTO handle (rowid, id) VALUES (3, 'notsomeone@example.com')",
+            [],
+        )
+        .unwrap();
+        let contacts = ContactIndex::for_test([
+            ("someone@example.com", "source:7", "Sam Rivera"),
+            ("notsomeone@example.com", "source:9", "Kit Alvarez"),
+        ]);
+
+        let person = resolve_person(&db, "someone@example.com", &contacts).unwrap();
+        assert_eq!(person.name, "Sam Rivera", "{person:?}");
+        assert_eq!(person.handles, ["someone@example.com"], "{person:?}");
+
+        // The longer address is still reachable, and reaches only itself.
+        let other = resolve_person(&db, "notsomeone@example.com", &contacts).unwrap();
+        assert_eq!(other.name, "Kit Alvarez", "{other:?}");
+        assert_eq!(other.handles, ["notsomeone@example.com"], "{other:?}");
+
+        // A fragment of an address is still a fragment, and still ambiguous.
+        let error = resolve_person(&db, "example.com", &contacts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 people match"), "{error}");
+    }
+
+    /// Two people can answer to one name, and a rendered name is not an identity.
+    ///
+    /// Keying people by what they render as merges them, and a search then
+    /// quietly returns two people's messages as one person's. Reporting the
+    /// ambiguity is the least this can do; picking one silently is the thing it
+    /// must not.
+    #[test]
+    fn two_contacts_sharing_a_name_are_two_people() {
+        let db = fixture();
+        let contacts = ContactIndex::for_test([
+            ("+13105551234", "source:7", "Sam Rivera"),
+            ("someone@example.com", "source:9", "Sam Rivera"),
+        ]);
+
+        let error = resolve_person(&db, "Sam Rivera", &contacts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 people match"), "{error}");
+        // Named twice over, so the addresses are what tell them apart.
+        assert!(error.contains("+13105551234"), "{error}");
+        assert!(error.contains("someone@example.com"), "{error}");
+
+        // Naming one address still reaches exactly one of them.
+        let person = resolve_person(&db, "someone@example.com", &contacts).unwrap();
+        assert_eq!(person.handles, ["someone@example.com"], "{person:?}");
+    }
+
+    #[test]
+    fn asking_for_both_directions_at_once_is_refused() {
+        let db = fixture();
+        let error = person_filter(
+            &db,
+            Some("+13105551234"),
+            Some("+13105551234"),
+            &ContactIndex::empty(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("--with and --from"), "{error}");
+    }
+
+    #[test]
+    fn naming_nobody_says_so_rather_than_matching_everybody() {
+        let db = fixture();
+        let contacts = ContactIndex::empty();
+        let error = resolve_person(&db, "nobody-by-that-name", &contacts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no one matching"), "{error}");
     }
 
     #[test]

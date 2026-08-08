@@ -87,6 +87,12 @@ enum Command {
         /// restrict to one conversation
         #[arg(short = 'c', long)]
         chat: Option<String>,
+        /// one person's conversation with you, across every chat
+        #[arg(short = 'w', long)]
+        with: Option<String>,
+        /// only what one person sent, across every chat
+        #[arg(short = 'f', long, conflicts_with = "with")]
+        from: Option<String>,
         /// only messages after a duration like 30d or a date
         #[arg(long)]
         since: Option<String>,
@@ -267,12 +273,16 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
             query,
             limit,
             chat,
+            with,
+            from,
             since,
             json,
         } => {
             let messages = source.search(&SearchQuery {
                 query: query.clone(),
                 chat: chat.clone(),
+                with: with.clone(),
+                from: from.clone(),
                 limit: *limit,
                 since: since.clone(),
                 unknown: cli.unknown,

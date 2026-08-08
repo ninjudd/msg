@@ -13,14 +13,28 @@ fn address_book() -> PathBuf {
     crate::home().join("Library/Application Support/AddressBook")
 }
 
-/// Handle-to-name, plus why it is emptier than expected when it is.
+/// One Contacts record: who it is, kept apart from what it renders as.
+///
+/// Two records can legitimately carry the same name — an old entry and a new
+/// one, a father and a son — so anything that groups people has to group by
+/// `id` and merely *display* `name`. Grouping by the name merges strangers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Contact {
+    /// Source plus record id. Unique for as long as the index lives, which is
+    /// one run: these are Core Data primary keys, stable within a database but
+    /// not across accounts, hence the source in front.
+    pub id: String,
+    pub name: String,
+}
+
+/// Handle-to-contact, plus why it is emptier than expected when it is.
 ///
 /// Contacts is best-effort — messages still read without it — but silently
 /// best-effort is how an empty index went unnoticed until names stopped
 /// resolving with no explanation anywhere.
 #[derive(Debug, Default, Clone)]
 pub struct ContactIndex {
-    names: HashMap<String, String>,
+    contacts: HashMap<String, Contact>,
     problems: Vec<String>,
 }
 
@@ -30,19 +44,48 @@ impl ContactIndex {
         Self::default()
     }
 
+    /// An index built from `(handle, record id, name)`, for tests.
+    ///
+    /// Keyed through [`handle_key`] like the real loader, so a test that writes
+    /// a number in one shape and looks it up in another behaves the same way the
+    /// program does. The record id is spelled out rather than derived from the
+    /// name, so a test can hand two different people the same name.
+    #[cfg(test)]
+    pub fn for_test<'a>(records: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>) -> Self {
+        Self {
+            contacts: records
+                .into_iter()
+                .filter_map(|(handle, id, name)| {
+                    let contact = Contact {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                    };
+                    Some((handle_key(handle)?, contact))
+                })
+                .collect(),
+            problems: Vec::new(),
+        }
+    }
+
     /// The name for a handle, or `None` when it is unknown.
     pub fn lookup(&self, handle: Option<&str>) -> Option<&str> {
+        Some(self.contact(handle)?.name.as_str())
+    }
+
+    /// The whole record, for callers that have to tell two people apart rather
+    /// than print one.
+    pub fn contact(&self, handle: Option<&str>) -> Option<&Contact> {
         let key = handle_key(handle?)?;
-        self.names.get(&key).map(String::as_str)
+        self.contacts.get(&key)
     }
 
     /// How many handles the index knows about.
     pub fn len(&self) -> usize {
-        self.names.len()
+        self.contacts.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.names.is_empty()
+        self.contacts.is_empty()
     }
 
     pub fn problems(&self) -> &[String] {
@@ -159,11 +202,11 @@ pub fn load_contacts(preferred_source: Option<&str>) -> ContactIndex {
     if databases.is_empty() && problems.is_empty() {
         problems.push(format!("no Contacts databases under {}", book.display()));
     }
-    let sources: Vec<(PathBuf, HashMap<String, String>)> = databases
+    let sources: Vec<(PathBuf, HashMap<String, Contact>)> = databases
         .into_iter()
         .map(|path| {
-            let names = read_source(&path, &mut problems);
-            (path, names)
+            let contacts = read_source(&path, &mut problems);
+            (path, contacts)
         })
         .collect();
 
@@ -177,55 +220,63 @@ pub fn load_contacts(preferred_source: Option<&str>) -> ContactIndex {
     // which makes the legacy top-level database the preferred one — the same
     // tie-break the TypeScript `===` produced.
     let matches_preferred = |path: &Path| source_id_of(path) == preferred;
-    let mut names = HashMap::new();
+    let mut contacts = HashMap::new();
     let first = sources.iter().filter(|(path, _)| matches_preferred(path));
     let rest = sources.iter().filter(|(path, _)| !matches_preferred(path));
     for (_, source) in first.chain(rest) {
-        merge(&mut names, source);
+        merge(&mut contacts, source);
     }
 
-    ContactIndex { names, problems }
+    ContactIndex { contacts, problems }
 }
 
-fn merge(into: &mut HashMap<String, String>, from: &HashMap<String, String>) {
-    for (key, name) in from {
-        into.entry(key.clone()).or_insert_with(|| name.clone());
+fn merge(into: &mut HashMap<String, Contact>, from: &HashMap<String, Contact>) {
+    for (key, contact) in from {
+        into.entry(key.clone()).or_insert_with(|| contact.clone());
     }
 }
 
 /// Read one Contacts database. A source that cannot be opened is skipped; the
 /// others still count.
-fn read_source(path: &Path, problems: &mut Vec<String>) -> HashMap<String, String> {
-    let mut names = HashMap::new();
+fn read_source(path: &Path, problems: &mut Vec<String>) -> HashMap<String, Contact> {
+    let mut contacts = HashMap::new();
     let db = match Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
         Ok(db) => db,
         Err(error) => {
             problems.push(format!("{}: {error}", path.display()));
-            return names;
+            return contacts;
         }
     };
 
+    // Record ids are only unique within their own database, so the source they
+    // came from goes in front of them. The legacy top-level database has no
+    // directory to name it, and calling that one `local` is enough to keep it
+    // from colliding with an account's.
+    let source = source_id_of(path).unwrap_or_else(|| "local".to_string());
     for sql in [
-        "SELECT p.ZFULLNUMBER AS handle, r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
+        "SELECT p.ZFULLNUMBER AS handle, r.Z_PK AS record,
+                r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
            FROM ZABCDPHONENUMBER p
            JOIN ZABCDRECORD r ON r.Z_PK = p.ZOWNER
           WHERE p.ZFULLNUMBER IS NOT NULL",
-        "SELECT e.ZADDRESS AS handle, r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
+        "SELECT e.ZADDRESS AS handle, r.Z_PK AS record,
+                r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
            FROM ZABCDEMAILADDRESS e
            JOIN ZABCDRECORD r ON r.Z_PK = e.ZOWNER
           WHERE e.ZADDRESS IS NOT NULL",
     ] {
-        if let Err(error) = collect(&db, sql, &mut names) {
+        if let Err(error) = collect(&db, sql, &source, &mut contacts) {
             problems.push(format!("{}: {error}", path.display()));
         }
     }
-    names
+    contacts
 }
 
 fn collect(
     db: &Connection,
     sql: &str,
-    names: &mut HashMap<String, String>,
+    source: &str,
+    contacts: &mut HashMap<String, Contact>,
 ) -> rusqlite::Result<()> {
     let mut statement = db.prepare(sql)?;
     let mut rows = statement.query([])?;
@@ -236,12 +287,18 @@ fn collect(
         let Some(key) = handle_key(&handle) else {
             continue;
         };
+        let Ok(record) = row.get::<_, i64>("record") else {
+            continue;
+        };
         let Some(name) = person_name(row) else {
             continue;
         };
         // Sources are visited primary first, so the first name for a handle is
         // the one from the account the user actually maintains.
-        names.entry(key).or_insert(name);
+        contacts.entry(key).or_insert(Contact {
+            id: format!("{source}:{record}"),
+            name,
+        });
     }
     Ok(())
 }
@@ -282,13 +339,10 @@ mod tests {
     /// An index built by hand, so no test here reads the Contacts of whoever is
     /// running them.
     fn index() -> ContactIndex {
-        let mut names = HashMap::new();
-        names.insert("3105551234".to_string(), "Dana Reyes".to_string());
-        names.insert("4155559876".to_string(), "Sam Oyelaran".to_string());
-        ContactIndex {
-            names,
-            problems: Vec::new(),
-        }
+        ContactIndex::for_test([
+            ("3105551234", "test:1", "Dana Reyes"),
+            ("4155559876", "test:2", "Sam Oyelaran"),
+        ])
     }
 
     #[test]

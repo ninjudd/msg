@@ -24,8 +24,8 @@ use crate::daemon::protocol::{
 };
 use crate::daemon::send::{check_automation, send_attachment, send_message};
 use crate::db::{
-    Chat, FetchMessages, Message, database_path, fetch_chats, fetch_messages, latest_rowid,
-    open_database, resolve_chat,
+    Chat, FetchMessages, Message, PersonFilter, database_path, fetch_chats, fetch_messages,
+    latest_rowid, open_database, person_filter, resolve_chat,
 };
 use crate::{Error, Result, VERSION};
 
@@ -402,11 +402,20 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
                     .as_deref()
                     .map(|spec| resolve_chat(db, spec, &contacts).map(|chat| chat.rowid))
                     .transpose()?;
+                // Resolved against the same contact index the results are named
+                // with, so the name that comes back is the name that was asked
+                // for. `--no-names` leaves only the addresses to match on.
+                let person =
+                    person_filter(db, ask.with.as_deref(), ask.from.as_deref(), &contacts)?;
                 fetch_messages(
                     db,
                     &FetchMessages {
                         query: Some(&ask.query),
                         chat_id,
+                        person: person.as_ref().map(|(person, sender)| PersonFilter {
+                            person,
+                            sender: *sender,
+                        }),
                         after_date,
                         limit: ask.limit.unwrap_or(25),
                         include_filtered: ask.unknown == Some(true),
