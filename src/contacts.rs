@@ -25,6 +25,38 @@ pub struct Contact {
     /// not across accounts, hence the source in front.
     pub id: String,
     pub name: String,
+    /// The nickname Contacts holds, when it is not already the name above.
+    ///
+    /// Someone filed as their full name and known to everyone as something else
+    /// is still shown as their full name — that is the name Messages and
+    /// Contacts agree on — but the nickname is what you would type to find them,
+    /// so it is kept beside the name rather than thrown away.
+    pub nickname: Option<String>,
+}
+
+impl Contact {
+    /// Whether this contact answers to `needle`: part of the name they are shown
+    /// as, or part of the nickname they are not.
+    ///
+    /// `needle` must already be lowercased, since one query is matched against
+    /// every contact rather than the other way round.
+    pub fn answers_to(&self, needle: &str) -> bool {
+        self.names().any(|name| name.contains(needle))
+    }
+
+    /// Whether one of those names is exactly `needle`, for breaking a tie
+    /// between the people a fragment matched.
+    pub fn is_named(&self, needle: &str) -> bool {
+        self.names().any(|name| name == needle)
+    }
+
+    /// Every name this contact can be found by, lowercased for comparison.
+    fn names(&self) -> impl Iterator<Item = String> {
+        [Some(&self.name), self.nickname.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|name| name.to_lowercase())
+    }
 }
 
 /// Handle-to-contact, plus why it is emptier than expected when it is.
@@ -59,12 +91,24 @@ impl ContactIndex {
                     let contact = Contact {
                         id: id.to_string(),
                         name: name.to_string(),
+                        nickname: None,
                     };
                     Some((handle_key(handle)?, contact))
                 })
                 .collect(),
             problems: Vec::new(),
         }
+    }
+
+    /// Give a handle's contact a nickname, for the tests about being found by
+    /// one. Separate from [`Self::for_test`] so the many tests that do not care
+    /// about nicknames do not have to say so.
+    #[cfg(test)]
+    pub fn nicknamed(mut self, handle: &str, nickname: &str) -> Self {
+        let key = handle_key(handle).expect("a handle to nickname");
+        let contact = self.contacts.get_mut(&key).expect("a contact to nickname");
+        contact.nickname = Some(nickname.to_string());
+        self
     }
 
     /// The name for a handle, or `None` when it is unknown.
@@ -77,6 +121,31 @@ impl ContactIndex {
     pub fn contact(&self, handle: Option<&str>) -> Option<&Contact> {
         let key = handle_key(handle?)?;
         self.contacts.get(&key)
+    }
+
+    /// Whether one of a conversation's `handles` — the comma-joined list the
+    /// chat queries build — belongs to someone who answers to `needle`.
+    ///
+    /// The names these handles render as are already searched, because they are
+    /// what the conversation is shown as. This is what reaches the nickname
+    /// behind them, which is shown nowhere and so can only be found on purpose.
+    pub fn any_answers_to(&self, handles: Option<&str>, needle: &str) -> bool {
+        self.any(handles, &|contact| contact.answers_to(needle))
+    }
+
+    /// The same question asked exactly, for breaking a tie between the
+    /// conversations a fragment matched.
+    pub fn any_named(&self, handles: Option<&str>, needle: &str) -> bool {
+        self.any(handles, &|contact| contact.is_named(needle))
+    }
+
+    fn any(&self, handles: Option<&str>, matches: &dyn Fn(&Contact) -> bool) -> bool {
+        handles.is_some_and(|handles| {
+            handles
+                .split(',')
+                .filter_map(|handle| self.contact(Some(handle)))
+                .any(matches)
+        })
     }
 
     /// How many handles the index knows about.
@@ -236,6 +305,18 @@ fn merge(into: &mut HashMap<String, Contact>, from: &HashMap<String, Contact>) {
     }
 }
 
+const PHONES_SQL: &str = "SELECT p.ZFULLNUMBER AS handle, r.Z_PK AS record,
+                r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
+           FROM ZABCDPHONENUMBER p
+           JOIN ZABCDRECORD r ON r.Z_PK = p.ZOWNER
+          WHERE p.ZFULLNUMBER IS NOT NULL";
+
+const EMAILS_SQL: &str = "SELECT e.ZADDRESS AS handle, r.Z_PK AS record,
+                r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
+           FROM ZABCDEMAILADDRESS e
+           JOIN ZABCDRECORD r ON r.Z_PK = e.ZOWNER
+          WHERE e.ZADDRESS IS NOT NULL";
+
 /// Read one Contacts database. A source that cannot be opened is skipped; the
 /// others still count.
 fn read_source(path: &Path, problems: &mut Vec<String>) -> HashMap<String, Contact> {
@@ -253,18 +334,7 @@ fn read_source(path: &Path, problems: &mut Vec<String>) -> HashMap<String, Conta
     // directory to name it, and calling that one `local` is enough to keep it
     // from colliding with an account's.
     let source = source_id_of(path).unwrap_or_else(|| "local".to_string());
-    for sql in [
-        "SELECT p.ZFULLNUMBER AS handle, r.Z_PK AS record,
-                r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
-           FROM ZABCDPHONENUMBER p
-           JOIN ZABCDRECORD r ON r.Z_PK = p.ZOWNER
-          WHERE p.ZFULLNUMBER IS NOT NULL",
-        "SELECT e.ZADDRESS AS handle, r.Z_PK AS record,
-                r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
-           FROM ZABCDEMAILADDRESS e
-           JOIN ZABCDRECORD r ON r.Z_PK = e.ZOWNER
-          WHERE e.ZADDRESS IS NOT NULL",
-    ] {
+    for sql in [PHONES_SQL, EMAILS_SQL] {
         if let Err(error) = collect(&db, sql, &source, &mut contacts) {
             problems.push(format!("{}: {error}", path.display()));
         }
@@ -290,7 +360,7 @@ fn collect(
         let Ok(record) = row.get::<_, i64>("record") else {
             continue;
         };
-        let Some(name) = person_name(row) else {
+        let Some((name, nickname)) = person_names(row) else {
             continue;
         };
         // Sources are visited primary first, so the first name for a handle is
@@ -298,12 +368,21 @@ fn collect(
         contacts.entry(key).or_insert(Contact {
             id: format!("{source}:{record}"),
             name,
+            nickname,
         });
     }
     Ok(())
 }
 
-fn person_name(row: &rusqlite::Row<'_>) -> Option<String> {
+/// What to call a record, and what else it answers to.
+///
+/// A nickname is a display name only when there is no real one, which is the
+/// rule Contacts itself follows: someone filed under a nickname alone is shown
+/// as it, and someone filed under their full name is shown as that however they
+/// are actually addressed. Either way it stays searchable, which is the second
+/// half of the pair — the half that is otherwise unreachable, since a nickname
+/// that is not the display name appears nowhere at all.
+fn person_names(row: &rusqlite::Row<'_>) -> Option<(String, Option<String>)> {
     let text = |column: &str| -> Option<String> {
         row.get::<_, Option<String>>(column)
             .ok()
@@ -311,13 +390,16 @@ fn person_name(row: &rusqlite::Row<'_>) -> Option<String> {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
     };
+    let nickname = text("ZNICKNAME");
     let first = text("ZFIRSTNAME");
     let last = text("ZLASTNAME");
     if first.is_some() || last.is_some() {
         let parts: Vec<String> = [first, last].into_iter().flatten().collect();
-        return Some(parts.join(" "));
+        return Some((parts.join(" "), nickname));
     }
-    text("ZNICKNAME").or_else(|| text("ZORGANIZATION"))
+    // With no real name the nickname is what is shown, so there is nothing left
+    // for it to also be found by.
+    Some((nickname.or_else(|| text("ZORGANIZATION"))?, None))
 }
 
 /// Replace handles with names where they are known, keeping order.
@@ -393,6 +475,69 @@ mod tests {
         assert_eq!(handle_key(""), None);
         assert_eq!(handle_key("   "), None);
         assert_eq!(handle_key("---"), None);
+    }
+
+    /// The name/nickname split, read through the SQL that ships, so the column
+    /// names being right is part of what passes.
+    #[test]
+    fn keeps_a_nickname_beside_a_real_name_and_shows_one_that_stands_alone() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT,
+               ZLASTNAME TEXT, ZNICKNAME TEXT, ZORGANIZATION TEXT);
+             CREATE TABLE ZABCDPHONENUMBER (ZOWNER INTEGER, ZFULLNUMBER TEXT);
+             INSERT INTO ZABCDRECORD VALUES
+               (1, 'Robin', 'Adeyemi', 'Rocket', NULL),
+               (2, NULL, NULL, 'Rocket', NULL);
+             INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER) VALUES
+               (1, '+13105551234'), (2, '(415) 555-9876');",
+        )
+        .unwrap();
+
+        let mut contacts = HashMap::new();
+        collect(&db, PHONES_SQL, "test", &mut contacts).unwrap();
+        let index = ContactIndex {
+            contacts,
+            problems: Vec::new(),
+        };
+
+        // A real name is what shows; the nickname is kept to be found by.
+        let named = index.contact(Some("+13105551234")).unwrap();
+        assert_eq!(named.name, "Robin Adeyemi");
+        assert_eq!(named.nickname.as_deref(), Some("Rocket"));
+
+        // Without one, the nickname is the name, and nothing is left over.
+        let unnamed = index.contact(Some("+14155559876")).unwrap();
+        assert_eq!(unnamed.name, "Rocket");
+        assert_eq!(unnamed.nickname, None);
+
+        // Either way, both are found by it.
+        assert!(named.answers_to("rocket") && unnamed.answers_to("rocket"));
+    }
+
+    #[test]
+    fn answers_to_both_of_a_contacts_names_whatever_the_case() {
+        let index = index().nicknamed("3105551234", "Dee");
+        let dana = index.contact(Some("+13105551234")).unwrap();
+
+        assert!(dana.answers_to("dee"), "the nickname");
+        assert!(dana.answers_to("reyes"), "part of the name");
+        assert!(!dana.answers_to("sam"), "somebody else");
+
+        // Exactly means exactly, or a fragment would settle every tie it made.
+        assert!(dana.is_named("dee") && dana.is_named("dana reyes"));
+        assert!(!dana.is_named("de") && !dana.is_named("dana"));
+    }
+
+    #[test]
+    fn asks_a_whole_conversations_worth_of_handles_at_once() {
+        let index = index().nicknamed("4155559876", "Sammy");
+        let handles = Some("+13105551234,+14155559876");
+
+        assert!(index.any_answers_to(handles, "sammy"));
+        assert!(index.any_named(handles, "sammy"));
+        assert!(!index.any_answers_to(handles, "rocket"));
+        assert!(!index.any_answers_to(None, "sammy"));
     }
 
     #[test]

@@ -90,6 +90,22 @@ A chat can be named by its rowid, by a handle, or by any substring of its name.
 When a substring matches more than one conversation, `msg` lists the candidates
 instead of guessing.
 
+A [nickname](#contacts) counts as one of those names, so someone filed under
+their full name and known to you as something else is found by either.
+
+**Several conversations with one person are not an ambiguity.** Messages keeps a
+conversation per address, so someone you reach at a phone number and an email
+address has two of them, and naming that person matches both. They are one
+Contacts record, so `msg` answers with whichever was last active rather than
+asking a question that has no answer. A fragment counts as naming them: typing
+fewer letters does not make it two people.
+
+What still reports an ambiguity is a question that has an answer. Two
+*different* people who happen to share a name are two people, and what gets
+collapsed is the Contacts record, never the name it renders as. And a name that
+reaches both somebody's own conversation and a group they are in is a genuine
+choice between a person and a room, so it is put back to you.
+
 ### Reading
 
 ```sh
@@ -232,6 +248,22 @@ tccutil reset AppleEvents com.ninjudd.msgd
 
 `--dry-run` works whatever the gates say, so the disabled state stays
 inspectable.
+
+**A confirmation names the address, not just the person.**
+
+```
+$ msg send dana "on my way" --dry-run
+would send to Dana Reyes (dana@example.com): on my way
+```
+
+Somebody you reach at a phone number and an email address has two
+conversations that display the same name, and `msg` picks the one last active.
+The address is the only thing that distinguishes them, and the routes are not
+interchangeable — one of them may be an SMS fallback, and the most recent is not
+always the one that gets read. A dry run that printed only the name would be
+identical in both cases, which would make it useless as the check it is for.
+Conversations with a name of their own are named by it, since a room is not
+ambiguous the way a person is.
 
 The chat identifier and the message body are passed to AppleScript as arguments
 rather than interpolated into it, so quotes, backslashes, and newlines in a
@@ -440,6 +472,20 @@ ten distinct formats for the same kind of number, including `+13105551234`,
 sides of a comparison are stripped to digits, and numbers long enough to carry a
 country code are matched on their last ten digits. Short codes are matched
 whole, and email handles are matched case-insensitively.
+
+**A nickname is a name you can type, not a name you see.** Someone filed as
+Robert Chen with a nickname of Bob is still shown as Robert Chen — that is the
+name Messages and Contacts agree on — but `msg chats bob`, `msg read bob`, and
+`msg search "dinner" --from bob` all find him. A nickname is only shown when
+there is no real name behind it, which is the rule Contacts itself follows.
+
+Nicknames are matched exactly where names are, and nowhere else. A conversation
+with a name of its own is found by that name rather than by who is in it, so a
+group called Ship Room is not reachable through a member's nickname — the same
+way it is not reachable through their name. And because a nickname is short
+enough to be a fragment of plenty else, typing a whole one settles the
+ambiguity it creates: `bob` prefers the person whose nickname is exactly Bob
+over everyone merely containing those letters.
 
 **Accounts disagree.** The same number can carry a different name in each
 account, so the order they are merged in decides the winner. `msg` reads

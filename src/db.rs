@@ -787,6 +787,9 @@ fn to_message(row: &Row<'_>, contacts: &ContactIndex) -> Message {
 pub struct Person {
     /// What to call them: the contact name when there is one, else the address.
     pub name: String,
+    /// The nickname behind that name, when Contacts holds one. Never shown; it
+    /// is here so that naming it exactly settles a tie the way a name does.
+    pub nickname: Option<String>,
     /// `handle.rowid` for every address that resolves to this person.
     pub handle_ids: Vec<i64>,
     /// The addresses themselves, for saying who was matched.
@@ -1200,6 +1203,13 @@ pub fn fetch_chats(
             || matches(chat.display_name.as_ref())
             || matches(chat.handles.as_ref())
             || matches(Some(&chat.identifier))
+            // A nickname is shown nowhere, so it is searched separately — but
+            // only where the name it stands in for is searched too. A
+            // conversation with a display name of its own is found by that name
+            // and not by its members', and a nickname that reached inside one
+            // would make itself easier to find someone by than their own name.
+            || (chat.display_name.is_none()
+                && contacts.any_answers_to(chat.handles.as_deref(), &needle))
     });
     chats.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
     Ok(chats)
@@ -1228,6 +1238,73 @@ pub fn person_filter(
         (None, Some(spec)) => Ok(Some((resolve_person(db, spec, contacts)?, Sender::Only))),
         (None, None) => Ok(None),
     }
+}
+
+/// How to name a conversation when confirming a message sent to it.
+///
+/// The address goes in the line, for a one-to-one. `Chat::name` comes from
+/// Contacts, so somebody reachable two ways has two conversations that render
+/// as the same string, and the address is precisely what differs — which makes
+/// it precisely what a confirmation has to say. The two are not interchangeable
+/// in delivery: a number and an email are different routes, one may fall back
+/// to SMS, and resolution picks the most recently active rather than the one
+/// they actually read.
+///
+/// `--dry-run` is the reason this is not cosmetic. The repository requires one
+/// before any real send, and a check that prints the same line whichever
+/// address was chosen cannot catch the mistake it exists to catch.
+///
+/// A conversation with a name of its own is named by it. Its identifier is an
+/// opaque `chat42`, noise rather than a second fact, and a room's name is
+/// already unambiguous in the way a person's is not.
+///
+/// Keyed on having a display name rather than on `is_group`, because a room
+/// can have one participant — everybody else left, or never joined — and it is
+/// still a room rather than a conversation with a person.
+pub fn describe_target(chat: &Chat) -> String {
+    if chat.display_name.is_some()
+        || chat.is_group
+        || chat.identifier.is_empty()
+        || chat.identifier == chat.name
+    {
+        return chat.name.clone();
+    }
+    format!("{} ({})", chat.name, chat.identifier)
+}
+
+/// Who an address belongs to, as a key two addresses can share.
+///
+/// The Contacts record where there is one, because a phone number and an email
+/// address on one record are one person — that is the whole reason `--from
+/// <their email>` finds what they sent from their phone. The normalized handle
+/// otherwise, which is the most that can be said without a record to join them
+/// by: two shapes of one unknown number are still one person.
+///
+/// Shared so that "the same person" means the same thing to everything that
+/// asks. A conversation and a search that disagreed about it would be a subtle
+/// and very confusing bug.
+fn person_identity(handle: &str, contact: Option<&Contact>) -> String {
+    match contact {
+        Some(contact) => format!("contact:{}", contact.id),
+        None => format!(
+            "handle:{}",
+            crate::contacts::handle_key(handle).unwrap_or_else(|| handle.to_string())
+        ),
+    }
+}
+
+/// The person a one-to-one conversation is with, or `None` for a group.
+///
+/// A group has no single person to be, which is exactly why it cannot stand in
+/// for one when conversations are being told apart.
+fn sole_person(chat: &Chat, contacts: &ContactIndex) -> Option<String> {
+    if chat.is_group {
+        return None;
+    }
+    // For a one-to-one this is the single handle, since it is the whole of the
+    // conversation's membership.
+    let handle = chat.handles.as_deref()?;
+    Some(person_identity(handle, contacts.contact(Some(handle))))
 }
 
 /// Find one person, and gather every address they use.
@@ -1277,19 +1354,11 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
         _ => false,
     };
     let loosely = |handle: &str, contact: Option<&Contact>| {
-        contact.is_some_and(|contact| contact.name.to_lowercase().contains(&lowered))
+        contact.is_some_and(|contact| contact.answers_to(&lowered))
             || handle.to_lowercase().contains(&lowered)
     };
 
-    let identity = |handle: &str, contact: Option<&Contact>| match contact {
-        Some(contact) => format!("contact:{}", contact.id),
-        // Two shapes of one unknown number are still one person, which is the
-        // most that can be said without a contact to join them by.
-        None => format!(
-            "handle:{}",
-            crate::contacts::handle_key(handle).unwrap_or_else(|| handle.to_string())
-        ),
-    };
+    let identity = |handle: &str, contact: Option<&Contact>| person_identity(handle, contact);
 
     let owners = |pick: &dyn Fn(&str, Option<&Contact>) -> bool| -> BTreeSet<String> {
         known
@@ -1320,6 +1389,9 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
             name: contact
                 .as_ref()
                 .map_or_else(|| handle.clone(), |contact| contact.name.clone()),
+            nickname: contact
+                .as_ref()
+                .and_then(|contact| contact.nickname.clone()),
             handle_ids: Vec::new(),
             handles: Vec::new(),
         });
@@ -1336,9 +1408,18 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
 
     // An exact name breaks a tie, the same way it does for a chat — unless two
     // records answer to it, which is the case this cannot silently pick from.
+    // A nickname counts as one of those names: typing someone's whole nickname
+    // is as definite as typing their whole name, and it is the shape a nickname
+    // is usually typed in.
     let exact: Vec<Person> = people
         .values()
-        .filter(|person| person.name.to_lowercase() == lowered)
+        .filter(|person| {
+            person.name.to_lowercase() == lowered
+                || person
+                    .nickname
+                    .as_ref()
+                    .is_some_and(|nickname| nickname.to_lowercase() == lowered)
+        })
         .cloned()
         .collect();
     if exact.len() == 1 {
@@ -1371,6 +1452,11 @@ fn describe<'a>(people: impl Iterator<Item = &'a Person> + Clone) -> String {
         .join(", ")
 }
 
+/// How many candidates a name is resolved against before giving up on listing
+/// them. A cap rather than a total, which is why an error that reaches it says
+/// "at least" instead of naming a number it cannot stand behind.
+const CHAT_MATCH_SCAN: i64 = 50;
+
 /// Find a single chat by rowid, identifier, or name substring.
 pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Result<Chat> {
     // Naming a chat outright reaches it even when Messages filters it.
@@ -1384,7 +1470,7 @@ pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Res
             .filter(|chat| chat.rowid == wanted)
             .collect()
     } else {
-        fetch_chats(db, Some(spec), 50, contacts, true)?
+        fetch_chats(db, Some(spec), CHAT_MATCH_SCAN, contacts, true)?
     };
 
     if matches.is_empty() {
@@ -1397,22 +1483,83 @@ pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Res
     let lowered = spec.to_lowercase();
     let mut exact: Vec<Chat> = matches
         .iter()
-        .filter(|chat| chat.name.to_lowercase() == lowered)
+        .filter(|chat| {
+            chat.name.to_lowercase() == lowered
+                // Only where the conversation *is* that person, which is what
+                // the case above says for a name and what a group can never
+                // say. A group is found by a member's whole name or nickname —
+                // that is the clause in `fetch_chats` — but being one of the
+                // people in a room is not being the room, so counting it here
+                // would leave every tie unbroken for anyone you also share an
+                // unnamed group with. Which is most people you talk to.
+                || (chat.display_name.is_none()
+                    && !chat.is_group
+                    && contacts.any_named(chat.handles.as_deref(), &lowered))
+        })
         .cloned()
         .collect();
     if exact.len() == 1 {
         return Ok(exact.remove(0));
     }
 
+    // Several conversations with one person is not an ambiguity about who.
+    //
+    // Messages keeps a conversation per address, so someone reachable at a
+    // phone number and an email address has two, and naming them exactly hit
+    // both and asked which. But the addresses belong to one Contacts record, so
+    // the question it was asking was one nobody can answer from a name — it is
+    // the same person either way. Answer with the one last active, since
+    // `fetch_chats` ordered them that way and it is the conversation you would
+    // be continuing.
+    //
+    // Identity, never the rendered name: two records can carry one name and
+    // those are two people, so collapsing by what they print as would answer
+    // with a stranger's conversation.
+    //
+    // A fragment counts as naming them. Typing fewer letters does not make it
+    // two people, and a substring is a documented way to name a chat, so a
+    // first name or a surname is how this is actually typed. Falling back to
+    // `matches` only when nothing matched exactly keeps the precedence intact:
+    // an exact match still beats a fragment rather than being pooled with one.
+    //
+    // `sole_person` is what makes this safe to widen — it refuses to speak for
+    // a group, so a `None` anywhere propagates through the `Option` and leaves
+    // the ambiguity standing. Which is right: a person and a room that both
+    // matched are a real question about which was meant.
+    let narrowed = if exact.is_empty() { &matches } else { &exact };
+    if narrowed.len() > 1
+        && let Some(people) = narrowed
+            .iter()
+            .map(|chat| sole_person(chat, contacts))
+            .collect::<Option<BTreeSet<String>>>()
+        && people.len() == 1
+    {
+        return Ok(narrowed[0].clone());
+    }
+
+    // Say how many are not being shown, rather than printing six and reporting
+    // a bigger number with nothing to explain the gap. The total is itself a
+    // floor: the search stops at `CHAT_MATCH_SCAN`, so a count that reaches it
+    // says "at least", not "exactly".
+    const SHOWN: usize = 6;
     let names = matches
         .iter()
-        .take(6)
+        .take(SHOWN)
         .map(|chat| format!("{} ({})", chat.name, chat.rowid))
         .collect::<Vec<_>>()
         .join(", ");
+    let total = matches.len();
+    let at_least = if i64::try_from(total) == Ok(CHAT_MATCH_SCAN) {
+        "at least "
+    } else {
+        ""
+    };
+    let and_more = match total.saturating_sub(SHOWN) {
+        0 => String::new(),
+        rest => format!(", and {rest} more"),
+    };
     Err(Error::other(format!(
-        "{} chats match {spec}: {names}",
-        matches.len()
+        "{at_least}{total} chats match {spec}: {names}{and_more}"
     )))
 }
 
@@ -1765,6 +1912,287 @@ mod tests {
                 ["are you around later", "deploy is green"],
                 "resolving {spec}"
             );
+        }
+    }
+
+    /// A one-to-one conversation with somebody new, numbered `n` in both tables.
+    ///
+    /// The fixture's first handle is spread across three conversations, so
+    /// resolving anyone by it is ambiguous however they were named — which is
+    /// the fixture's doing and would hide what these tests are about.
+    fn one_to_one(db: &Connection, n: i64, address: &str) -> i64 {
+        db.execute(
+            "INSERT INTO handle (rowid, id) VALUES (?, ?)",
+            rusqlite::params![n, address],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat (rowid, guid, chat_identifier, display_name, is_filtered)
+             VALUES (?, ?, ?, '', 0)",
+            rusqlite::params![n, format!("iMessage;-;{address}"), address],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)",
+            rusqlite::params![n, n],
+        )
+        .unwrap();
+        n
+    }
+
+    /// A nickname is shown nowhere, so typing it is the only use it has.
+    #[test]
+    fn a_conversation_is_found_by_the_nickname_behind_the_name() {
+        let db = fixture();
+        let rowid = one_to_one(&db, 4, "+16175550147");
+        let contacts = ContactIndex::for_test([("+16175550147", "source:7", "Robin Adeyemi")])
+            .nicknamed("+16175550147", "Rocket");
+
+        let chats = fetch_chats(&db, Some("rocket"), 30, &contacts, false).unwrap();
+        let names: Vec<&str> = chats.iter().map(|chat| chat.name.as_str()).collect();
+        // Found by the nickname, and still shown as the name.
+        assert_eq!(names, ["Robin Adeyemi"]);
+
+        // Which is what reading and sending resolve through, so both take it.
+        let chat = resolve_chat(&db, "Rocket", &contacts).unwrap();
+        assert_eq!((chat.rowid, chat.name.as_str()), (rowid, "Robin Adeyemi"));
+    }
+
+    /// A person is found by their nickname too, so `--with` and `--from` take
+    /// one — and gather every address, since what resolved is the contact.
+    #[test]
+    fn a_person_is_found_by_the_nickname_behind_the_name() {
+        let db = fixture();
+        let contacts = ContactIndex::for_test([
+            ("+13105551234", "source:7", "Robin Adeyemi"),
+            ("someone@example.com", "source:7", "Robin Adeyemi"),
+        ])
+        .nicknamed("+13105551234", "Rocket")
+        .nicknamed("someone@example.com", "Rocket");
+
+        let person = resolve_person(&db, "rocket", &contacts).unwrap();
+        assert_eq!(person.name, "Robin Adeyemi", "{person:?}");
+        assert_eq!(person.handle_ids.len(), 2, "{person:?}");
+    }
+
+    /// A nickname is short, so it is a fragment of plenty else. Typing the whole
+    /// of one is as definite as typing a whole name, and settles the tie.
+    #[test]
+    fn an_exact_nickname_settles_the_tie_a_fragment_creates() {
+        let db = fixture();
+        let rowid = one_to_one(&db, 4, "+16175550147");
+        one_to_one(&db, 5, "rocketry@example.com");
+        let contacts = ContactIndex::for_test([("+16175550147", "source:7", "Robin Adeyemi")])
+            .nicknamed("+16175550147", "Rocket");
+
+        // Both match the fragment: one by nickname, one by address.
+        let matched = fetch_chats(&db, Some("rocket"), 30, &contacts, false).unwrap();
+        assert_eq!(matched.len(), 2, "{matched:?}");
+
+        let chat = resolve_chat(&db, "rocket", &contacts).unwrap();
+        assert_eq!(chat.rowid, rowid, "{chat:?}");
+        let person = resolve_person(&db, "rocket", &contacts).unwrap();
+        assert_eq!(person.handles, ["+16175550147"], "{person:?}");
+    }
+
+    /// The same person, in a group that has no name of its own.
+    ///
+    /// The ordinary case, and the one that breaks a tie-break reaching into
+    /// membership: someone you message directly and also share a group with.
+    fn also_in_an_unnamed_group(db: &Connection, member: i64) {
+        db.execute(
+            "INSERT INTO handle (rowid, id) VALUES (9, '+16175550148')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat (rowid, guid, chat_identifier, display_name, is_filtered)
+             VALUES (9, 'iMessage;+;chat9x', 'chat9x', '', 0)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (9, ?), (9, 9)",
+            [member],
+        )
+        .unwrap();
+    }
+
+    /// A whole name still picks the one-to-one, even when that person is also in
+    /// a group with no name of its own.
+    ///
+    /// Breaking that tie is the entire job of the exact filter, and asking about
+    /// membership without asking whether the conversation *is* that person made
+    /// it stop doing the job: the one-to-one qualified by its name, the group
+    /// qualified on the member's behalf, and resolving anyone you share an
+    /// unnamed group with started erroring instead of answering. No nickname is
+    /// involved, which is what makes it a regression rather than a rough edge.
+    #[test]
+    fn a_whole_name_still_picks_the_one_to_one() {
+        let db = fixture();
+        let alone = one_to_one(&db, 4, "+16175550147");
+        also_in_an_unnamed_group(&db, 4);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("+16175550148", "source:8", "Kit Alvarez"),
+        ]);
+
+        let chat = resolve_chat(&db, "Robin Adeyemi", &contacts).unwrap();
+        assert_eq!(chat.rowid, alone, "{chat:?}");
+    }
+
+    /// And so does a whole nickname, which is the headline of this branch and
+    /// fails in exactly the same shape — a nickname is only worth typing if
+    /// typing it lands somewhere.
+    #[test]
+    fn a_whole_nickname_still_picks_the_one_to_one() {
+        let db = fixture();
+        let alone = one_to_one(&db, 4, "+16175550147");
+        also_in_an_unnamed_group(&db, 4);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("+16175550148", "source:8", "Kit Alvarez"),
+        ])
+        .nicknamed("+16175550147", "Rocket");
+
+        // The group is still *found* by the nickname, the way it is found by the
+        // member's name — it is only the tie-break that must not count it.
+        let matched = fetch_chats(&db, Some("rocket"), 30, &contacts, false).unwrap();
+        assert_eq!(matched.len(), 2, "{matched:?}");
+
+        let chat = resolve_chat(&db, "Rocket", &contacts).unwrap();
+        assert_eq!(chat.rowid, alone, "{chat:?}");
+    }
+
+    /// Put a message in a conversation, so `lastDate` orders it against others.
+    fn message_in(db: &Connection, chat: i64, rowid: i64, minutes: i64) {
+        let date = at(minutes);
+        db.execute(
+            "INSERT INTO message (rowid, guid, text, is_from_me, handle_id, date, service)
+             VALUES (?, ?, 'hi', 0, ?, ?, 'iMessage')",
+            rusqlite::params![rowid, format!("g{rowid}"), chat, date],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (?, ?, ?)",
+            rusqlite::params![chat, rowid, date],
+        )
+        .unwrap();
+    }
+
+    /// One person reachable two ways is two conversations and one answer.
+    ///
+    /// Messages keeps a conversation per address, so naming someone who has a
+    /// phone number and an email address matched both exactly and asked which —
+    /// a question with no answer, since it is the same person either way. The
+    /// one last active is the conversation you would be continuing.
+    #[test]
+    fn two_conversations_with_one_person_resolve_to_the_latest() {
+        let db = fixture();
+        let older = one_to_one(&db, 4, "+16175550147");
+        let newer = one_to_one(&db, 5, "robin@example.com");
+        message_in(&db, older, 10, 5);
+        message_in(&db, newer, 11, 90);
+
+        // One Contacts record, so one person however they were reached.
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ])
+        .nicknamed("+16175550147", "Rocket")
+        .nicknamed("robin@example.com", "Rocket");
+
+        // A fragment too. Fewer letters does not make it two people, and a
+        // substring is a documented way to name a chat, so it is how this
+        // actually gets typed.
+        for spec in ["Robin Adeyemi", "Rocket", "adeyemi", "robin"] {
+            let chat = resolve_chat(&db, spec, &contacts).unwrap();
+            assert_eq!(chat.rowid, newer, "resolving {spec}: {chat:?}");
+        }
+    }
+
+    /// The collapse stops at a room.
+    ///
+    /// Reaching a person and a group with one fragment is a real question about
+    /// which was meant, and `sole_person` refusing to speak for a group is the
+    /// whole reason widening the collapse to fragments is safe.
+    #[test]
+    fn a_group_that_also_matched_keeps_the_ambiguity() {
+        let db = fixture();
+        let alone = one_to_one(&db, 4, "+16175550147");
+        message_in(&db, alone, 10, 5);
+        also_in_an_unnamed_group(&db, 4);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("+16175550148", "source:8", "Kit Alvarez"),
+        ]);
+
+        // The fragment reaches his one-to-one and the group he is in.
+        let error = resolve_chat(&db, "adeyemi", &contacts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 chats match"), "{error}");
+    }
+
+    /// The same shape, and the opposite answer, because these are two people.
+    ///
+    /// Collapsing by the rendered name rather than by the record would answer
+    /// with a stranger's conversation, which is the one outcome worse than
+    /// reporting the ambiguity.
+    #[test]
+    fn two_people_sharing_a_name_stay_ambiguous() {
+        let db = fixture();
+        let older = one_to_one(&db, 4, "+16175550147");
+        let newer = one_to_one(&db, 5, "robin@example.com");
+        message_in(&db, older, 10, 5);
+        message_in(&db, newer, 11, 90);
+
+        // Two records that happen to agree on a name: an old entry and a new
+        // one, a father and a son.
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:9", "Robin Adeyemi"),
+        ]);
+
+        let error = resolve_chat(&db, "Robin Adeyemi", &contacts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 chats match"), "{error}");
+    }
+
+    /// An error that shows six of fifty has to say so, or the list reads as the
+    /// whole answer and the count reads as a mistake.
+    #[test]
+    fn the_ambiguity_says_how_many_it_is_not_showing() {
+        let db = fixture();
+        // Ten conversations that all match, none of them exactly.
+        for n in 0..10 {
+            let chat = one_to_one(&db, 10 + n, &format!("+161755501{:02}", 40 + n));
+            message_in(&db, chat, 100 + n, 5 + n);
+        }
+        let error = resolve_chat(&db, "+16175550", &ContactIndex::empty())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("10 chats match"), "{error}");
+        assert!(error.contains("and 4 more"), "{error}");
+        // Not a cap, so it must not claim to be one.
+        assert!(!error.contains("at least"), "{error}");
+    }
+
+    /// A conversation with a name of its own is found by that name rather than
+    /// by who is in it. A nickname must not be a way around that, or it would be
+    /// easier to find someone by the name they are never shown as.
+    #[test]
+    fn a_named_group_is_no_more_findable_by_a_nickname_than_by_a_name() {
+        let db = fixture();
+        // Handle 2 is only in the Ship Room, which carries a display name.
+        let contacts = ContactIndex::for_test([("someone@example.com", "source:7", "Kit Alvarez")])
+            .nicknamed("someone@example.com", "Sparrow");
+
+        for spec in ["sparrow", "Kit Alvarez"] {
+            let chats = fetch_chats(&db, Some(spec), 30, &contacts, false).unwrap();
+            assert!(chats.is_empty(), "searching {spec}: {chats:?}");
         }
     }
 
@@ -2697,6 +3125,46 @@ mod tests {
         let db = fixture();
         let chat = resolve_chat(&db, "Ship Room", &ContactIndex::empty()).unwrap();
         assert_eq!(chat.guid, "iMessage;+;chat9");
+    }
+
+    /// A send confirmation has to name the address, because the name alone
+    /// cannot tell one person's two conversations apart — and telling them
+    /// apart is the entire job of the dry run this repository requires.
+    #[test]
+    fn a_send_target_is_named_by_its_address() {
+        let db = fixture();
+        let older = one_to_one(&db, 4, "+16175550147");
+        let newer = one_to_one(&db, 5, "robin@example.com");
+        message_in(&db, older, 10, 5);
+        message_in(&db, newer, 11, 90);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ]);
+
+        // The two render identically by name, which is the whole problem.
+        let picked = resolve_chat(&db, "adeyemi", &contacts).unwrap();
+        let other = resolve_chat(&db, "+16175550147", &contacts).unwrap();
+        assert_eq!(picked.name, other.name);
+        assert_ne!(
+            describe_target(&picked),
+            describe_target(&other),
+            "a confirmation that cannot separate these is not a confirmation"
+        );
+        assert_eq!(
+            describe_target(&picked),
+            "Robin Adeyemi (robin@example.com)"
+        );
+
+        // A room is named by its name; `chat9` would be noise, not a fact.
+        let group = resolve_chat(&db, "Ship Room", &contacts).unwrap();
+        assert_eq!(describe_target(&group), "Ship Room");
+
+        // And an unknown handle, which the name already is, is not said twice.
+        let bare = one_to_one(&db, 6, "+19995551212");
+        message_in(&db, bare, 12, 3);
+        let unknown = resolve_chat(&db, "+19995551212", &contacts).unwrap();
+        assert_eq!(describe_target(&unknown), "+19995551212");
     }
 
     #[test]
