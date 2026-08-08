@@ -48,7 +48,19 @@ use crate::db::{Chat, Message};
 /// disagree over.
 ///
 /// 5 added `save`, which streams one attachment's bytes to the client by rowid.
-pub const PROTOCOL_VERSION: u32 = 5;
+///
+/// 6 added `replyTo` to every message: what an inline reply is answering, as the
+/// answered message's rowid, sender, and an excerpt. A new *reply* field again,
+/// and again wrong only in the mild direction — a stale daemon omits it and a
+/// reply reads as it did before.
+///
+/// This one is not the `uti` case, and the difference is the whole of why that
+/// one stayed at 4. That argument was that no build outside the branch had ever
+/// answered a 4 without `uti`, because 4 came into being complete in a single
+/// squash. 5 is already merged and installed, so builds that speak 5 *without*
+/// `replyTo` exist right now. A version names a protocol somebody can speak, and
+/// two of them cannot both be 5.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";

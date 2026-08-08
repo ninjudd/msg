@@ -30,7 +30,8 @@ fn build(path: &Path) {
           display_name TEXT, is_filtered INTEGER DEFAULT 0);
         CREATE TABLE message (rowid INTEGER PRIMARY KEY, guid TEXT, text TEXT,
           attributedBody BLOB, is_from_me INTEGER DEFAULT 0, handle_id INTEGER,
-          associated_message_type INTEGER DEFAULT 0, date INTEGER, service TEXT);
+          associated_message_type INTEGER DEFAULT 0, date INTEGER, service TEXT,
+        thread_originator_guid TEXT, thread_originator_part TEXT);
         CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER,
           message_date INTEGER DEFAULT 0);
         CREATE TABLE attachment (
