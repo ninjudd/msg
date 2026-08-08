@@ -48,8 +48,14 @@ objection is about `chat.db`, and it still stands — nothing here writes there.
 
 A **separate** database in `~/.local/state/msg/` is a different proposition. It
 is the daemon's own state directory, already owner-only at 0700, already holding
-the socket and the log. Writing there is not a change to the threat model: the
-daemon already creates files in it.
+the socket and the log. Creating a file there is not new.
+
+What would be in it is. The socket and the log carry no message history; an index
+carries all of it, in plaintext, outside the TCC grant that guards `chat.db`.
+That is a real change to the threat model — it is the fourth item in §5, and it
+is why §7 ends with this not being built. The narrow point settled here is only
+the one §4 of query-performance.md raised: nothing in this plan writes to
+`chat.db`.
 
 ## 3 A partial index is still useful, which is what makes this tractable
 
@@ -61,15 +67,21 @@ Search the index for the range it covers, scan `chat.db` directly for the range
 it does not, and merge. Correctness never depends on the index being complete —
 only speed does. That means:
 
-- No blocking first run. The daemon can index backwards through history in the
-  background while search keeps working from the first minute.
+- No blocking first run. The daemon indexes new arrivals as they land and
+  backfills behind them, so search works from the first minute.
 - No migration story. An index that is missing, stale, corrupt, or half-built
   degrades to today's behaviour rather than to a wrong answer.
-- The unindexed tail is the *newest* messages, and a date-bounded scan of recent
-  history is cheap — measured at 87ms for a year
-  ([query-performance.md §8](query-performance.md)).
+- The covered range grows from the newest end, which is the end people search. A
+  search bounded to recent history is answered entirely from the index on the
+  first day; only one reaching further back than the backfill has got needs a
+  direct scan, and that range shrinks with every batch.
 
-The high-water mark is one row: the newest `message.rowid` the index has seen.
+Coverage is therefore a single range ending at now, and the marker for it is one
+row: the *oldest* `message.rowid` the backfill has reached. The newest end needs
+no marker, because the daemon is already watching it. The only gap there is
+between its last tick and now, and a date-bounded scan of that is trivially
+cheap — 87ms buys a whole year
+([query-performance.md §8](query-performance.md)).
 
 ## 4 Shape
 
@@ -78,8 +90,9 @@ The high-water mark is one row: the newest `message.rowid` the index has seen.
 - **Built by the daemon**, which already holds Full Disk Access, is already
   resident, and already polls for new messages. Indexing new arrivals is the
   same tick that feeds watchers.
-- **Backfilled in the background**, oldest-ward, in bounded batches, so it never
-  competes with a query the user is waiting on.
+- **Backfilled in the background**, newest first and walking oldest-ward, in
+  bounded batches, so it never competes with a query the user is waiting on and
+  the useful end of history is covered first.
 - **Rebuilt from nothing when it does not match**, keyed on the Messages
   database's identity and the decoder's version. A decoder change means the
   stored text is wrong, and that has to force a rebuild rather than be noticed
@@ -107,8 +120,9 @@ The high-water mark is one row: the newest `message.rowid` the index has seen.
 ## 6 What this is not
 
 Not a reason to delay [searching backwards through
-time](query-performance.md), which is worth doing on its own: it bounds the work
-on the unindexed range, and this plan depends on that range being cheap to scan.
+time](query-performance.md), which is worth doing on its own — and worth more
+alongside this, not less. §3 leaves the oldest history unindexed longest, and
+that is precisely the range a windowed search keeps from costing a full scan.
 
 ## 7 Why it is not being built
 
