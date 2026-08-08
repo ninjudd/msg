@@ -190,3 +190,33 @@ reading the TypeScript:
   JavaScript's `new Date` does with a date-only string. Local midnight is
   probably what a user means, but changing it silently during a port is worse
   than carrying the wart.
+
+**§5.2 and §5.3, `db.rs` and `contacts.rs`, are done.** Contacts came first
+despite §5's order, because `db.rs` needs the index type to name people in a
+chat. Checked the same way `apple.rs` was: both implementations ran seventeen
+query shapes against the same on-disk fixture — bodies in `attributedBody`
+only, NULL handles, a zero date, unicode, tapbacks, filtered conversations,
+limits, `--since` cutoffs, rowid and name resolution — and produced identical
+JSON, 14,592 bytes of it, field for field.
+
+Three things the port improved rather than preserved, each because Rust removes
+the reason the workaround existed:
+
+- **The BigInt dance is gone.** Apple dates are around 8.1e17, past
+  `Number.MAX_SAFE_INTEGER`, so every TypeScript statement had to call
+  `setReadBigInts(true)` and every arithmetic operation had to stay in BigInt.
+  An `i64` is an `i64`. That removes a whole class of "worked until the number
+  got big" from the file, and it is the one place where the rewrite makes the
+  code plainly more correct rather than merely smaller.
+- **The readiness probe no longer confuses "empty" with "unreadable".**
+  `SELECT 1 FROM message LIMIT 1` was `.get()` in TypeScript, which returns
+  undefined for no rows. `rusqlite`'s equivalent, `query_row`, reports no rows as
+  an *error*, which would have sent a perfectly readable but empty database down
+  the snapshot-copy path. It steps the statement instead.
+- **The snapshot directory is `mkdtemp(3)`**, called through libc, rather than
+  reimplemented. Same atomic create, same mode 0700.
+
+One thing preserved that looks like a bug and is not: when macOS names no
+default Contacts source, both sides of the source comparison are absent, which
+makes the legacy top-level database the preferred one. That is what the
+TypeScript `===` did, so it is what this does.

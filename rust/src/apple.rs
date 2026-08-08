@@ -100,7 +100,12 @@ fn parse_date(spec: &str) -> Option<DateTime<Utc>> {
     if let Ok(parsed) = DateTime::parse_from_rfc3339(spec) {
         return Some(parsed.with_timezone(&Utc));
     }
-    for layout in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M"] {
+    for layout in [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M",
+    ] {
         if let Ok(naive) = NaiveDateTime::parse_from_str(spec, layout) {
             // A time written without an offset is the one the user's clock
             // shows. Ambiguous across a DST fall-back, where the earlier of the
@@ -191,13 +196,18 @@ pub fn decode_attributed_body(blob: Option<&[u8]>) -> Option<String> {
     }
 
     let start = find(data, b"NSString").or_else(|| find(data, b"NSMutableString"))?;
-    let marker = start + data[start..].iter().position(|&byte| byte == STRING_MARKER)?;
+    let marker = start
+        + data[start..]
+            .iter()
+            .position(|&byte| byte == STRING_MARKER)?;
 
     let length = read_int(data, marker + 1)?;
     if length.value <= 0 {
         return None;
     }
-    let end = length.next.checked_add(usize::try_from(length.value).ok()?)?;
+    let end = length
+        .next
+        .checked_add(usize::try_from(length.value).ok()?)?;
     let bytes = data.get(length.next..end)?;
     // Lossy, like Buffer.toString('utf8'): a body that is nearly all readable
     // is worth more than nothing at all.
@@ -245,7 +255,10 @@ mod tests {
 
     #[test]
     fn reads_legacy_second_timestamps() {
-        assert_eq!(iso(from_apple_date(Some(807_667_200))), "2026-08-06T00:00:00.000Z");
+        assert_eq!(
+            iso(from_apple_date(Some(807_667_200))),
+            "2026-08-06T00:00:00.000Z"
+        );
     }
 
     #[test]
@@ -262,7 +275,10 @@ mod tests {
         let original = DateTime::parse_from_rfc3339("2026-03-01T12:34:56Z")
             .unwrap()
             .with_timezone(&Utc);
-        assert_eq!(from_apple_date(Some(to_apple_date(original))), Some(original));
+        assert_eq!(
+            from_apple_date(Some(to_apple_date(original))),
+            Some(original)
+        );
     }
 
     #[test]
@@ -299,7 +315,17 @@ mod tests {
 
     #[test]
     fn rejects_nonsense() {
-        for spec in ["soonish", "", "-1h", "1e3h", ".5h", "1.h", "h", "2026-13-45", "2y"] {
+        for spec in [
+            "soonish",
+            "",
+            "-1h",
+            "1e3h",
+            ".5h",
+            "1.h",
+            "h",
+            "2026-13-45",
+            "2y",
+        ] {
             assert!(since_to_apple_date(spec).is_err(), "accepted {spec:?}");
         }
     }
@@ -366,7 +392,10 @@ mod tests {
     #[test]
     fn refuses_a_length_that_runs_past_the_end() {
         let mut blob = typed_stream("hello");
-        let marker = blob.iter().rposition(|&byte| byte == STRING_MARKER).unwrap();
+        let marker = blob
+            .iter()
+            .rposition(|&byte| byte == STRING_MARKER)
+            .unwrap();
         blob[marker + 1] = 0x7f;
         assert_eq!(decode_attributed_body(Some(&blob)), None);
     }
@@ -374,7 +403,10 @@ mod tests {
     #[test]
     fn refuses_a_negative_length() {
         let mut blob = typed_stream("hello");
-        let marker = blob.iter().rposition(|&byte| byte == STRING_MARKER).unwrap();
+        let marker = blob
+            .iter()
+            .rposition(|&byte| byte == STRING_MARKER)
+            .unwrap();
         // 0x84 is not a width marker, so it reads as the signed byte -124.
         blob[marker + 1] = 0x84;
         assert_eq!(decode_attributed_body(Some(&blob)), None);
@@ -392,7 +424,10 @@ mod tests {
     #[test]
     fn message_body_falls_back_to_the_archived_body() {
         let archived = typed_stream("archived");
-        assert_eq!(message_body(None, Some(&archived)).as_deref(), Some("archived"));
+        assert_eq!(
+            message_body(None, Some(&archived)).as_deref(),
+            Some("archived")
+        );
     }
 
     #[test]
