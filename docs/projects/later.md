@@ -13,11 +13,9 @@ See [README](README.md) for how these lists work.
 - [What the signing identity costs, and what to fix before this is public](all/signing-identity.md)
   — the key that keeps the grant across rebuilds is also a way to re-grant
   silently.
-- [Get attachment bytes out, by rowid](all/attachments.md) — §6 slice 3, the one
-  that makes the daemon open a file for a caller who cannot. §3 is the thinking
-  it has to satisfy first.
-- [Group a conversation by thread](all/threading.md) — §5 slice 2, so a thread
-  reads together instead of scattered through the transcript. Slice 1 is what
-  makes the case for it or against it.
+- [Show one thread on demand](all/threading.md) — §8. Not regrouping the
+  transcript, which is deliberately not being built; showing every message in a
+  thread given any message in it. Needs message ids to be visible first, which
+  is the same problem attachments solved by printing theirs.
 - Export a conversation to a file, once there is a second consumer that wants
   more shape than `--json` piped through `jq`.

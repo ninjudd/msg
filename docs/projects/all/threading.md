@@ -1,9 +1,10 @@
 # Plan: Make replies read as replies
 
-**Status:** Slice 1 done — a reply says what it is answering, in rendered output
-and in `--json`. §5 slice 2, regrouping a conversation by thread, is deliberately
-not started. Verified on the real database: 164 replies resolved across 9,656
-messages in 30 conversations, and no excerpt left carrying a placeholder.
+**Status:** Done. Slice 1 shipped — a reply says what it is answering, in
+rendered output and in `--json`. §5 slice 2 is deliberately not being built, and
+§8 records why and what would be worth building instead. Verified on the real
+database: 164 replies resolved across 9,656 messages in 30 conversations, and no
+excerpt left carrying a placeholder.
 
 **Goal:** Stop an inline reply reading as an unrelated remark that happens to
 come later.
@@ -107,3 +108,40 @@ quoted photo reads as `[#76521 …m4a, 3.7 MB]` rather than as nothing at all.
 
 That costs one more batched lookup, over the originators only — a few rows, on a
 population that is 0.75% of messages to begin with.
+
+## 8 Slice 2 is not being built, and what might be instead
+
+§5 slice 2 was regrouping a conversation so a thread reads together. It is not
+being built, and slice 1 is the reason: it did not merely precede it, it took
+most of the case for it away.
+
+**Threads are shallow enough that there is little to group.** 2,597 of 3,742
+threads have exactly one reply. Grouping those moves one message next to one
+other message — and the quote now prints inline, so the connection is already
+readable without moving anything.
+
+**Reordering costs the one property `msg read` can be relied on for.** Time
+order is not decoration: `--since` bounds it, `watch` extends it, and every
+`--json` consumer assumes it. Trading that for an adjacency the quote already
+supplies is a bad exchange.
+
+**What is worth building instead**, if anything: not reordering the transcript,
+but showing one thread on demand — every message in it, given **any** message in
+it rather than only the originator. That is the right shape because a reader
+finds a reply, not a root: resolve the given message to its thread first (its own
+`thread_originator_guid`, or its own guid if it is the originator), then take
+everything sharing it. Chronology elsewhere is untouched, because nothing else
+changes.
+
+**The obstacle is getting the id, and it is the one attachments already solved.**
+Rendered output prints no rowid — `--json` has them, but a person reading a
+transcript has nothing to type. Attachments met exactly this and answered it by
+printing the id in the description, which is what made `msg save` usable at all
+([attachments.md §4](attachments.md)). The same answer fits here and costs
+almost nothing: the `↳ replying to …` line is the one line that exists *only* on
+replies, so putting the originator's rowid in it adds nothing to the 99% of
+messages that are not replies, and a thread would announce its own handle
+wherever one is visible.
+
+That is the piece to build first if this is ever picked up — the command is
+straightforward and unusable without it.
