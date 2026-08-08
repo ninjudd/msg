@@ -5,23 +5,30 @@
 //! daemon has no working `msg` at all, and a denied read is the first thing a
 //! new user meets.
 
+use std::io::Write;
+use std::path::Path;
 use std::time::Duration;
 
+use base64::Engine;
 use rusqlite::Connection;
 
 use crate::apple::since_to_apple_date;
 use crate::contacts::{ContactIndex, load_contacts};
-use crate::daemon::client::{connect_daemon, connect_daemon_within, request, watch};
+use crate::daemon::client::{connect_daemon, connect_daemon_within, request, save, watch};
 use crate::daemon::protocol::{
     AutomationReply, ChatsRequest, ContactsReply, ContactsRequest, Empty, ReadReply, ReadRequest,
-    Request, ResolveRequest, ResolvedHandle, SearchRequest, SendReply, SendRequest, StatusReply,
-    WatchRequest,
+    Request, ResolveRequest, ResolvedHandle, SavePart, SaveRequest, SearchRequest, SendReply,
+    SendRequest, StatusReply, WatchRequest,
 };
+use crate::daemon::send::attachment_name;
 use crate::db::{
-    Chat, FetchMessages, Message, PersonFilter, fetch_chats, fetch_messages, latest_rowid,
-    open_database, person_filter, resolve_chat,
+    Chat, FetchMessages, Message, PersonFilter, attachment_path, fetch_chats, fetch_messages,
+    latest_rowid, open_database, person_filter, resolve_chat,
 };
 use crate::{Error, Result};
+
+const BASE64: base64::engine::general_purpose::GeneralPurpose =
+    base64::engine::general_purpose::STANDARD;
 
 /// How many new messages one poll of the direct path will report.
 const WATCH_BATCH: i64 = 200;
@@ -76,6 +83,13 @@ pub struct SendQuery {
 pub enum Kind {
     Daemon,
     Direct,
+}
+
+/// Where an attachment ended up.
+#[derive(Debug, Clone)]
+pub struct Saved {
+    pub path: std::path::PathBuf,
+    pub bytes: i64,
 }
 
 pub struct Source {
@@ -322,6 +336,86 @@ impl Source {
         Ok(serde_json::from_value(call(&Request::Automation(
             Empty {},
         ))?)?)
+    }
+
+    /// Write one attachment to `directory`, and say what it was called.
+    ///
+    /// The client writes the file, always. The daemon holds Full Disk Access and
+    /// hands over bytes; it never takes a destination, because a daemon that
+    /// wrote to a caller-named path would be an arbitrary-file writer with a
+    /// grant behind it — the mirror of the rule that keeps it from being an
+    /// arbitrary-file reader (daemon-and-permissions.md §6).
+    ///
+    /// Written to a temporary name in the destination and renamed at the end, so
+    /// an interrupted transfer leaves nothing that looks like a whole file.
+    pub fn save(&mut self, id: i64, directory: &Path, force: bool) -> Result<Saved> {
+        std::fs::create_dir_all(directory)?;
+
+        let mut name = None;
+        let temporary = directory.join(format!(".msg-save-{}-{id}", std::process::id()));
+        let outcome = (|| -> Result<i64> {
+            let mut file = std::fs::File::create(&temporary)?;
+            if self.kind == Kind::Daemon {
+                let stream = connect_daemon(None).ok_or_else(|| {
+                    Error::other("msgd stopped listening; try `msg daemon status`")
+                })?;
+                let reply = save(stream, &SaveRequest { id }, |part| match part {
+                    SavePart::Head { name: called, .. } => {
+                        name = Some(called);
+                        Ok(())
+                    }
+                    SavePart::Chunk { base64 } => {
+                        let bytes = BASE64
+                            .decode(base64)
+                            .map_err(|error| Error::other(format!("msgd sent {error}")))?;
+                        Ok(file.write_all(&bytes)?)
+                    }
+                })?;
+                name.get_or_insert(reply.name);
+                return Ok(reply.bytes);
+            }
+
+            let (db, _) = self.parts(false)?;
+            let (path, attachment) = attachment_path(db, id)?;
+            let mut source = std::fs::File::open(&path).map_err(|error| {
+                Error::other(format!(
+                    "attachment {id} is recorded but its file is gone ({error})"
+                ))
+            })?;
+            name = Some(
+                attachment
+                    .name
+                    .unwrap_or_else(|| format!("attachment-{id}")),
+            );
+            Ok(i64::try_from(std::io::copy(&mut source, &mut file)?).unwrap_or(0))
+        })();
+
+        let bytes = match outcome {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                std::fs::remove_file(&temporary).ok();
+                return Err(error);
+            }
+        };
+
+        let name = attachment_name(&name.unwrap_or_else(|| format!("attachment-{id}")));
+        let mut destination = directory.join(&name);
+        if destination.exists() && !force {
+            std::fs::remove_file(&temporary).ok();
+            return Err(Error::other(format!(
+                "{} already exists; pass --force to replace it",
+                destination.display()
+            )));
+        }
+        if let Err(error) = std::fs::rename(&temporary, &destination) {
+            std::fs::remove_file(&temporary).ok();
+            return Err(error.into());
+        }
+        destination = destination.canonicalize().unwrap_or(destination);
+        Ok(Saved {
+            path: destination,
+            bytes,
+        })
     }
 
     pub fn watch(

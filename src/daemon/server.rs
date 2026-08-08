@@ -19,8 +19,8 @@ use crate::contacts::{ContactIndex, load_contacts};
 use crate::daemon::config::{config_path, disabled_message, read_config};
 use crate::daemon::protocol::{
     AutomationReply, COMMANDS, ContactsReply, ErrorCode, Frame, PROTOCOL_VERSION, ReadReply,
-    Request, ResolvedHandle, SendReply, StatusReply, WatchRequest, encode, is_chat_guid,
-    socket_path,
+    Request, ResolvedHandle, SavePart, SaveReply, SendReply, StatusReply, WatchRequest, encode,
+    is_chat_guid, socket_path,
 };
 use crate::daemon::send::{check_automation, send_attachment, send_message};
 use crate::db::{
@@ -350,6 +350,12 @@ fn serve(
         return subscribe(shared, stream, watch, reader);
     }
 
+    // Streamed rather than returned, so it is routed like `watch` and for the
+    // same reason: the answer does not fit comfortably in one frame.
+    if let Request::Save(ask) = request {
+        return stream_attachment(shared, &stream, ask.id);
+    }
+
     match answer(shared, request) {
         Ok(value) => write_frame(&stream, &Frame::Result { value })?,
         Err(error) => write_frame(&stream, &Frame::from_error(&error))?,
@@ -506,7 +512,87 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
             })?)
         }
         Request::Watch(_) => unreachable!("watch is handled before dispatch"),
+        Request::Save(_) => unreachable!("save is handled before dispatch"),
     }
+}
+
+/// The size of one `save` frame's worth of file, before base64 inflates it by a
+/// third. Small enough that the daemon's peak memory does not follow the size of
+/// what is being copied, large enough that a 548MB video is not 140,000 frames.
+const SAVE_CHUNK: usize = 4 * 1024 * 1024;
+
+const BASE64: base64::engine::general_purpose::GeneralPurpose =
+    base64::engine::general_purpose::STANDARD;
+
+/// Send one attachment's bytes to a client that cannot open the file itself.
+///
+/// The only place the daemon spends its Full Disk Access on something other than
+/// `chat.db`, and the shape is what keeps that narrow: the caller names a rowid,
+/// `attachment_path` turns it into a path, and nothing takes a path from the
+/// wire. See attachments.md §3.
+fn stream_attachment(shared: &Arc<Shared>, stream: &UnixStream, id: i64) -> Result<()> {
+    let found = shared.with_db(|db| crate::db::attachment_path(db, id));
+    let (path, attachment) = match found {
+        Ok(found) => found,
+        Err(error) => {
+            write_frame(stream, &Frame::from_error(&error))?;
+            stream.shutdown(Shutdown::Both).ok();
+            return Ok(());
+        }
+    };
+
+    let result = (|| -> Result<i64> {
+        let mut file = std::fs::File::open(&path).map_err(|error| {
+            // The row said there was a file. Messages purges them behind its own
+            // back, so this is a normal state rather than a broken database.
+            Error::other(format!(
+                "attachment {id} is recorded but its file is gone ({error})"
+            ))
+        })?;
+        write_frame(
+            stream,
+            &Frame::item(&SavePart::Head {
+                name: attachment
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("attachment-{id}")),
+                mime_type: attachment.mime_type.clone(),
+                total_bytes: attachment.total_bytes,
+            })?,
+        )?;
+
+        let mut sent = 0i64;
+        let mut buffer = vec![0u8; SAVE_CHUNK];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            write_frame(
+                stream,
+                &Frame::item(&SavePart::Chunk {
+                    base64: BASE64.encode(&buffer[..read]),
+                })?,
+            )?;
+            sent += i64::try_from(read).unwrap_or(0);
+        }
+        Ok(sent)
+    })();
+
+    match result {
+        Ok(bytes) => write_frame(
+            stream,
+            &Frame::result(&SaveReply {
+                name: attachment
+                    .name
+                    .unwrap_or_else(|| format!("attachment-{id}")),
+                bytes,
+            })?,
+        )?,
+        Err(error) => write_frame(stream, &Frame::from_error(&error))?,
+    }
+    stream.shutdown(Shutdown::Both).ok();
+    Ok(())
 }
 
 /// Register a watcher, then hold the connection open until the client goes away.

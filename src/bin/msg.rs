@@ -16,6 +16,7 @@ use msg::daemon::install::{
 };
 use msg::daemon::protocol::{Attachment, socket_path};
 use msg::daemon::server::{Daemon, DaemonOptions};
+use msg::db::human_bytes;
 use msg::format::{render_chats, render_messages, to_json};
 use msg::source::{
     ChatsQuery, ReadQuery, SearchQuery, SendQuery, Source, WatchQuery, daemon_status,
@@ -123,6 +124,19 @@ enum Command {
     },
     /// send a message to a conversation
     Send(SendArgs),
+    /// write an attachment to a directory, by the id shown beside it
+    Save {
+        /// attachment id, as printed in a message body
+        id: i64,
+        /// where to write it
+        #[arg(long, default_value = ".")]
+        to: PathBuf,
+        /// replace a file of the same name
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// manage the background reader that holds Full Disk Access
     Daemon {
         #[command(subcommand)]
@@ -340,6 +354,25 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
         }
 
         Command::Send(args) => send(cli, source, args)?,
+        Command::Save {
+            id,
+            to,
+            force,
+            json,
+        } => {
+            let saved = source.save(*id, to, *force)?;
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "path": saved.path.display().to_string(),
+                        "bytes": saved.bytes,
+                    })
+                );
+            } else {
+                println!("{} ({})", saved.path.display(), human_bytes(saved.bytes));
+            }
+        }
         Command::Daemon { .. } => unreachable!("handled in run"),
     }
     Ok(())

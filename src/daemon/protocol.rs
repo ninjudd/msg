@@ -46,7 +46,9 @@ use crate::db::{Chat, Message};
 /// whose only type is a `uti` reads as `[attachment]`. That is the ordinary
 /// half-rebuild AGENTS.md already warns about, not a protocol two releases can
 /// disagree over.
-pub const PROTOCOL_VERSION: u32 = 4;
+///
+/// 5 added `save`, which streams one attachment's bytes to the client by rowid.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";
@@ -145,6 +147,41 @@ pub struct Attachment {
     pub base64: String,
 }
 
+/// Asking for one attachment's bytes. An id, never a path (§6).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SaveRequest {
+    pub id: i64,
+}
+
+/// One piece of the answer to `save`.
+///
+/// Streamed rather than returned whole, because these are not small: on a real
+/// database the median attachment is 1.9MB and the largest is 548MB, which as
+/// one base64 field would cost the better part of a gigabyte in the daemon and
+/// again in the client. `Head` arrives first, then `Chunk` until the file is
+/// done, so peak memory is one chunk rather than one file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "part", rename_all = "camelCase")]
+pub enum SavePart {
+    Head {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+        total_bytes: i64,
+    },
+    Chunk {
+        base64: String,
+    },
+}
+
+/// What `save` says when the last chunk has gone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveReply {
+    pub name: String,
+    pub bytes: i64,
+}
+
 /// Sending, which needs Automation rather than Full Disk Access.
 ///
 /// `chat` may be a guid, in which case the daemon addresses it without reading
@@ -181,6 +218,7 @@ pub enum Request {
     Resolve(ResolveRequest),
     Send(SendRequest),
     Contacts(ContactsRequest),
+    Save(SaveRequest),
     /// Exercise the Automation permission without sending anything, so the
     /// entry in System Settings exists to be switched off.
     Automation(Empty),
@@ -197,6 +235,7 @@ pub const COMMANDS: &[&str] = &[
     "resolve",
     "send",
     "contacts",
+    "save",
     "automation",
     "status",
 ];

@@ -106,15 +106,37 @@ msg read dana --tapbacks       # include reactions
 Attachments read as what they are, in the place they occupy in the message:
 
 ```
-5:31 PM  Dana Reyes: [IMG_4821.HEIC, 3.2 MB]
-5:32 PM  Dana Reyes: from the trip [clip.mov, 41.8 MB]
+5:31 PM  Dana Reyes: [#48213 IMG_4821.HEIC, 3.2 MB]
+5:32 PM  Dana Reyes: from the trip [#48214 clip.mov, 41.8 MB]
 ```
 
 Messages stores a photo as a single invisible character in the body and keeps
 the file elsewhere, so without this a message that is only a photo prints as
-nothing at all. `--json` carries the same thing as an `attachments` array, with
-the file's name, type, and size. The file itself is not read: nothing here opens
-anything outside `chat.db`.
+nothing at all. `--json` carries the same as an `attachments` array.
+
+### Saving an attachment
+
+The number is the attachment's id, and it is how you get the file:
+
+```sh
+msg save 48213                     # into the current directory
+msg save 48213 --to ~/Downloads
+msg save 48213 --to ~/Downloads --force   # replace one already there
+```
+
+The file lives under `~/Library/Messages/Attachments`, which your terminal has
+no permission to read — so `msg` names it by id and never by path. The daemon
+opens the file, hands over the bytes, and the CLI writes them where you asked,
+with your permissions. That is the same shape sending uses, in reverse: **the
+daemon never accepts a path and never writes one**, so it can be neither an
+arbitrary-file reader nor an arbitrary-file writer.
+
+Large attachments stream in chunks rather than arriving whole, so a 500MB video
+costs the same memory as a small photo. An interrupted save leaves nothing
+behind, and an existing file is refused rather than overwritten.
+
+Messages sometimes keeps the row after deleting the file. `msg save` says so
+plainly rather than writing an empty file.
 
 ### Searching
 
@@ -459,8 +481,8 @@ tests/
 ## Limitations
 
 - Reading requires Full Disk Access, which cannot be scoped to just Messages.
-- Attachments are described but not downloaded. `msg` says what is there —
-  name, type, size — and cannot yet hand you the file.
+- Attachments cannot be listed on their own; ids come from reading or searching
+  the conversation they are in.
 - Editing, unsending, and reactions cannot be sent. Those need the private
   APIs, which are not reachable from AppleScript.
 - Without the daemon, `watch` polls rather than subscribing, so a new message

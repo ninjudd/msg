@@ -5,7 +5,10 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::daemon::protocol::{ErrorCode, Frame, Request, WatchRequest, envelope, socket_path};
+use crate::daemon::protocol::{
+    ErrorCode, Frame, Request, SavePart, SaveReply, SaveRequest, WatchRequest, envelope,
+    socket_path,
+};
 use crate::{Error, Result};
 
 /// Long enough to cover a busy daemon, short enough not to look like a hang.
@@ -80,6 +83,39 @@ pub fn request(mut stream: UnixStream, message: &Request) -> Result<serde_json::
 /// stream means the daemon went away — stopped, upgraded, or crashed — which is
 /// an error, because `watch` runs until interrupted and returning quietly would
 /// have a pipeline or supervisor believe it is still following.
+/// Read one attachment's chunks, handing each to `on_part` as it lands.
+///
+/// Unlike `watch`, this ends: the final `result` frame is the answer, and the
+/// caller uses it to know the transfer finished rather than was cut off. A
+/// stream that stops without one has to be treated as a failure, or a truncated
+/// file would be indistinguishable from a complete one.
+pub fn save(
+    mut stream: UnixStream,
+    message: &SaveRequest,
+    mut on_part: impl FnMut(SavePart) -> Result<()>,
+) -> Result<SaveReply> {
+    // A large attachment takes longer than a query, and the client is doing
+    // nothing but writing what arrives.
+    stream.set_read_timeout(None)?;
+    ask(&mut stream, &Request::Save(message.clone()))?;
+
+    let reader = BufReader::new(stream.try_clone()?);
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match decode(line.trim())? {
+            Frame::Error { code, message } => return Err(raise(code, message)),
+            Frame::Item { value } => on_part(serde_json::from_value(value)?)?,
+            Frame::Result { value } => return Ok(serde_json::from_value(value)?),
+        }
+    }
+    Err(Error::other(
+        "msgd stopped part-way through the attachment, so it was not saved whole",
+    ))
+}
+
 pub fn watch(
     mut stream: UnixStream,
     message: &WatchRequest,

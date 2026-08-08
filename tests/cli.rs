@@ -250,3 +250,137 @@ fn install_finds_the_bundle_beside_the_real_binary_not_the_symlink() {
         "resolved to the symlink's directory: {stderr}"
     );
 }
+
+/// A database of this test's own, because the shared fixture is a singleton and
+/// a test that inserts into it changes what every other test reads.
+fn private_fixture(prefix: &str) -> (PathBuf, PathBuf) {
+    let directory = msg::db::temporary_directory(prefix).unwrap();
+    let path = directory.join("chat.db");
+    build(&path);
+    (directory, path)
+}
+
+fn msg_in(db: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_msg"))
+        .args(args)
+        .env("MSG_SOCKET", "/tmp/msg-tests-nothing-here.sock")
+        .env("MSG_DB", db)
+        .output()
+        .expect("run msg")
+}
+
+/// The end a user actually meets: an id printed beside an attachment, and a
+/// command that turns that id into a file they can open.
+///
+/// Driven through `--db`, so this is the direct path — the one that runs when
+/// no daemon is listening. `tests/daemon.rs` covers the streamed path.
+#[test]
+fn it_saves_an_attachment_by_the_id_it_printed() {
+    let (directory, database) = private_fixture("msg-save-");
+    let source = directory.join("original.bin");
+    // Larger than one chunk would be if this went through the daemon, and not a
+    // round number, so a truncated or padded copy fails rather than passes.
+    let payload: Vec<u8> = (0..5_000_003u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&source, &payload).unwrap();
+
+    let db = Connection::open(&database).unwrap();
+    db.execute(
+        "INSERT INTO attachment (ROWID, guid, filename, mime_type, transfer_name,
+             total_bytes, is_sticker, hide_attachment)
+         VALUES (77, 'a77', ?, 'application/octet-stream', 'holiday.bin', ?, 0, 0)",
+        rusqlite::params![source.to_string_lossy(), payload.len() as i64],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO message (rowid, guid, text, is_from_me, handle_id, date, service)
+         VALUES (77, 'm77', char(65532), 0, 1, 790000000000000000, 'iMessage')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+         VALUES (1, 77, 790000000000000000)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (77, 77)",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    // The id has to be discoverable from the output, or it cannot be used.
+    let read = msg_in(&database, &["read", "1", "--no-names"]);
+    assert!(
+        stdout(&read).contains("[#77 holiday.bin,"),
+        "{}",
+        stdout(&read)
+    );
+
+    let into = directory.join("out");
+    let saved = msg_in(&database, &["save", "77", "--to", into.to_str().unwrap()]);
+    assert_eq!(
+        code(&saved),
+        0,
+        "{}",
+        String::from_utf8_lossy(&saved.stderr)
+    );
+
+    let written = into.join("holiday.bin");
+    assert_eq!(std::fs::read(&written).unwrap(), payload, "bytes differ");
+    assert!(stdout(&saved).contains("holiday.bin"), "{}", stdout(&saved));
+
+    // A second save refuses rather than replacing what is already there.
+    let again = msg_in(&database, &["save", "77", "--to", into.to_str().unwrap()]);
+    assert_eq!(code(&again), 1);
+    assert!(
+        String::from_utf8_lossy(&again.stderr).contains("--force"),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+
+    // And with --force it does replace it, leaving no temporary behind.
+    let forced = msg_in(
+        &database,
+        &["save", "77", "--to", into.to_str().unwrap(), "--force"],
+    );
+    assert_eq!(
+        code(&forced),
+        0,
+        "{}",
+        String::from_utf8_lossy(&forced.stderr)
+    );
+    let strays: Vec<_> = std::fs::read_dir(&into)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".msg-save-"))
+        .collect();
+    assert!(strays.is_empty(), "left behind {strays:?}");
+}
+
+/// An attachment Messages recorded but no longer has on disk.
+#[test]
+fn it_reports_an_attachment_whose_file_is_gone() {
+    let (_directory, database) = private_fixture("msg-gone-");
+    let db = Connection::open(&database).unwrap();
+    db.execute(
+        "INSERT INTO attachment (ROWID, guid, filename, transfer_name, total_bytes)
+         VALUES (78, 'a78', '~/nowhere/gone.jpg', 'gone.jpg', 10)",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let directory = msg::db::temporary_directory("msg-gone-out-").unwrap();
+    let output = msg_in(
+        &database,
+        &["save", "78", "--to", directory.to_str().unwrap()],
+    );
+    assert_eq!(code(&output), 1);
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("its file is gone"), "{error}");
+    // Nothing at all should be left in the destination.
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+}

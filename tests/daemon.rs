@@ -11,11 +11,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use msg::apple::to_apple_date;
 use msg::daemon::client::{connect_daemon, connect_daemon_within, request};
 use msg::daemon::protocol::{
     ChatsRequest, ContactsRequest, Empty, PROTOCOL_VERSION, ReadRequest, Request, ResolveRequest,
-    SearchRequest, SendRequest, WatchRequest, envelope,
+    SavePart, SaveRequest, SearchRequest, SendRequest, WatchRequest, envelope,
 };
 use msg::daemon::server::{Daemon, DaemonOptions};
 use rusqlite::Connection;
@@ -683,4 +684,67 @@ fn the_socket_is_owner_only() {
         .permissions()
         .mode();
     assert_eq!(directory & 0o777, 0o700);
+}
+
+/// The streamed path, over a real socket: bytes the client could not have read
+/// itself, arriving in chunks and landing as one whole file.
+///
+/// The payload is deliberately larger than one chunk and not a multiple of it,
+/// because a chunked transfer that is off by a boundary is exactly the bug this
+/// is here to catch — and a smaller file would take the single-frame path
+/// through the same code without exercising any of it.
+#[test]
+fn it_streams_an_attachment_larger_than_one_chunk() {
+    let harness = harness();
+    let source = harness.directory.join("big.bin");
+    let payload: Vec<u8> = (0..(9 * 1024 * 1024 + 7u32))
+        .map(|i| (i % 251) as u8)
+        .collect();
+    std::fs::write(&source, &payload).unwrap();
+
+    let db = Connection::open(&harness.database).unwrap();
+    db.execute(
+        "INSERT INTO attachment (ROWID, guid, filename, mime_type, transfer_name,
+             total_bytes, is_sticker, hide_attachment)
+         VALUES (91, 'a91', ?, 'application/octet-stream', 'big.bin', ?, 0, 0)",
+        rusqlite::params![source.to_string_lossy(), payload.len() as i64],
+    )
+    .unwrap();
+    drop(db);
+
+    let stream = UnixStream::connect(&harness.socket).unwrap();
+    let mut head = None;
+    let mut written: Vec<u8> = Vec::new();
+    let reply = msg::daemon::client::save(stream, &SaveRequest { id: 91 }, |part| {
+        match part {
+            SavePart::Head {
+                name, total_bytes, ..
+            } => head = Some((name, total_bytes)),
+            SavePart::Chunk { base64 } => written.extend_from_slice(
+                &base64::engine::general_purpose::STANDARD
+                    .decode(base64)
+                    .unwrap(),
+            ),
+        }
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(head, Some(("big.bin".to_string(), payload.len() as i64)));
+    assert_eq!(reply.bytes, payload.len() as i64);
+    assert_eq!(written.len(), payload.len(), "wrong number of bytes");
+    assert!(written == payload, "bytes differ");
+    // More than one chunk actually crossed the wire, or this proved nothing.
+    assert!(payload.len() > 4 * 1024 * 1024);
+}
+
+/// An id that is not there is an error, not an empty file.
+#[test]
+fn it_refuses_an_attachment_id_that_does_not_exist() {
+    let harness = harness();
+    let stream = UnixStream::connect(&harness.socket).unwrap();
+    let error = msg::daemon::client::save(stream, &SaveRequest { id: 999_999 }, |_| Ok(()))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no attachment 999999"), "{error}");
 }
