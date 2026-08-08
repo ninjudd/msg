@@ -399,6 +399,25 @@ const MESSAGE_FROM: &str = "
 /// REPLACEMENT CHARACTER. The file itself lives outside the database.
 const PLACEHOLDER: char = '\u{fffc}';
 
+/// The `uti` column, when it says anything a reader can use.
+///
+/// macOS synthesizes a `dyn.…` identifier for a file it cannot type, which names
+/// the extension back to itself and tells a person nothing. Those are dropped,
+/// so falling back to `uti` cannot make a description worse than saying nothing.
+fn readable_uti(row: &Row<'_>) -> Option<String> {
+    text(row, "uti").filter(|uti| !uti.starts_with("dyn."))
+}
+
+/// How many message rowids one attachment lookup binds at a time.
+///
+/// `IN (?, ?, ...)` costs one host parameter per rowid, and SQLite refuses more
+/// than `SQLITE_LIMIT_VARIABLE_NUMBER` of them — 32,766 in the bundled build,
+/// but only 999 in versions before 3.32 and in anything built with the older
+/// default. Nothing upstream caps a result set: `-n` takes any positive `i64`.
+/// So this is batched rather than trusted, and 900 leaves room under every build
+/// rather than under the one that happens to be linked here.
+const ATTACHMENT_BATCH: usize = 900;
+
 /// Every attachment on these messages, grouped by message rowid.
 ///
 /// A second query rather than a join, because `MESSAGE_FROM` already joins
@@ -412,35 +431,34 @@ const PLACEHOLDER: char = '\u{fffc}';
 /// see attachments.md §7.
 fn attachments_for(db: &Connection, rowids: &[i64]) -> Result<BTreeMap<i64, Vec<Attachment>>> {
     let mut found: BTreeMap<i64, Vec<Attachment>> = BTreeMap::new();
-    if rowids.is_empty() {
-        return Ok(found);
-    }
 
-    let slots = vec!["?"; rowids.len()].join(",");
-    let sql = format!(
-        "SELECT j.message_id AS messageId, a.ROWID AS rowid,
-                a.transfer_name AS name, a.mime_type AS mimeType,
-                a.total_bytes AS totalBytes, a.is_sticker AS isSticker,
-                a.filename AS filename
-           FROM message_attachment_join j
-           JOIN attachment a ON a.ROWID = j.attachment_id
-          WHERE j.message_id IN ({slots}) AND COALESCE(a.hide_attachment, 0) = 0
-          ORDER BY j.message_id, a.ROWID"
-    );
-    let mut statement = db.prepare(&sql)?;
-    let mut rows = statement.query(params_from_iter(rowids.iter().copied()))?;
-    while let Some(row) = rows.next()? {
-        found
-            .entry(number(row, "messageId"))
-            .or_default()
-            .push(Attachment {
-                rowid: number(row, "rowid"),
-                name: text(row, "name"),
-                mime_type: text(row, "mimeType"),
-                total_bytes: number(row, "totalBytes"),
-                is_sticker: number(row, "isSticker") == 1,
-                is_downloaded: text(row, "filename").is_some(),
-            });
+    for batch in rowids.chunks(ATTACHMENT_BATCH) {
+        let slots = vec!["?"; batch.len()].join(",");
+        let sql = format!(
+            "SELECT j.message_id AS messageId, a.ROWID AS rowid,
+                    a.transfer_name AS name, a.mime_type AS mimeType, a.uti AS uti,
+                    a.total_bytes AS totalBytes, a.is_sticker AS isSticker,
+                    a.filename AS filename
+               FROM message_attachment_join j
+               JOIN attachment a ON a.ROWID = j.attachment_id
+              WHERE j.message_id IN ({slots}) AND COALESCE(a.hide_attachment, 0) = 0
+              ORDER BY j.message_id, a.ROWID"
+        );
+        let mut statement = db.prepare(&sql)?;
+        let mut rows = statement.query(params_from_iter(batch.iter().copied()))?;
+        while let Some(row) = rows.next()? {
+            found
+                .entry(number(row, "messageId"))
+                .or_default()
+                .push(Attachment {
+                    rowid: number(row, "rowid"),
+                    name: text(row, "name"),
+                    mime_type: text(row, "mimeType").or_else(|| readable_uti(row)),
+                    total_bytes: number(row, "totalBytes"),
+                    is_sticker: number(row, "isSticker") == 1,
+                    is_downloaded: text(row, "filename").is_some(),
+                });
+        }
     }
     Ok(found)
 }
@@ -789,9 +807,13 @@ pub fn fetch_messages(
     // messages actually being returned. Searching still matches the real body
     // rather than the description standing in for an attachment.
     let rowids: Vec<i64> = messages.iter().map(|message| message.rowid).collect();
-    let mut attachments = attachments_for(db, &rowids)?;
+    let attachments = attachments_for(db, &rowids)?;
     for message in &mut messages {
-        let found = attachments.remove(&message.rowid).unwrap_or_default();
+        // Cloned rather than taken. `MESSAGE_FROM` joins `chat_message_join`, so
+        // a message in two conversations comes back as two rows with one rowid,
+        // and removing would give the attachments to whichever arrived first and
+        // leave the other reading `[attachment]` against an empty list.
+        let found = attachments.get(&message.rowid).cloned().unwrap_or_default();
         message.body = describe_attachments(message.body.take(), &found);
         message.attachments = found;
     }
@@ -1703,6 +1725,87 @@ mod tests {
         )
         .unwrap();
         assert!(bodies(&found).is_empty(), "{:?}", bodies(&found));
+    }
+
+    /// `IN (?, ?, ...)` costs one host parameter per rowid, and SQLite refuses
+    /// more than `SQLITE_LIMIT_VARIABLE_NUMBER` of them.
+    ///
+    /// Aimed at `attachments_for` directly rather than through a fixture of
+    /// 33,000 messages: the failure needs only a long enough rowid list, not any
+    /// attachments or even any messages, and this way the test is instant.
+    #[test]
+    fn an_attachment_lookup_survives_more_rowids_than_sqlite_binds() {
+        let db = fixture();
+        // Comfortably past the bundled build's 32,766, and past the 999 that
+        // older SQLite allows.
+        let rowids: Vec<i64> = (1..=40_000).collect();
+        let found = attachments_for(&db, &rowids).expect("a long rowid list");
+        assert!(found.is_empty(), "{found:?}");
+
+        // And it still finds what is there when the list is that long.
+        attach(
+            &db,
+            1,
+            &[(1, Some("late.png"), Some("image/png"), 512, false, true)],
+        );
+        let found = attachments_for(&db, &rowids).expect("a long rowid list");
+        assert_eq!(found.get(&1).map(Vec::len), Some(1), "{found:?}");
+    }
+
+    /// A message in two conversations comes back as two rows with one rowid,
+    /// because `MESSAGE_FROM` joins `chat_message_join`.
+    #[test]
+    fn a_message_in_two_chats_shows_its_attachment_in_both() {
+        let db = fixture();
+        db.execute("UPDATE message SET text = char(65532) WHERE rowid = 1", [])
+            .unwrap();
+        attach(
+            &db,
+            1,
+            &[(1, Some("photo.png"), Some("image/png"), 2048, false, true)],
+        );
+        db.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+             VALUES (2, 1, ?)",
+            rusqlite::params![at(0)],
+        )
+        .unwrap();
+
+        let found = fetch_messages(&db, &FetchMessages::default(), &ContactIndex::empty()).unwrap();
+        let copies: Vec<_> = found.iter().filter(|m| m.rowid == 1).collect();
+        assert_eq!(copies.len(), 2, "the fixture must produce two copies");
+        for copy in copies {
+            assert_eq!(copy.body.as_deref(), Some("[photo.png, 2.0 KB]"));
+            assert_eq!(copy.attachments.len(), 1, "chat {}", copy.chat_id);
+        }
+    }
+
+    /// 225 visible attachments on a real database have no mime type but a real
+    /// `uti`; 2 have the `dyn.` kind macOS invents for a file it cannot type.
+    #[test]
+    fn a_uti_stands_in_for_a_missing_mime_type_unless_it_says_nothing() {
+        let db = fixture();
+        db.execute(
+            "UPDATE message SET text = char(65532) || char(65532) WHERE rowid = 1",
+            [],
+        )
+        .unwrap();
+        for (rowid, uti) in [(1, "com.apple.coreaudio-format"), (2, "dyn.age81a8dr")] {
+            db.execute(
+                "INSERT INTO attachment (ROWID, guid, filename, uti, mime_type,
+                     transfer_name, total_bytes, is_sticker, hide_attachment)
+                 VALUES (?, 'a', '/some/path', ?, NULL, NULL, 0, 0, 0)",
+                rusqlite::params![rowid, uti],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (1, ?)",
+                rusqlite::params![rowid],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(body_of(&db, 1), "[com.apple.coreaudio-format][attachment]");
     }
 
     /// An address names one person outright, even when a longer address
