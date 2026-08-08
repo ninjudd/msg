@@ -279,6 +279,81 @@ fn search(query: &str, unknown: bool) -> Vec<serde_json::Value> {
     .clone()
 }
 
+/// The two lines that join `with_context` to the wire, which nothing else
+/// reaches: the CLI tests drive the direct `--db` path and the `db.rs` tests
+/// drive the windowing in isolation.
+///
+/// This is the path an installed `msg` actually takes, and the bug it would
+/// hide is the silent one protocol 9 exists to prevent — a daemon answering
+/// with bare hits while the version check passes looks exactly like a search
+/// that found nothing to show.
+#[test]
+fn context_widths_survive_the_wire() {
+    let messages = ask(&Request::Search(SearchRequest {
+        query: "after 6".into(),
+        names: Some(false),
+        before: Some(1),
+        after: Some(1),
+        ..Default::default()
+    }))
+    .unwrap();
+    let messages = messages.as_array().unwrap();
+
+    let bodies: Vec<&str> = messages
+        .iter()
+        .map(|m| m["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        bodies,
+        [
+            "are you around later",
+            "after 6, yeah",
+            // A reaction is context even though a search can never return one,
+            // and this proves the window's `include_tapbacks` crosses too.
+            "Liked \"after 6, yeah\""
+        ],
+        "{bodies:?}"
+    );
+
+    // `matched` rides on a serde default rather than a field always written, so
+    // a context message that lost it in transit would arrive looking like a
+    // hit — the same wrong answer as the marker bug, invisible to `db.rs`.
+    let matched: Vec<bool> = messages
+        .iter()
+        .map(|m| m["matched"].as_bool().unwrap_or(true))
+        .collect();
+    assert_eq!(matched, [false, true, false], "{matched:?}");
+
+    // And one run, so the separator is reproducible by whoever reads this.
+    let groups: Vec<i64> = messages
+        .iter()
+        .map(|m| m["group"].as_i64().unwrap())
+        .collect();
+    assert_eq!(groups, [0, 0, 0], "{groups:?}");
+
+    // Asymmetric, because equal widths cannot tell the two fields apart: a
+    // daemon that swapped them would answer the case above correctly.
+    let lopsided = ask(&Request::Search(SearchRequest {
+        query: "after 6".into(),
+        names: Some(false),
+        before: Some(0),
+        after: Some(1),
+        ..Default::default()
+    }))
+    .unwrap();
+    let bodies: Vec<&str> = lopsided
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        bodies,
+        ["after 6, yeah", "Liked \"after 6, yeah\""],
+        "{bodies:?}"
+    );
+}
+
 #[test]
 fn matches_message_bodies() {
     let bodies: Vec<String> = search("deploy", false)
