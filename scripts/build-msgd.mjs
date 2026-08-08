@@ -121,10 +121,10 @@ run(process.execPath, ['--experimental-sea-config', join(out, 'sea-config.json')
 writeFileSync(join(app, 'Contents', 'Info.plist'), infoPlist());
 
 // Committed rather than generated, so the build needs nothing but a copy.
-// scripts/build-icon.mjs redraws it, and is not run from here.
+// scripts/build-icon.sh redraws it from assets/msgd.svg, and is not run here.
 const icon = join(root, 'assets', 'msgd.icns');
 if (!existsSync(icon)) {
-  throw new Error(`no icon at ${icon}\nRedraw it with \`node scripts/build-icon.mjs\`.`);
+  throw new Error(`no icon at ${icon}\nRedraw it with \`pnpm icon\`.`);
 }
 mkdirSync(join(app, 'Contents', 'Resources'), { recursive: true });
 copyFileSync(icon, join(app, 'Contents', 'Resources', 'msgd.icns'));
