@@ -113,6 +113,11 @@ msg search "dinner" --from dana           # only what they sent
 msg search "invoice" --since 30d -n 50
 ```
 
+Search matches the message body wherever it lives. Most bodies are not in
+`message.text` at all but archived into `attributedBody`, so matching has to look
+inside that blob rather than cast it to text — a cast stops at the first NUL byte,
+which in an archived body comes long before the words.
+
 `-c` scopes to a conversation; `--with` and `--from` scope to a *person*, which
 is not the same thing. Someone you message one to one and in three group chats
 is four conversations and one contact, and Messages stores each of their

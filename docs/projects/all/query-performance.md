@@ -1,9 +1,18 @@
 # Plan: Make the common commands stop taking two seconds
 
-**Status:** The chat list is fixed; `search` is not. §1 to §4 are the diagnosis
-as it was written, before any of it was acted on. §6 records what was done, what
-it cost, and what is left. §8 corrects a claim §7 made about early exit that
-turned out to be false when measured, and §9 is the plan that replaces it.
+**Status:** Done, in the sense that matters: the chat list went from ~2.1s to
+~150ms, and `search` was found to have never worked at all and now does. Search
+costs a couple of seconds unscoped and 236ms scoped to a person, which was
+judged fast enough to stop here — §9 and [search-index.md](search-index.md)
+record the two ways to go faster, and neither is being built.
+
+§1 to §4 are the diagnosis as it was written, before any of it was acted on. §6
+records what was done and what it cost. §8 corrects a claim §7 made about early
+exit that turned out to be false when measured, and §9 is the plan that replaces
+it. **§10 matters most: every measurement before it timed a predicate that was
+not actually searching message bodies.** Read it before trusting any number
+above. §11 is the limit bug that fixing the predicate exposed, and §12 is the
+case folding it got wrong for anything outside ASCII.
 
 Nothing here was a regression from [the Rust rewrite](rust-rewrite.md): the same
 numbers came out of the TypeScript build, and that work simply removed
@@ -217,3 +226,106 @@ One thing to keep straight: the SQL `LIMIT` applies to raw blob matches, and the
 decoded-body filter narrows them afterwards, so a window can return fewer results
 than it looked like it would. Counting toward the limit has to happen after that
 filter, not before.
+
+## 10 The measurements above were of a broken predicate
+
+Everything before this section timed a search that was not searching. The clause
+was `CAST(message.attributedBody AS TEXT) LIKE ?`, and SQLite hands a cast blob to
+`LIKE` as a NUL-terminated string. A typedstream blob has NULs in its header,
+well before the text: measured, an 88-byte blob casts to 41. So the match only
+ever saw the archive header, and the 97.6% of messages whose body lives in
+`attributedBody` could not be found at all. Only the 2.4% that also fill
+`message.text` ever matched.
+
+It was not a regression. The identical clause is in the original TypeScript at
+`src/db.ts:246`, so search had never worked properly; the Rust port carried it
+over faithfully, bug included.
+
+This retires §3's last bullet and §7's second paragraph. §7 ruled out `instr` for
+being case-sensitive where `LIKE` is not — but `instr` is the one that would have
+worked, precisely because it does not stop at the NUL. The real constraint was
+never case sensitivity, it was that one predicate read the whole blob and the
+other did not.
+
+The fix is a scalar function registered on the connection, `msg_body_has(text,
+attributedBody, needle)`, doing a case-insensitive byte scan in Rust — a byte
+scan only for ASCII needles, as §12 goes on to correct. Sound
+rather than approximate: the decoder reads a slice of those same bytes as UTF-8,
+so anything surviving into the decoded body is present in the blob, which makes
+this a superset of what the decoded filter accepts — what a prefilter has to be.
+
+**Correct is slower than wrong**, and the numbers move accordingly, because the
+predicate now reads whole blobs rather than 41 bytes of each:
+
+| Query | Before (wrong) | After (correct) |
+| --- | --- | --- |
+| `DFI` | 0 results, 1440ms | 20 results, 2434ms |
+| `dinner` | 0 results | 20 results, 2334ms |
+| no match at all | 1440ms | 2569ms |
+| `--from <person> DFI` | 0 results | 20 results, 236ms |
+
+That last row is the shape of the answer. A person filter rejects rows on an
+integer before the blob is ever read, and it is ten times faster than the
+unscoped search as a result. Narrowing before scanning is what works; §9 does it
+by date, and [search-index.md](search-index.md) removes the scan entirely.
+
+## 11 The limit was under-delivering, not truncating
+
+Fixing the predicate exposed the wart §9 had predicted. `LIMIT` bounds *raw*
+matches and the decode-and-check narrows them afterwards, so a needle found in
+archived metadata rather than in the visible body consumed one of the results
+asked for instead of being replaced by the next real one. Asking for 100 returned
+99 while 247 matched.
+
+The fix is to over-fetch and trim. The first ask is `limit * 4 + 64`, widening
+fourfold if even that comes up short, and stopping when the database returns
+fewer rows than asked — which is what proves there is nothing further back.
+
+Over-fetching on the *first* pass rather than retrying matters, and §8 is why: a
+wider `LIMIT` costs almost nothing because there is no early exit, while a second
+pass re-runs the whole scan. Measured, recovering by retry took `-n 100` from
+1948ms to 5490ms; recovering by asking wide once takes it to 2412ms, and the cost
+is flat in the limit again.
+
+| `-n` | Under-delivering | Retrying | Asking wide once |
+| --- | --- | --- | --- |
+| 100 | 99 results, 1948ms | 100, 5490ms | 100, 2412ms |
+| 247 | — | 247, 4522ms | 247, 2596ms |
+| 1000 | — | 247, 2686ms | 247, 2386ms |
+
+A cursor would beat all three, continuing from the oldest row already seen rather
+than re-reading from the top. That is §9's windowing, and it is the reason to
+build it.
+
+## 12 Case is a property of characters, not of bytes
+
+§10's byte scan folded case a byte at a time, which is only case folding inside
+ASCII: `É` and `é` differ in both of their bytes, so `café` did not find `CAFÉ`.
+Worse than a missing convenience, because this is the prefilter — a row it
+rejects never reaches the decoded filter, which folds properly and would have
+accepted it. The two disagreed, and the stricter one ran first.
+
+They cannot disagree now, because they are one function: the decode-and-check
+calls the same predicate the SQL prefilter does, differing only in what it is
+handed. A needle outside ASCII decodes the blob and folds per character. Since
+the framing between the text is not valid UTF-8 and text never spans it, each
+valid run is searched on its own and the framing never matches.
+
+An ASCII needle keeps the byte scan, which is why the common case did not get
+slower. Lowercasing an ASCII character never leaves ASCII, so only an ASCII
+character can match one — near enough: `K` U+212A lowercases to `k`, and that
+curiosity is knowingly not found.
+
+| Needle | Cost |
+| --- | --- |
+| ASCII, matching | 2.15s |
+| ASCII, matching nothing | 2.05s |
+| Outside ASCII | 4.15s |
+
+The ASCII rows are the 2.4s §11 measured, within noise, so the common search did
+not get slower. A needle outside ASCII costs roughly twice that, and only
+searches that need decoding pay it. Left there deliberately: the exact
+alternative is a reverse fold table, and an approximate one is a second predicate
+that disagrees with the first, which is the bug this section is about. If that
+4.15s ever matters, [search-index.md §7](search-index.md) is the decision to
+revisit rather than this scan to sharpen.

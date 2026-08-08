@@ -82,8 +82,140 @@ fn reads_as_permission(text: &str) -> bool {
     lower.contains("authorization denied") || lower.contains("permission")
 }
 
+/// Does `needle` occur in `haystack`, ignoring case?
+///
+/// Bytes rather than a string because the haystack is usually a typedstream
+/// blob: UTF-8 text with binary framing wrapped around it.
+///
+/// Case folds per character rather than per byte once the needle leaves ASCII.
+/// `É` and `é` differ in both of their bytes, so a byte-wise fold reads them as
+/// different letters — and this is the prefilter, so a row it rejects never
+/// reaches the decoded filter that would have accepted it.
+///
+/// An ASCII needle skips all of that and folds bytes over the whole blob, which
+/// is both the common case and the cheap one: lowercasing an ASCII character
+/// never leaves ASCII, so only an ASCII character can match. Not quite only —
+/// `K` U+212A lowercases to `k` — and that curiosity is knowingly not found.
+fn contains_ignoring_case(haystack: &[u8], needle: &str) -> bool {
+    if needle.is_ascii() {
+        return contains_ignoring_ascii_case(haystack, needle.as_bytes());
+    }
+    // Characters have to be decoded to be folded, and the framing is not valid
+    // UTF-8. Text never spans it, so each valid run is searched on its own and
+    // the framing simply never matches.
+    let mut rest = haystack;
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(run) => return run_contains(run, needle),
+            Err(error) => {
+                let (valid, invalid) = rest.split_at(error.valid_up_to());
+                if run_contains(std::str::from_utf8(valid).unwrap_or_default(), needle) {
+                    return true;
+                }
+                // `error_len` is `None` only when the bytes end mid-character,
+                // where the remainder is that partial character and nothing
+                // follows it. Never zero either way, so this terminates.
+                rest = &invalid[error.error_len().unwrap_or(invalid.len()).max(1)..];
+            }
+        }
+    }
+}
+
+fn run_contains(haystack: &str, needle: &str) -> bool {
+    let Some(first) = needle.chars().flat_map(char::to_lowercase).next() else {
+        return true;
+    };
+    // Almost every position fails on its first character, so that test is worth
+    // making cheap: comparing it before building the two folding iterators is
+    // most of the difference between this and a scan that folds everything.
+    haystack
+        .char_indices()
+        .any(|(at, ch)| folds_to(ch, first) && starts_with_ignoring_case(&haystack[at..], needle))
+}
+
+fn folds_to(ch: char, lowered: char) -> bool {
+    if ch.is_ascii() {
+        return ch.to_ascii_lowercase() == lowered;
+    }
+    ch.to_lowercase().next() == Some(lowered)
+}
+
+fn starts_with_ignoring_case(haystack: &str, needle: &str) -> bool {
+    let mut found = haystack.chars().flat_map(char::to_lowercase);
+    needle
+        .chars()
+        .flat_map(char::to_lowercase)
+        .all(|wanted| found.next() == Some(wanted))
+}
+
+fn contains_ignoring_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
+    let Some((first, rest)) = needle.split_first() else {
+        return true;
+    };
+    let lower = first.to_ascii_lowercase();
+    let upper = first.to_ascii_uppercase();
+    haystack.windows(needle.len()).any(|window| {
+        (window[0] == lower || window[0] == upper)
+            && window[1..]
+                .iter()
+                .zip(rest)
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    })
+}
+
+/// `msg_body_has(text, attributedBody, needle)` — is the needle in this
+/// message's body?
+///
+/// This exists because `CAST(attributedBody AS TEXT) LIKE ?` does not work, and
+/// did not work in the TypeScript build either. SQLite hands a cast blob to
+/// `LIKE` as a NUL-terminated string, and a typedstream blob is full of NULs
+/// well before the text: measured, an 88-byte blob casts to 41 bytes. So the
+/// match only ever saw the archive header, and the 97.6% of messages whose body
+/// lives in `attributedBody` were unsearchable. Only the 2.4% that also fill
+/// `message.text` ever matched, which is why searching for a common word
+/// returned something and made the bug look like sparse results rather than a
+/// broken predicate.
+///
+/// Scanning the raw blob is sound rather than approximate. `decode_attributed_body`
+/// takes a slice of these same bytes and reads it as UTF-8, so any needle that
+/// survives into the decoded body is present in the blob — this is a superset of
+/// what the decoded filter accepts, which is exactly what a prefilter must be.
+/// It over-matches when the needle also appears in an archived class name, and
+/// the decode-and-check afterwards is what narrows that. Both run
+/// `contains_ignoring_case`, so the two cannot disagree about what a match is;
+/// they differ only in what they are looking at.
+fn register_body_match(db: &Connection) -> rusqlite::Result<()> {
+    use rusqlite::functions::FunctionFlags;
+
+    db.create_scalar_function(
+        "msg_body_has",
+        3,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            let needle = context.get::<String>(2)?;
+            if needle.is_empty() {
+                return Ok(true);
+            }
+            // `message.text` is set for a minority of messages, and when it is
+            // set it is the cheaper of the two to look at.
+            if let Ok(text) = context.get::<String>(0)
+                && contains_ignoring_case(text.as_bytes(), &needle)
+            {
+                return Ok(true);
+            }
+            if let Ok(body) = context.get::<Vec<u8>>(1)
+                && contains_ignoring_case(&body, &needle)
+            {
+                return Ok(true);
+            }
+            Ok(false)
+        },
+    )
+}
+
 fn try_open(location: &Path) -> rusqlite::Result<Connection> {
     let db = Connection::open_with_flags(location, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    register_body_match(&db)?;
     {
         // Stepping rather than `query_row`, which reports an empty table as an
         // error — that would send a perfectly readable but empty database down
@@ -174,10 +306,9 @@ fn open_snapshot(location: &Path) -> Result<Connection> {
             );
         }
     }
-    Ok(Connection::open_with_flags(
-        &copy,
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?)
+    let db = Connection::open_with_flags(&copy, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    register_body_match(&db)?;
+    Ok(db)
 }
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -424,11 +555,10 @@ pub fn fetch_messages(
         }
     }
     if let Some(query) = options.query {
-        // The body lives in attributedBody when text is NULL, so match the raw
-        // blob too and filter precisely once decoded.
-        clauses.push("(message.text LIKE ? OR CAST(message.attributedBody AS TEXT) LIKE ?)".into());
-        params.push(format!("%{query}%").into());
-        params.push(format!("%{query}%").into());
+        // Not `CAST(attributedBody AS TEXT) LIKE ?`, which silently matched
+        // nothing but the archive header — see `register_body_match`.
+        clauses.push("msg_body_has(message.text, message.attributedBody, ?)".into());
+        params.push(Value::Text(query.to_string()));
     }
 
     let where_clause = if clauses.is_empty() {
@@ -443,26 +573,66 @@ pub fn fetch_messages(
     } else {
         "ORDER BY message.date DESC"
     };
-    params.push(options.limit.into());
-
     let sql = format!("SELECT {MESSAGE_COLUMNS} {MESSAGE_FROM} {where_clause} {order} LIMIT ?");
     let mut statement = db.prepare(&sql)?;
-    let mut rows = statement.query(params_from_iter(params))?;
 
-    let mut messages = Vec::new();
-    while let Some(row) = rows.next()? {
-        messages.push(to_message(row, contacts));
-    }
+    // Ask for more than was wanted when the first answer came up short.
+    //
+    // The `LIMIT` bounds *raw* matches, and the decode below then drops the ones
+    // where the needle was in the archive metadata rather than in the visible
+    // body. So asking for 100 could return 99 while hundreds more matched: one
+    // false positive inside the limit cost a real result instead of being
+    // replaced by the next one. Fetching wider and trimming afterwards is what
+    // makes the limit mean "up to this many matches" rather than "this many
+    // candidates, minus however many were wrong".
+    // The first ask is already generous, because a wider `LIMIT` is close to
+    // free and a second pass is not. There is no early exit — §8 of
+    // query-performance.md measured a tenfold limit costing the same — so the
+    // scan dominates either way, and re-running it to recover from a handful of
+    // false positives roughly doubles the query. Over-fetching once instead
+    // keeps almost every search to a single pass.
+    let wanted = usize::try_from(options.limit).unwrap_or(usize::MAX);
+    let mut asking = if options.query.is_some() {
+        options.limit.saturating_mul(4).saturating_add(64)
+    } else {
+        options.limit
+    };
+    let mut messages;
+    loop {
+        let mut round = params.clone();
+        round.push(asking.into());
+        let mut rows = statement.query(params_from_iter(round))?;
 
-    if let Some(query) = options.query {
-        let needle = query.to_lowercase();
-        messages.retain(|message| {
-            message
-                .body
-                .as_ref()
-                .is_some_and(|body| body.to_lowercase().contains(&needle))
-        });
+        let mut candidates = Vec::new();
+        while let Some(row) = rows.next()? {
+            candidates.push(to_message(row, contacts));
+        }
+        let exhausted = i64::try_from(candidates.len()).unwrap_or(i64::MAX) < asking;
+
+        messages = candidates;
+        if let Some(query) = options.query {
+            // Deliberately the same predicate the SQL prefilter ran, so the two
+            // agree on what a match is by construction rather than by matching
+            // rules written twice.
+            messages.retain(|message| {
+                message
+                    .body
+                    .as_ref()
+                    .is_some_and(|body| contains_ignoring_case(body.as_bytes(), query))
+            });
+        }
+
+        // Nothing was dropped, or there is nothing further back to find. The
+        // second is what stops this looping forever on a genuinely short result.
+        if messages.len() >= wanted || exhausted || options.query.is_none() {
+            break;
+        }
+        let Some(wider) = asking.checked_mul(4) else {
+            break;
+        };
+        asking = wider;
     }
+    messages.truncate(wanted);
     if !options.oldest_first {
         messages.reverse();
     }
@@ -855,6 +1025,7 @@ mod tests {
 
     pub(crate) fn fixture() -> Connection {
         let db = Connection::open_in_memory().unwrap();
+        register_body_match(&db).unwrap();
         db.execute_batch(SCHEMA).unwrap();
         db.execute_batch(
             "
@@ -1240,6 +1411,250 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("no one matching"), "{error}");
+    }
+
+    /// The bug that made search look broken: a body that exists only in
+    /// `attributedBody`, behind the NUL bytes of the archive header.
+    ///
+    /// `CAST(... AS TEXT)` hands `LIKE` a NUL-terminated string, so it never saw
+    /// past the header and this message was unfindable. The blob here is shaped
+    /// like a real one — header, class names, NULs, then the text.
+    #[test]
+    fn finds_a_body_that_lives_only_in_the_archived_blob() {
+        let db = fixture();
+        let mut blob: Vec<u8> = Vec::new();
+        blob.extend_from_slice(b"\x04\x0bstreamtyped\x81\xe8\x03\x84\x01\x40\x84\x84\x84");
+        blob.extend_from_slice(
+            b"NSAttributedString\x00\x84\x84\x08NSObject\x00\x85\x92\x84\x84\x84",
+        );
+        blob.extend_from_slice(b"NSString\x01\x94\x84\x01\x2b");
+        let text = b"pinball tonight";
+        blob.push(u8::try_from(text.len()).unwrap());
+        blob.extend_from_slice(text);
+
+        // A NUL well before the text is what defeated the old predicate.
+        assert!(blob.contains(&0), "the fixture blob must carry a NUL");
+        assert!(
+            blob.iter().position(|b| *b == 0).unwrap() < blob.len() - text.len(),
+            "the NUL must come before the text, or this proves nothing"
+        );
+
+        db.execute(
+            "INSERT INTO message (rowid, guid, text, attributedBody, is_from_me,
+                 handle_id, associated_message_type, date, service)
+             VALUES (7, 'm7', NULL, ?, 0, 1, 0, ?, 'iMessage')",
+            rusqlite::params![blob, at(6)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+             VALUES (1, 7, ?)",
+            rusqlite::params![at(6)],
+        )
+        .unwrap();
+
+        let found = fetch_messages(
+            &db,
+            &FetchMessages {
+                query: Some("pinball"),
+                ..Default::default()
+            },
+            &ContactIndex::empty(),
+        )
+        .unwrap();
+        assert_eq!(bodies(&found), ["pinball tonight"]);
+
+        // And case-insensitively, which is what `LIKE` gave for free and a
+        // byte-wise `instr` would have quietly taken away.
+        for needle in ["PINBALL", "PinBall", "TONIGHT"] {
+            let hit = fetch_messages(
+                &db,
+                &FetchMessages {
+                    query: Some(needle),
+                    ..Default::default()
+                },
+                &ContactIndex::empty(),
+            )
+            .unwrap();
+            assert_eq!(bodies(&hit), ["pinball tonight"], "searching {needle}");
+        }
+    }
+
+    /// The same fold, through SQL, on both of the columns a body can live in.
+    #[test]
+    fn search_folds_case_beyond_ascii_end_to_end() {
+        let db = fixture();
+        let mut blob: Vec<u8> = Vec::new();
+        blob.extend_from_slice(b"\x04\x0bstreamtyped\x81\xe8\x03\x84\x01\x40\x84\x84\x84");
+        blob.extend_from_slice(b"NSString\x01\x94\x84\x01\x2b");
+        let text = "ZÜRICH in the archive".as_bytes();
+        blob.push(u8::try_from(text.len()).unwrap());
+        blob.extend_from_slice(text);
+
+        for (rowid, at_days, text, body) in [
+            (8, 7, Some("CAFÉ in the text"), None),
+            (9, 8, None, Some(blob)),
+        ] {
+            db.execute(
+                "INSERT INTO message (rowid, guid, text, attributedBody, is_from_me,
+                     handle_id, associated_message_type, date, service)
+                 VALUES (?, 'm', ?, ?, 0, 1, 0, ?, 'iMessage')",
+                rusqlite::params![rowid, text, body, at(at_days)],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+                 VALUES (1, ?, ?)",
+                rusqlite::params![rowid, at(at_days)],
+            )
+            .unwrap();
+        }
+
+        for (needle, expected) in [
+            ("café", "CAFÉ in the text"),
+            ("CAFÉ", "CAFÉ in the text"),
+            ("zürich", "ZÜRICH in the archive"),
+            ("ZÜRICH", "ZÜRICH in the archive"),
+        ] {
+            let found = fetch_messages(
+                &db,
+                &FetchMessages {
+                    query: Some(needle),
+                    ..Default::default()
+                },
+                &ContactIndex::empty(),
+            )
+            .unwrap();
+            assert_eq!(bodies(&found), [expected], "searching {needle}");
+        }
+    }
+
+    /// A limit means "up to this many matches", not "this many candidates minus
+    /// however many turned out to be metadata hits".
+    ///
+    /// The blob here contains the needle only in an archived class name, so the
+    /// SQL predicate accepts it and the decode rejects it. Before the widening
+    /// retry, one of these inside the limit silently cost a real result.
+    #[test]
+    fn a_false_positive_does_not_eat_one_of_the_results_asked_for() {
+        let db = fixture();
+        let decoy = b"\x04\x0bstreamtyped\x81\xe8\x03NSMutableStringPINBALL\x00\x84\x84";
+        let mut rowid = 100;
+        // Newer than everything real, so they sort first and are seen first.
+        for offset in 0..3 {
+            db.execute(
+                "INSERT INTO message (rowid, guid, text, attributedBody, is_from_me,
+                     handle_id, associated_message_type, date, service)
+                 VALUES (?, ?, NULL, ?, 0, 1, 0, ?, 'iMessage')",
+                rusqlite::params![rowid, format!("d{offset}"), decoy.to_vec(), at(50 + offset)],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+                 VALUES (1, ?, ?)",
+                rusqlite::params![rowid, at(50 + offset)],
+            )
+            .unwrap();
+            rowid += 1;
+        }
+        // Two real ones, older than the decoys.
+        for offset in 0..2 {
+            db.execute(
+                "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
+                     associated_message_type, date, service)
+                 VALUES (?, ?, 'pinball night', 0, 1, 0, ?, 'iMessage')",
+                rusqlite::params![rowid, format!("r{offset}"), at(40 + offset)],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+                 VALUES (1, ?, ?)",
+                rusqlite::params![rowid, at(40 + offset)],
+            )
+            .unwrap();
+            rowid += 1;
+        }
+
+        let found = fetch_messages(
+            &db,
+            &FetchMessages {
+                query: Some("pinball"),
+                limit: 2,
+                ..Default::default()
+            },
+            &ContactIndex::empty(),
+        )
+        .unwrap();
+        // Both real matches, despite three decoys sorting ahead of them.
+        assert_eq!(found.len(), 2, "{:?}", bodies(&found));
+        assert!(
+            found
+                .iter()
+                .all(|m| m.body.as_deref() == Some("pinball night"))
+        );
+    }
+
+    /// The widening retry has to stop when there is genuinely nothing more.
+    #[test]
+    fn asking_for_more_than_exists_stops_rather_than_looping() {
+        let db = fixture();
+        let found = fetch_messages(
+            &db,
+            &FetchMessages {
+                query: Some("deploy"),
+                limit: 10_000,
+                ..Default::default()
+            },
+            &ContactIndex::empty(),
+        )
+        .unwrap();
+        assert_eq!(bodies(&found), ["deploy is green"]);
+    }
+
+    #[test]
+    fn the_body_predicate_looks_past_a_nul() {
+        // Directly, so a failure points at the predicate rather than at SQL.
+        assert!(contains_ignoring_case(b"abc\x00def", "def"));
+        assert!(contains_ignoring_case(b"abc\x00DEF", "def"));
+        assert!(contains_ignoring_case(b"\x00\x00hello", "HELLO"));
+        assert!(!contains_ignoring_case(b"abc\x00def", "xyz"));
+        // An empty needle matches, matching what a `%%` LIKE did.
+        assert!(contains_ignoring_case(b"anything", ""));
+        // Not a match that runs off the end.
+        assert!(!contains_ignoring_case(b"ab", "abc"));
+    }
+
+    /// Case is a property of characters, not of bytes.
+    ///
+    /// A byte-wise fold leaves anything outside ASCII case-sensitive, so `café`
+    /// would not find `CAFÉ`. That is worse than it sounds: this predicate is
+    /// the SQL prefilter, so the row is gone before the decoded filter — which
+    /// folds properly — ever sees it.
+    #[test]
+    fn the_body_predicate_folds_case_beyond_ascii() {
+        for needle in ["café", "CAFÉ", "Café", "É"] {
+            assert!(
+                contains_ignoring_case("meet at the CAFÉ".as_bytes(), needle),
+                "searching {needle}"
+            );
+            assert!(
+                contains_ignoring_case("meet at the café".as_bytes(), needle),
+                "searching {needle}"
+            );
+        }
+        // Still a substring match, not a fuzzy one: no accent-stripping.
+        assert!(!contains_ignoring_case(
+            "meet at the cafe".as_bytes(),
+            "café"
+        ));
+
+        // Around the binary framing of a typedstream, where the invalid bytes
+        // split the blob into runs and a match must be found inside one.
+        let blob = b"\x84\x84NSString\x01\x94\x84\x01\x2b\x0bZ\xc3\x9cRICH \xff\x84 caf\xc3\x89";
+        assert!(contains_ignoring_case(blob, "zürich"));
+        assert!(contains_ignoring_case(blob, "café"));
+        // Not across the run boundary that the framing byte introduces.
+        assert!(!contains_ignoring_case(blob, "zürich  caf"));
     }
 
     #[test]
