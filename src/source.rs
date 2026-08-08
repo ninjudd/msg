@@ -300,7 +300,8 @@ impl Source {
                 .iter()
                 .map(|handle| ResolvedHandle {
                     handle: handle.clone(),
-                    name: index.lookup(Some(handle)).map(str::to_string),
+                    // Both names: this command's job is identification.
+                    name: index.identify(Some(handle)),
                 })
                 .collect(),
         })

@@ -486,6 +486,17 @@ whichever name you typed. The filed name is displaced, not discarded, which
 matters because it is the one you have when a nickname is all you remember of
 somebody and the one somebody else would search by.
 
+`msg contacts` shows both, because identifying somebody is its whole job rather
+than a label on something else:
+
+```
+$ msg contacts +13105551234
++13105551234    Bob (Robert Chen)
+```
+
+That is the one place the pair appears. A transcript labelled `Bob (Robert
+Chen)` on every line would be unreadable, and a chat list of them worse.
+
 Both names are matched exactly where a name is matched, and nowhere else. A
 conversation with a name of its own is found by that name rather than by who is
 in it, so a group called Ship Room is not reachable through a member's name or

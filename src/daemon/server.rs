@@ -490,7 +490,8 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
                     .handles
                     .into_iter()
                     .map(|handle| ResolvedHandle {
-                        name: index.lookup(Some(&handle)).map(str::to_string),
+                        // Both names: this command's job is identification.
+                        name: index.identify(Some(&handle)),
                         handle,
                     })
                     .collect(),
