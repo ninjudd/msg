@@ -34,6 +34,15 @@ const SCHEMA: &str = "
   CREATE TABLE chat_message_join (
     chat_id INTEGER, message_id INTEGER, message_date INTEGER DEFAULT 0
   );
+  CREATE TABLE attachment (
+    ROWID INTEGER PRIMARY KEY, guid TEXT, filename TEXT, uti TEXT,
+    mime_type TEXT, transfer_state INTEGER DEFAULT 0, transfer_name TEXT,
+    total_bytes INTEGER DEFAULT 0, is_sticker INTEGER DEFAULT 0,
+    hide_attachment INTEGER DEFAULT 0
+  );
+  CREATE TABLE message_attachment_join (
+    message_id INTEGER, attachment_id INTEGER
+  );
   CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
 ";
 

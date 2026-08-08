@@ -29,7 +29,24 @@ use crate::db::{Chat, Message};
 /// not know the field ignores it and answers with everyone's messages when one
 /// person was asked for. A stale daemon crashing is better than a stale daemon
 /// quietly answering a question nobody asked.
-pub const PROTOCOL_VERSION: u32 = 3;
+///
+/// 4 added `attachments` to every message — `rowid`, `name`, `mimeType`, `uti`,
+/// `totalBytes`, `isSticker`, `isDownloaded` — and put a description of each one
+/// in the body where Messages leaves a U+FFFC. These are new *reply* fields, and
+/// a stale daemon answering them would be wrong in the mild direction — the body
+/// simply reads as it did before. It is still a version bump, because "reinstall
+/// the daemon" is a better thing to be told than to wonder why a photo prints as
+/// an invisible character in one build and not another.
+///
+/// `uti` arrived after the rest of 4, in review, and is listed here rather than
+/// given a 5 of its own. A version names a protocol somebody can speak, and this
+/// branch squash-merges into one commit, so no build outside it ever answered a
+/// 4 without `uti`. The cost is narrow and belongs to whoever is working on the
+/// branch: between rebuilding the CLI and reinstalling the daemon, an attachment
+/// whose only type is a `uti` reads as `[attachment]`. That is the ordinary
+/// half-rebuild AGENTS.md already warns about, not a protocol two releases can
+/// disagree over.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";

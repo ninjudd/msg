@@ -13,8 +13,9 @@ See [README](README.md) for how these lists work.
 - [What the signing identity costs, and what to fix before this is public](all/signing-identity.md)
   — the key that keeps the grant across rebuilds is also a way to re-grant
   silently.
-- Read attachments, which currently show only as the U+FFFC placeholder they
-  occupy in the message body.
+- [Get attachment bytes out, by rowid](all/attachments.md) — §6 slice 3, the one
+  that makes the daemon open a file for a caller who cannot. §3 is the thinking
+  it has to satisfy first.
 - Export a conversation to a file, once there is a second consumer that wants
   more shape than `--json` piped through `jq`.
 - Group messages by thread (`thread_originator_guid`), so replies read as

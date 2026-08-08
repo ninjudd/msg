@@ -103,6 +103,19 @@ msg read dana --tapbacks       # include reactions
 `--since` accepts a duration (`30m`, `2h`, `7d`, `4w`), an ISO date like
 `2026-01-15`, or a full timestamp. A bare date means midnight UTC.
 
+Attachments read as what they are, in the place they occupy in the message:
+
+```
+5:31 PM  Dana Reyes: [IMG_4821.HEIC, 3.2 MB]
+5:32 PM  Dana Reyes: from the trip [clip.mov, 41.8 MB]
+```
+
+Messages stores a photo as a single invisible character in the body and keeps
+the file elsewhere, so without this a message that is only a photo prints as
+nothing at all. `--json` carries the same thing as an `attachments` array, with
+the file's name, type, and size. The file itself is not read: nothing here opens
+anything outside `chat.db`.
+
 ### Searching
 
 ```sh
@@ -446,8 +459,8 @@ tests/
 ## Limitations
 
 - Reading requires Full Disk Access, which cannot be scoped to just Messages.
-- Attachments are not listed or downloaded; a message containing one shows the
-  U+FFFC placeholder that Messages stores in its place.
+- Attachments are described but not downloaded. `msg` says what is there —
+  name, type, size — and cannot yet hand you the file.
 - Editing, unsending, and reactions cannot be sent. Those need the private
   APIs, which are not reachable from AppleScript.
 - Without the daemon, `watch` polls rather than subscribing, so a new message
