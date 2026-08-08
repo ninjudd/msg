@@ -37,6 +37,9 @@ pub struct Message {
     /// JSON rather than writing `[]` on every one of them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
+    /// Set when this message is an inline reply. 0.75% of a real database.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<ReplyTo>,
 }
 
 /// One file attached to a message.
@@ -115,6 +118,18 @@ pub fn human_bytes(bytes: i64) -> String {
         unit += 1;
     }
     format!("{size:.1} {}", UNITS[unit])
+}
+
+/// The message a reply is answering.
+///
+/// Deliberately an excerpt rather than the whole thing: enough to recognise
+/// which message is meant without reprinting a conversation inside itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplyTo {
+    pub rowid: i64,
+    pub sender: String,
+    pub excerpt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -415,7 +430,8 @@ const MESSAGE_COLUMNS: &str = "
   message.text AS text, message.attributedBody AS attributedBody,
   message.associated_message_type AS associatedMessageType, message.date AS date,
   handle.id AS handle, chat_message_join.chat_id AS chatId,
-  NULLIF(chat.display_name, '') AS chatName, message.service AS service
+  NULLIF(chat.display_name, '') AS chatName, message.service AS service,
+  NULLIF(message.thread_originator_guid, '') AS threadOriginatorGuid
 ";
 
 const MESSAGE_FROM: &str = "
@@ -518,6 +534,108 @@ pub fn unreadable(id: i64, error: &std::io::Error) -> Error {
     Error::other(format!(
         "attachment {id} is recorded but its file is gone ({error})"
     ))
+}
+
+/// How much of the answered message to quote. Long enough to recognise, short
+/// enough that a transcript does not contain itself twice over.
+const EXCERPT: usize = 60;
+
+/// What each of these messages is replying to, keyed by the reply's rowid.
+///
+/// A second query, like attachments, and for a sharper reason than shape: 19
+/// replies on a real database sit in a *different* conversation from the message
+/// they answer, so this cannot be scoped to the chat being read. `message.guid`
+/// is `UNIQUE NOT NULL`, so the lookup rides an index Messages already keeps.
+///
+/// Built on `thread_originator_guid` rather than `reply_to_guid`. The second is
+/// set on 15% of every message in the database and 115,304 of those rows have no
+/// thread at all — it is not the user's reply, and threading on it would connect
+/// a sixth of history at random. See threading.md §2.
+fn replies_for(
+    db: &Connection,
+    wanted: &[(i64, String)],
+    contacts: &ContactIndex,
+) -> Result<BTreeMap<i64, ReplyTo>> {
+    let mut found: BTreeMap<i64, ReplyTo> = BTreeMap::new();
+    if wanted.is_empty() {
+        return Ok(found);
+    }
+
+    let mut guids: Vec<&str> = wanted.iter().map(|(_, guid)| guid.as_str()).collect();
+    guids.sort_unstable();
+    guids.dedup();
+
+    let mut originators: BTreeMap<String, (ReplyTo, Option<String>)> = BTreeMap::new();
+    for batch in guids.chunks(ATTACHMENT_BATCH) {
+        let slots = vec!["?"; batch.len()].join(",");
+        let sql = format!(
+            "SELECT message.guid AS guid, message.rowid AS rowid,
+                    message.is_from_me AS isFromMe, message.text AS text,
+                    message.attributedBody AS attributedBody, handle.id AS handle
+               FROM message LEFT JOIN handle ON message.handle_id = handle.rowid
+              WHERE message.guid IN ({slots})"
+        );
+        let mut statement = db.prepare(&sql)?;
+        let mut rows = statement.query(params_from_iter(batch.iter().copied()))?;
+        while let Some(row) = rows.next()? {
+            let Some(guid) = text(row, "guid") else {
+                continue;
+            };
+            let handle = text(row, "handle");
+            let blob = row
+                .get::<_, Option<Vec<u8>>>("attributedBody")
+                .ok()
+                .flatten();
+            let sender = if number(row, "isFromMe") == 1 {
+                "me".to_string()
+            } else {
+                contacts
+                    .lookup(handle.as_deref())
+                    .map(str::to_string)
+                    .or(handle)
+                    .unwrap_or_else(|| "unknown".to_string())
+            };
+            originators.insert(
+                guid,
+                (
+                    ReplyTo {
+                        rowid: number(row, "rowid"),
+                        sender,
+                        excerpt: None,
+                    },
+                    message_body(text(row, "text"), blob.as_deref()),
+                ),
+            );
+        }
+    }
+
+    // An originator can have attachments of its own, and quoting the raw body
+    // would put a bare U+FFFC in the excerpt — the very hole this program went
+    // and fixed everywhere else. Described through the same function, so a photo
+    // reads the same way in a quote as it does in the transcript.
+    let quoted: Vec<i64> = originators.values().map(|(reply, _)| reply.rowid).collect();
+    let attachments = attachments_for(db, &quoted)?;
+    for (reply, body) in originators.values_mut() {
+        let found = attachments.get(&reply.rowid).cloned().unwrap_or_default();
+        reply.excerpt = describe_attachments(body.take(), &found).map(|body| excerpt(&body));
+    }
+
+    for (rowid, guid) in wanted {
+        if let Some((originator, _)) = originators.get(guid) {
+            found.insert(*rowid, originator.clone());
+        }
+    }
+    Ok(found)
+}
+
+/// One line of the answered message, cut on a character boundary.
+fn excerpt(body: &str) -> String {
+    let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= EXCERPT {
+        return flat;
+    }
+    let kept: String = flat.chars().take(EXCERPT).collect();
+    format!("{}…", kept.trim_end())
 }
 
 /// Where one attachment's bytes are, by rowid.
@@ -655,6 +773,7 @@ fn to_message(row: &Row<'_>, contacts: &ContactIndex) -> Message {
         chat_name: text(row, "chatName"),
         service: text(row, "service"),
         attachments: Vec::new(),
+        reply_to: None,
     }
 }
 
@@ -871,14 +990,23 @@ pub fn fetch_messages(
         options.limit
     };
     let mut messages;
+    let mut answering: BTreeMap<i64, String> = BTreeMap::new();
     loop {
         let mut round = params.clone();
         round.push(asking.into());
         let mut rows = statement.query(params_from_iter(round))?;
 
         let mut candidates = Vec::new();
+        answering.clear();
         while let Some(row) = rows.next()? {
-            candidates.push(to_message(row, contacts));
+            // Read beside the message rather than stored on it. A guid names a
+            // message and is no use to a reader; `reply_to` is the same question
+            // answered in terms they can use, and it is the only one published.
+            let message = to_message(row, contacts);
+            if let Some(guid) = text(row, "threadOriginatorGuid") {
+                answering.insert(message.rowid, guid);
+            }
+            candidates.push(message);
         }
         let exhausted = i64::try_from(candidates.len()).unwrap_or(i64::MAX) < asking;
 
@@ -912,6 +1040,19 @@ pub fn fetch_messages(
     // rather than the description standing in for an attachment.
     let rowids: Vec<i64> = messages.iter().map(|message| message.rowid).collect();
     let attachments = attachments_for(db, &rowids)?;
+
+    // Only the rows that survived the limit and are replies, which is 0.75% of
+    // a real database — so this query is usually not made at all.
+    let wanted: Vec<(i64, String)> = messages
+        .iter()
+        .filter_map(|message| {
+            answering
+                .get(&message.rowid)
+                .map(|guid| (message.rowid, guid.clone()))
+        })
+        .collect();
+    let mut replies = replies_for(db, &wanted, contacts)?;
+
     for message in &mut messages {
         // Cloned rather than taken. `MESSAGE_FROM` joins `chat_message_join`, so
         // a message in two conversations comes back as two rows with one rowid,
@@ -920,6 +1061,7 @@ pub fn fetch_messages(
         let found = attachments.get(&message.rowid).cloned().unwrap_or_default();
         message.body = describe_attachments(message.body.take(), &found);
         message.attachments = found;
+        message.reply_to = replies.remove(&message.rowid);
     }
 
     if !options.oldest_first {
@@ -1296,7 +1438,8 @@ mod tests {
       CREATE TABLE message (
         rowid INTEGER PRIMARY KEY, guid TEXT, text TEXT, attributedBody BLOB,
         is_from_me INTEGER DEFAULT 0, handle_id INTEGER,
-        associated_message_type INTEGER DEFAULT 0, date INTEGER, service TEXT
+        associated_message_type INTEGER DEFAULT 0, date INTEGER, service TEXT,
+        thread_originator_guid TEXT, thread_originator_part TEXT
       );
       CREATE TABLE chat_message_join (
         chat_id INTEGER, message_id INTEGER, message_date INTEGER DEFAULT 0
@@ -1958,6 +2101,181 @@ mod tests {
         // And within a single batch, which was always fine and must stay so.
         let found = attachments_for(&db, &[1, 1, 1]).unwrap();
         assert_eq!(found.get(&1).map(Vec::len), Some(1), "{found:?}");
+    }
+
+    /// A reply says what it is answering, and the answer comes from the same
+    /// decoded body everything else uses.
+    #[test]
+    fn a_reply_carries_the_message_it_answers() {
+        let db = fixture();
+        db.execute(
+            "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
+                 associated_message_type, date, service, thread_originator_guid)
+             VALUES (20, 'm20', 'yes, that works', 1, 1, 0, ?, 'iMessage', 'm1')",
+            rusqlite::params![at(9)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+             VALUES (1, 20, ?)",
+            rusqlite::params![at(9)],
+        )
+        .unwrap();
+
+        let found = fetch_messages(&db, &FetchMessages::default(), &ContactIndex::empty()).unwrap();
+        let reply = found.iter().find(|m| m.rowid == 20).expect("the reply");
+        let answering = reply.reply_to.as_ref().expect("what it answers");
+        assert_eq!(answering.rowid, 1);
+        assert_eq!(answering.excerpt.as_deref(), Some("are you around later"));
+
+        // Everything else is left alone.
+        let other = found
+            .iter()
+            .find(|m| m.rowid == 2)
+            .expect("an ordinary one");
+        assert!(other.reply_to.is_none());
+    }
+
+    /// 19 replies on a real database sit in a different conversation from the
+    /// message they answer, so the lookup must not be scoped to one chat.
+    #[test]
+    fn a_reply_finds_an_originator_in_another_conversation() {
+        let db = fixture();
+        // Message 3 lives in chat 2; this reply lives in chat 1.
+        db.execute(
+            "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
+                 associated_message_type, date, service, thread_originator_guid)
+             VALUES (21, 'm21', 'across the room', 0, 1, 0, ?, 'iMessage', 'm3')",
+            rusqlite::params![at(9)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+             VALUES (1, 21, ?)",
+            rusqlite::params![at(9)],
+        )
+        .unwrap();
+
+        let found = fetch_messages(
+            &db,
+            &FetchMessages {
+                chat_id: Some(1),
+                ..Default::default()
+            },
+            &ContactIndex::empty(),
+        )
+        .unwrap();
+        let reply = found.iter().find(|m| m.rowid == 21).expect("the reply");
+        let answering = reply.reply_to.as_ref().expect("what it answers");
+        assert_eq!(answering.rowid, 3, "{answering:?}");
+        assert_eq!(answering.excerpt.as_deref(), Some("deploy is green"));
+    }
+
+    /// 3 of 5,649 originators on a real database have been deleted. A reply to
+    /// one of them is still a message and must still be returned.
+    #[test]
+    fn a_reply_whose_originator_is_gone_is_still_a_message() {
+        let db = fixture();
+        db.execute(
+            "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
+                 associated_message_type, date, service, thread_originator_guid)
+             VALUES (22, 'm22', 'answering a ghost', 0, 1, 0, ?, 'iMessage', 'no-such-guid')",
+            rusqlite::params![at(9)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+             VALUES (1, 22, ?)",
+            rusqlite::params![at(9)],
+        )
+        .unwrap();
+
+        let found = fetch_messages(&db, &FetchMessages::default(), &ContactIndex::empty()).unwrap();
+        let reply = found.iter().find(|m| m.rowid == 22).expect("the reply");
+        assert!(reply.reply_to.is_none(), "{:?}", reply.reply_to);
+        assert_eq!(reply.body.as_deref(), Some("answering a ghost"));
+    }
+
+    /// A guid names a message and is no use to a reader, so it never ships. The
+    /// assertion outlives the private field it once guarded: what matters is
+    /// what a consumer receives, not how the code happens to carry it.
+    #[test]
+    fn the_originator_guid_stays_off_the_wire() {
+        let db = fixture();
+        db.execute(
+            "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
+                 associated_message_type, date, service, thread_originator_guid)
+             VALUES (23, 'm23', 'noted', 0, 1, 0, ?, 'iMessage', 'm1')",
+            rusqlite::params![at(9)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+             VALUES (1, 23, ?)",
+            rusqlite::params![at(9)],
+        )
+        .unwrap();
+
+        let found = fetch_messages(&db, &FetchMessages::default(), &ContactIndex::empty()).unwrap();
+        let reply = found.iter().find(|m| m.rowid == 23).unwrap();
+        let json = serde_json::to_value(reply).unwrap();
+        assert!(json.get("threadOriginatorGuid").is_none(), "{json}");
+        assert_eq!(json["replyTo"]["rowid"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn an_excerpt_is_one_line_and_bounded() {
+        assert_eq!(excerpt("short"), "short");
+        // Newlines and runs of spaces collapse, so a quote stays on one line.
+        assert_eq!(excerpt("two\n lines"), "two lines");
+        let long = "x".repeat(200);
+        let cut = excerpt(&long);
+        assert_eq!(cut.chars().count(), EXCERPT + 1, "{cut}");
+        assert!(cut.ends_with('…'));
+        // Cut on characters, not bytes, so this does not panic or split one.
+        let wide = "é".repeat(200);
+        assert_eq!(excerpt(&wide).chars().count(), EXCERPT + 1);
+    }
+
+    /// Quoting the raw body would put a bare U+FFFC in the excerpt — the hole
+    /// this program fixed everywhere else. A quote reads the way the transcript
+    /// does.
+    #[test]
+    fn a_reply_to_a_photo_quotes_the_photo_not_the_placeholder() {
+        let db = fixture();
+        db.execute("UPDATE message SET text = char(65532) WHERE rowid = 1", [])
+            .unwrap();
+        attach(
+            &db,
+            1,
+            &[(1, Some("beach.heic"), Some("image/heic"), 2048, false, true)],
+        );
+        db.execute(
+            "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
+                 associated_message_type, date, service, thread_originator_guid)
+             VALUES (24, 'm24', 'lovely', 0, 1, 0, ?, 'iMessage', 'm1')",
+            rusqlite::params![at(9)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+             VALUES (1, 24, ?)",
+            rusqlite::params![at(9)],
+        )
+        .unwrap();
+
+        let found = fetch_messages(&db, &FetchMessages::default(), &ContactIndex::empty()).unwrap();
+        let reply = found.iter().find(|m| m.rowid == 24).expect("the reply");
+        let quote = reply.reply_to.as_ref().expect("what it answers");
+        assert_eq!(quote.excerpt.as_deref(), Some("[#1 beach.heic, 2.0 KB]"));
+        assert!(
+            !quote
+                .excerpt
+                .as_deref()
+                .unwrap_or_default()
+                .contains('\u{fffc}'),
+            "{quote:?}"
+        );
     }
 
     /// An address names one person outright, even when a longer address

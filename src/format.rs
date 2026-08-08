@@ -136,6 +136,18 @@ pub fn render_messages(messages: &[Message], show_chat: bool) -> String {
             _ => String::new(),
         };
         let body = message.body.as_deref().unwrap_or("(no text)");
+        // What is being answered goes above the answer, indented to the width of
+        // a timestamp, so a reply reads as a reply without the transcript
+        // stopping being chronological.
+        if let Some(answering) = &message.reply_to {
+            let quoted = answering.excerpt.as_deref().unwrap_or("(no text)");
+            out.push_str(&format!(
+                "{:width$}  ↳ replying to {}: {quoted}\n",
+                "",
+                answering.sender,
+                width = stamp.chars().count()
+            ));
+        }
         out.push_str(&format!("{stamp}  {where_}{}: {body}\n", message.sender));
     }
     out
@@ -151,6 +163,7 @@ pub fn to_json<T: serde::Serialize>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::ReplyTo;
 
     fn chat(name: &str) -> Chat {
         Chat {
@@ -290,5 +303,72 @@ mod tests {
     fn an_empty_result_says_so_rather_than_printing_nothing() {
         assert_eq!(render_chats(&[]), "no chats found\n");
         assert_eq!(render_messages(&[], false), "no messages found\n");
+    }
+
+    fn message(rowid: i64, sender: &str, body: &str) -> Message {
+        Message {
+            rowid,
+            guid: format!("m{rowid}"),
+            is_from_me: sender == "me",
+            body: Some(body.into()),
+            associated_message_type: 0,
+            is_tapback: false,
+            date: at("2026-01-15T17:30:00Z"),
+            handle: None,
+            contact_name: None,
+            sender: sender.into(),
+            chat_id: 1,
+            chat_name: None,
+            service: Some("iMessage".into()),
+            attachments: Vec::new(),
+            reply_to: None,
+        }
+    }
+
+    /// A reply names what it answers, above itself and indented to the width of
+    /// a timestamp, so the transcript stays chronological and still reads.
+    #[test]
+    fn a_reply_says_what_it_is_answering() {
+        let mut reply = message(2, "me", "yes, that works");
+        reply.reply_to = Some(ReplyTo {
+            rowid: 1,
+            sender: "Dana Reyes".into(),
+            excerpt: Some("are you around later".into()),
+        });
+        let out = render_messages(
+            &[message(1, "Dana Reyes", "are you around later"), reply],
+            false,
+        );
+
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "{out}");
+        assert!(
+            lines[1].contains("↳ replying to Dana Reyes: are you around later"),
+            "{out}"
+        );
+        // Indented to where the sender starts, not to column zero.
+        assert!(lines[1].starts_with("       "), "{out}");
+        assert!(lines[2].contains("me: yes, that works"), "{out}");
+    }
+
+    /// An ordinary message gains nothing, so a transcript without replies reads
+    /// exactly as it did.
+    #[test]
+    fn a_message_that_is_not_a_reply_is_unchanged() {
+        let out = render_messages(&[message(1, "Dana Reyes", "hello")], false);
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert!(!out.contains("↳"), "{out}");
+    }
+
+    #[test]
+    fn a_reply_to_something_with_no_text_still_renders() {
+        let mut reply = message(2, "me", "noted");
+        reply.reply_to = Some(ReplyTo {
+            rowid: 1,
+            sender: "Dana Reyes".into(),
+            excerpt: None,
+        });
+        let out = render_messages(&[reply], false);
+        assert!(out.contains("↳ replying to Dana Reyes: (no text)"), "{out}");
     }
 }

@@ -103,6 +103,20 @@ msg read dana --tapbacks       # include reactions
 `--since` accepts a duration (`30m`, `2h`, `7d`, `4w`), an ISO date like
 `2026-01-15`, or a full timestamp. A bare date means midnight UTC.
 
+An inline reply says what it is answering, so it stops reading as an unrelated
+remark that happens to come later:
+
+```
+5:46 PM  Dana Reyes: Btw do you think we can find the inflator?
+         ↳ replying to me: Just read about it but not fully understanding it
+5:50 PM  me: It is the underlying model that generates music
+```
+
+Chronology is untouched — the quote sits above the reply rather than moving it.
+`--json` carries the same as a `replyTo` object with the answered message's
+rowid, sender, and excerpt. A reply whose original has been deleted still prints
+as an ordinary message.
+
 Attachments read as what they are, in the place they occupy in the message:
 
 ```
