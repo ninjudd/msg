@@ -1,10 +1,10 @@
 # Plan: Read attachments
 
-**Status:** Slices 1 and 2 done; slice 3 not started and not committed to. A
-message that is only a photo now says so, and `--json` carries the same thing
-as structured data. No file outside `chat.db` is opened, so §3 has been written
-down and not yet spent. Verified on the real database: across 3,320 messages in
-12 conversations, 196 attachments and no body left carrying a placeholder.
+**Status:** All three slices done. A message that is only a photo says so and
+carries the id of the file behind it, `--json` has the same as structured data,
+and `msg save <id> --to <dir>` writes the bytes out. §9 records what slice 3
+spends of §3's permission argument, and §8 the measurement that changed how a
+size is reported.
 
 **Goal:** Stop a conversation with photos in it reading as holes in the text.
 
@@ -155,3 +155,49 @@ makes excluding them safe rather than lossy: placeholders and attachments are
 matched positionally, and a leftover on either side has a defined rendering. A
 message whose counts disagree degrades to a generic description of an
 attachment, not to a wrong one and not to a crash.
+
+## 8 `total_bytes` is not the size of the file
+
+Measured while checking the first real saves: of six attachments taken from one
+conversation, three had a `total_bytes` that disagreed with the bytes on disk —
+one by more than a factor of two, and one where the *file was larger* than the
+recorded size. That last one rules out the obvious explanation: a truncated
+transfer cannot produce a file bigger than expected.
+
+The transfer itself is exact. All six files matched, to the byte, the count the
+daemon reported having read. So `total_bytes` is what Messages recorded about
+the transfer, and it is not a reliable statement about the file it ended up
+with.
+
+Two consequences, both already in the code. The description in a message body
+shows `total_bytes`, because that is a rough "how big is this" and being off is
+harmless there. `msg save` reports the count it actually wrote, which is the
+number that has to be right — and the two being different fields rather than one
+is deliberate.
+
+Anyone tempted to "fix" the mismatch by trusting `total_bytes` — by preallocating
+against it, verifying against it, or reporting it after a save — would be
+building on a number Messages does not guarantee.
+
+## 9 What slice 3 spends, and what it does not
+
+The daemon opens one file outside `chat.db`, and only one: the file named by the
+`filename` of the rowid it was handed. Everything else about the rule in §3 is
+unchanged. The caller cannot name a path, in either direction — it does not say
+which file to read, and it does not say where to write, because **the client
+writes the file itself**. The daemon hands over bytes and never touches the
+destination, which is the same shape sending already uses in reverse.
+
+That symmetry is worth stating plainly, because it is what keeps the daemon from
+becoming an arbitrary-file *writer* to go with the arbitrary-file reader it
+already refuses to be.
+
+Streamed in 4MB chunks rather than returned whole. §2 measured a median
+attachment of 1.9MB and a largest of 548MB; as a single base64 field that last
+one would cost the better part of a gigabyte in the daemon and again in the
+client, so the files most worth exporting would be the ones that failed. Peak
+memory is one chunk instead of one file.
+
+The client writes to a temporary name in the destination directory and renames
+at the end, so an interrupted transfer leaves nothing that looks like a whole
+file. An existing file is refused rather than replaced, unless `--force`.

@@ -11,11 +11,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use msg::apple::to_apple_date;
 use msg::daemon::client::{connect_daemon, connect_daemon_within, request};
 use msg::daemon::protocol::{
     ChatsRequest, ContactsRequest, Empty, PROTOCOL_VERSION, ReadRequest, Request, ResolveRequest,
-    SearchRequest, SendRequest, WatchRequest, envelope,
+    SavePart, SaveRequest, SearchRequest, SendRequest, WatchRequest, envelope,
 };
 use msg::daemon::server::{Daemon, DaemonOptions};
 use rusqlite::Connection;
@@ -683,4 +684,190 @@ fn the_socket_is_owner_only() {
         .permissions()
         .mode();
     assert_eq!(directory & 0o777, 0o700);
+}
+
+/// The streamed path, over a real socket: bytes the client could not have read
+/// itself, arriving in chunks and landing as one whole file.
+///
+/// The payload is deliberately larger than one chunk and not a multiple of it,
+/// because a chunked transfer that is off by a boundary is exactly the bug this
+/// is here to catch — and a smaller file would take the single-frame path
+/// through the same code without exercising any of it.
+#[test]
+fn it_streams_an_attachment_larger_than_one_chunk() {
+    let harness = harness();
+    let source = harness.directory.join("big.bin");
+    let payload: Vec<u8> = (0..(9 * 1024 * 1024 + 7u32))
+        .map(|i| (i % 251) as u8)
+        .collect();
+    std::fs::write(&source, &payload).unwrap();
+
+    let db = Connection::open(&harness.database).unwrap();
+    db.execute(
+        "INSERT INTO attachment (ROWID, guid, filename, mime_type, transfer_name,
+             total_bytes, is_sticker, hide_attachment)
+         VALUES (91, 'a91', ?, 'application/octet-stream', 'big.bin', ?, 0, 0)",
+        rusqlite::params![source.to_string_lossy(), payload.len() as i64],
+    )
+    .unwrap();
+    drop(db);
+
+    let stream = UnixStream::connect(&harness.socket).unwrap();
+    let mut head = None;
+    let mut chunks = 0usize;
+    let mut written: Vec<u8> = Vec::new();
+    let reply = msg::daemon::client::save(stream, &SaveRequest { id: 91 }, |part| {
+        match part {
+            SavePart::Head {
+                name, total_bytes, ..
+            } => head = Some((name, total_bytes)),
+            SavePart::Chunk { base64 } => {
+                chunks += 1;
+                written.extend_from_slice(
+                    &base64::engine::general_purpose::STANDARD
+                        .decode(base64)
+                        .unwrap(),
+                );
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(head, Some(("big.bin".to_string(), payload.len() as i64)));
+    assert_eq!(reply.bytes, payload.len() as i64);
+    assert_eq!(written.len(), payload.len(), "wrong number of bytes");
+    assert!(written == payload, "bytes differ");
+    // Counted rather than inferred from the payload size, which is two
+    // constants agreeing with each other. Raising the chunk size to 16MB would
+    // leave every other assertion here passing while the chunked path stopped
+    // being exercised at all.
+    assert!(chunks >= 3, "{chunks} chunks crossed the wire");
+}
+
+/// An id that is not there is an error, not an empty file.
+#[test]
+fn it_refuses_an_attachment_id_that_does_not_exist() {
+    let harness = harness();
+    let stream = UnixStream::connect(&harness.socket).unwrap();
+    let error = msg::daemon::client::save(stream, &SaveRequest { id: 999_999 }, |_| Ok(()))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no attachment 999999"), "{error}");
+}
+
+/// Protocol 5 should spell a field one way, not two.
+///
+/// `rename_all` on an enum renames its *variants*; the fields inside a struct
+/// variant need `rename_all_fields`. Both ends here are the same Rust type, so
+/// nothing breaks either way and only a look at the wire catches it.
+#[test]
+fn a_save_frame_spells_its_fields_the_way_every_other_frame_does() {
+    let head = serde_json::to_value(SavePart::Head {
+        name: "a.png".into(),
+        mime_type: Some("image/png".into()),
+        total_bytes: 7,
+    })
+    .unwrap();
+    assert_eq!(head["part"], serde_json::json!("head"));
+    assert_eq!(head["mimeType"], serde_json::json!("image/png"));
+    assert_eq!(head["totalBytes"], serde_json::json!(7));
+    assert!(head.get("mime_type").is_none(), "{head}");
+    assert!(head.get("total_bytes").is_none(), "{head}");
+}
+
+/// A file that is there and refused is not a file that is gone.
+#[test]
+fn an_attachment_it_may_not_read_is_not_reported_as_missing() {
+    let harness = harness();
+    let refused = harness.directory.join("refused.bin");
+    std::fs::write(&refused, b"secret").unwrap();
+    std::fs::set_permissions(
+        &refused,
+        std::os::unix::fs::PermissionsExt::from_mode(0o000),
+    )
+    .unwrap();
+
+    let db = Connection::open(&harness.database).unwrap();
+    db.execute(
+        "INSERT INTO attachment (ROWID, guid, filename, transfer_name, total_bytes)
+         VALUES (92, 'a92', ?, 'refused.bin', 6)",
+        rusqlite::params![refused.to_string_lossy()],
+    )
+    .unwrap();
+    drop(db);
+
+    let stream = UnixStream::connect(&harness.socket).unwrap();
+    let error = msg::daemon::client::save(stream, &SaveRequest { id: 92 }, |_| Ok(())).unwrap_err();
+    let said = error.to_string();
+    assert!(
+        !said.contains("gone"),
+        "a refused file is not a missing one: {said}"
+    );
+    // Exit 2 is the documented "the data is there, the grant is not".
+    assert!(
+        matches!(error, msg::Error::AccessDenied(_)),
+        "{error:?} should be AccessDenied"
+    );
+    // What the caller is *told*, not only which variant was raised. Both
+    // assertions above pass on a message that never mentions the attachment,
+    // which is how a wire that replaced the words with a fixed sentence about
+    // the database went unnoticed.
+    assert!(said.contains("92"), "should name the attachment: {said}");
+    assert!(
+        !said.contains("cannot read the Messages database"),
+        "msgd read the database to resolve the rowid, so this is untrue: {said}"
+    );
+
+    std::fs::set_permissions(
+        &refused,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .unwrap();
+}
+
+/// A daemon that cannot open the database still says the right thing.
+///
+/// The wire used to substitute a fixed sentence for every `AccessDenied`, and
+/// that substitution is what kept this text correct. Now `open_database` puts it
+/// in directly, so this is the assertion holding it in place: the daemon must
+/// not tell a client to "install the daemon", which is the wording the CLI uses
+/// when *it* is the one refused.
+#[test]
+fn a_daemon_that_cannot_read_the_database_says_so_in_its_own_words() {
+    let directory = msg::db::temporary_directory("msg-denied-").unwrap();
+    let database = directory.join("chat.db");
+    build_fixture(&database);
+    std::fs::set_permissions(
+        &database,
+        std::os::unix::fs::PermissionsExt::from_mode(0o000),
+    )
+    .unwrap();
+
+    let socket = directory.join("msgd.sock");
+    let daemon = Daemon::new(DaemonOptions {
+        db_path: Some(database.to_string_lossy().into_owned()),
+        config_path: Some(directory.join("config-that-does-not-exist.toml")),
+    });
+    daemon.listen(Some(socket.clone())).unwrap();
+
+    let stream = UnixStream::connect(&socket).unwrap();
+    let error = request(stream, &Request::Chats(ChatsRequest::default()))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("Grant Full Disk Access to msgd"),
+        "the daemon's own advice: {error}"
+    );
+    assert!(
+        !error.contains("Install the daemon"),
+        "that is the CLI's advice, not the daemon's: {error}"
+    );
+
+    std::fs::set_permissions(
+        &database,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .unwrap();
 }

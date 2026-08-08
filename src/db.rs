@@ -78,6 +78,10 @@ impl Attachment {
     }
 
     /// What stands in for this attachment in the body, in place of U+FFFC.
+    ///
+    /// The rowid leads, because it is the only way to name this file: the path
+    /// is deliberately not published, and `msg save` takes an id. Printing it
+    /// here is what makes it findable without a second command to list it.
     pub fn describe(&self) -> String {
         let mut parts = Vec::new();
         if self.is_sticker {
@@ -94,12 +98,12 @@ impl Attachment {
         } else if self.total_bytes > 0 {
             parts.push(human_bytes(self.total_bytes));
         }
-        format!("[{}]", parts.join(", "))
+        format!("[#{} {}]", self.rowid, parts.join(", "))
     }
 }
 
 /// Sizes as a reader thinks of them, to one decimal place above a kilobyte.
-fn human_bytes(bytes: i64) -> String {
+pub fn human_bytes(bytes: i64) -> String {
     const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
     if bytes < 1024 {
         return format!("{bytes} B");
@@ -322,8 +326,19 @@ pub fn open_database(path: Option<&str>, allow_snapshot: bool) -> Result<Connect
         Ok(db) => Ok(db),
         Err(error) => {
             let text = error.to_string();
+            // Whose advice this is depends on who is denied. `allow_snapshot`
+            // is the daemon's tell — it is the one caller that has no snapshot
+            // to fall back on — and telling a daemon to install a daemon helps
+            // nobody. Put the right words in here rather than substituting them
+            // on the way out: the wire now carries whatever an `AccessDenied`
+            // was given, so this is the only place that decides.
+            let denied = if allow_snapshot {
+                denied_message(&location)
+            } else {
+                crate::daemon::protocol::DENIED.to_string()
+            };
             if reads_as_permission(&text) {
-                return Err(Error::AccessDenied(denied_message(&location)));
+                return Err(Error::AccessDenied(denied));
             }
             if !allow_snapshot {
                 // TCC denial reaches us as SQLite's "unable to open database
@@ -331,10 +346,7 @@ pub fn open_database(path: Option<&str>, allow_snapshot: bool) -> Result<Connect
                 // log. The CLI resolves that ambiguity by trying a snapshot; a
                 // daemon has no snapshot to fall back to, so for it the answer
                 // is always the permission.
-                return Err(Error::AccessDenied(format!(
-                    "{}\n\n{text}",
-                    denied_message(&location)
-                )));
+                return Err(Error::AccessDenied(format!("{denied}\n\n{text}")));
             }
             open_snapshot(&location)
         }
@@ -481,6 +493,78 @@ fn attachments_for(db: &Connection, rowids: &[i64]) -> Result<BTreeMap<i64, Vec<
         }
     }
     Ok(found)
+}
+
+/// Why one attachment could not be opened, told apart rather than guessed at.
+///
+/// "Gone" is a diagnosis, and `File::open` fails for more than one reason. A
+/// permission error is the opposite of a missing file — it is there and this
+/// process may not have it — and reporting it as absence sends a reader looking
+/// for the wrong thing. It also has to exit 2 rather than 1, which is the
+/// documented "the data is there, the grant is not".
+///
+/// Not a first-run problem: a database this program cannot read at all becomes
+/// `AccessDenied` in `open_database` long before anything asks for an
+/// attachment. This is the per-file case, which the daemon can meet while
+/// holding the grant — see daemon-and-permissions.md §12 for the time it did.
+pub fn unreadable(id: i64, error: &std::io::Error) -> Error {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        return Error::AccessDenied(format!(
+            "attachment {id} is there, but reading it was refused ({error})"
+        ));
+    }
+    // Messages purges files behind its own back, so a missing one is a normal
+    // state rather than a broken database.
+    Error::other(format!(
+        "attachment {id} is recorded but its file is gone ({error})"
+    ))
+}
+
+/// Where one attachment's bytes are, by rowid.
+///
+/// This is the only function that turns an identifier into a path, and it goes
+/// that way only. A caller names a row in `chat.db` and never a file, which is
+/// what keeps the daemon from being a general-purpose reader with Full Disk
+/// Access behind it — see daemon-and-permissions.md §6 and attachments.md §3.
+///
+/// Deliberately not filtered by `hide_attachment`: hiding governs what is worth
+/// *showing* in a body, and someone who has an id in their hand has already got
+/// past that question.
+pub fn attachment_path(db: &Connection, rowid: i64) -> Result<(PathBuf, Attachment)> {
+    let mut statement = db.prepare(
+        "SELECT ROWID AS rowid, transfer_name AS name, mime_type AS mimeType,
+                uti AS uti, total_bytes AS totalBytes, is_sticker AS isSticker,
+                filename AS filename
+           FROM attachment WHERE ROWID = ?",
+    )?;
+    let mut rows = statement.query([rowid])?;
+    let Some(row) = rows.next()? else {
+        return Err(Error::other(format!("no attachment {rowid}")));
+    };
+
+    let filename = text(row, "filename");
+    let attachment = Attachment {
+        rowid: number(row, "rowid"),
+        name: text(row, "name"),
+        mime_type: text(row, "mimeType"),
+        uti: text(row, "uti"),
+        total_bytes: number(row, "totalBytes"),
+        is_sticker: number(row, "isSticker") == 1,
+        is_downloaded: filename.is_some(),
+    };
+    let Some(filename) = filename else {
+        return Err(Error::other(format!(
+            "attachment {rowid} was never downloaded, so there is no file to save"
+        )));
+    };
+
+    // `~` is Messages' own shorthand in this column, not a shell convention, so
+    // it is expanded here rather than hoped over.
+    let path = match filename.strip_prefix("~/") {
+        Some(rest) => crate::home().join(rest),
+        None => PathBuf::from(&filename),
+    };
+    Ok((path, attachment))
 }
 
 /// Put each attachment where its placeholder is, in order.
@@ -1602,7 +1686,7 @@ mod tests {
                 true,
             )],
         );
-        assert_eq!(body_of(&db, 1), "[IMG_1234.HEIC, 3.2 MB]");
+        assert_eq!(body_of(&db, 1), "[#1 IMG_1234.HEIC, 3.2 MB]");
     }
 
     /// 13,148 messages on a real database carry more than one, so the mapping
@@ -1632,7 +1716,7 @@ mod tests {
         );
         assert_eq!(
             body_of(&db, 1),
-            "[first.png, 2.0 KB] and [second.pdf, 1.0 KB]"
+            "[#1 first.png, 2.0 KB] and [#2 second.pdf, 1.0 KB]"
         );
     }
 
@@ -1651,7 +1735,7 @@ mod tests {
             1,
             &[(1, Some("only.png"), Some("image/png"), 512, false, true)],
         );
-        assert_eq!(body_of(&db, 1), "[only.png, 512 B][attachment]");
+        assert_eq!(body_of(&db, 1), "[#1 only.png, 512 B][attachment]");
 
         // One placeholder, two attachments: the spare is appended, not dropped.
         let db = fixture();
@@ -1665,7 +1749,10 @@ mod tests {
                 (2, Some("spare.png"), Some("image/png"), 512, false, true),
             ],
         );
-        assert_eq!(body_of(&db, 1), "[shown.png, 512 B] [spare.png, 512 B]");
+        assert_eq!(
+            body_of(&db, 1),
+            "[#1 shown.png, 512 B] [#2 spare.png, 512 B]"
+        );
     }
 
     /// Hidden rows are Messages' bookkeeping — see attachments.md §7.
@@ -1702,7 +1789,7 @@ mod tests {
                 false,
             )],
         );
-        assert_eq!(body_of(&db, 1), "[gone.jpg, not downloaded]");
+        assert_eq!(body_of(&db, 1), "[#1 gone.jpg, not downloaded]");
     }
 
     #[test]
@@ -1795,7 +1882,7 @@ mod tests {
         let copies: Vec<_> = found.iter().filter(|m| m.rowid == 1).collect();
         assert_eq!(copies.len(), 2, "the fixture must produce two copies");
         for copy in copies {
-            assert_eq!(copy.body.as_deref(), Some("[photo.png, 2.0 KB]"));
+            assert_eq!(copy.body.as_deref(), Some("[#1 photo.png, 2.0 KB]"));
             assert_eq!(copy.attachments.len(), 1, "chat {}", copy.chat_id);
         }
     }
@@ -1825,7 +1912,10 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(body_of(&db, 1), "[com.apple.coreaudio-format][attachment]");
+        assert_eq!(
+            body_of(&db, 1),
+            "[#1 com.apple.coreaudio-format][#2 attachment]"
+        );
 
         // And the structured field stays honest: a UTI is not a MIME type, and
         // a consumer reading `mimeType` must not be handed one.
