@@ -2,17 +2,10 @@
 
 ## Docs
 
-[README.md](README.md) describes how `msg` works today, for someone using it.
-Keep it current when behaviour changes.
-
-[`docs/projects/`](docs/projects/README.md) is the work itself: three lists
-([now](docs/projects/now.md), [next](docs/projects/next.md),
-[later](docs/projects/later.md)) pointing into
-[`all/`](docs/projects/all), where every plan lives and nothing ever moves. Read
-[docs/projects/README.md](docs/projects/README.md) before adding to it. Plans
-are cited by section (`daemon-and-permissions.md §5`), so renumbering a section
-silently breaks references, and a plan whose status line is stale is worse than
-one with no status at all.
+This repo follows the global `docs/projects/` convention, with one difference:
+there is no `docs/` overview, because [README.md](README.md) plays that role —
+it describes how `msg` works today, for someone using it. The work itself is in
+[`docs/projects/`](docs/projects/README.md).
 
 ## Never send a message you did not mean to send
 
