@@ -115,9 +115,9 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// look up the name behind a handle
+    /// look up who somebody is, by name, nickname, or address
     Contacts {
-        /// phone numbers or email addresses
+        /// names, nicknames, phone numbers, or email addresses
         handles: Vec<String>,
         #[arg(long)]
         json: bool,

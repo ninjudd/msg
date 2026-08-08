@@ -24,6 +24,13 @@ pub struct Contact {
     /// one run: these are Core Data primary keys, stable within a database but
     /// not across accounts, hence the source in front.
     pub id: String,
+    /// The address this entry was reached by, in the shape Contacts stored it.
+    ///
+    /// The map is keyed by [`handle_key`], which is lossy on purpose — it drops
+    /// a country code so two shapes of one number compare equal. That is right
+    /// for matching and wrong for showing, so the original is kept here. One
+    /// record appears once per address it has, each carrying its own.
+    pub handle: String,
     /// What to call them: the nickname when Contacts holds one, else the name
     /// the record is filed under.
     ///
@@ -95,6 +102,7 @@ impl ContactIndex {
                 .filter_map(|(handle, id, name)| {
                     let contact = Contact {
                         id: id.to_string(),
+                        handle: handle.to_string(),
                         name: name.to_string(),
                         filed_as: None,
                     };
@@ -123,6 +131,38 @@ impl ContactIndex {
     /// The name for a handle, or `None` when it is unknown.
     pub fn lookup(&self, handle: Option<&str>) -> Option<&str> {
         Some(self.contact(handle)?.name.as_str())
+    }
+
+    /// Everyone a lookup term reaches: an address if it is one, otherwise
+    /// everyone who answers to it as a name.
+    ///
+    /// `msg contacts` is asking who somebody is, and a name is the ordinary way
+    /// to ask that — a number is what you have when you are asking *about* a
+    /// number. Only addresses worked before, which meant the command could not
+    /// answer the question it is for unless you already had the answer.
+    ///
+    /// An address given outright wins outright, the way it does when resolving
+    /// a person: otherwise a name that happened to read as part of an address
+    /// would drag strangers into a question that had exactly one answer.
+    ///
+    /// Ordered by name and then address, so repeating a lookup repeats its
+    /// output. The map underneath is a `HashMap`, whose order is not stable
+    /// even within one run.
+    pub fn find(&self, term: &str) -> Vec<&Contact> {
+        if let Some(exact) = self.contact(Some(term)) {
+            return vec![exact];
+        }
+        let needle = term.trim().to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let mut found: Vec<&Contact> = self
+            .contacts
+            .values()
+            .filter(|contact| contact.answers_to(&needle))
+            .collect();
+        found.sort_by(|a, b| a.name.cmp(&b.name).then(a.handle.cmp(&b.handle)));
+        found
     }
 
     /// The whole record, for callers that have to tell two people apart rather
@@ -377,6 +417,7 @@ fn collect(
         // the one from the account the user actually maintains.
         contacts.entry(key).or_insert(Contact {
             id: format!("{source}:{record}"),
+            handle,
             name,
             filed_as,
         });
@@ -529,6 +570,49 @@ mod tests {
         // name is still found by that too — displacing it must not hide it.
         assert!(named.answers_to("rocket") && unnamed.answers_to("rocket"));
         assert!(named.answers_to("adeyemi"));
+    }
+
+    /// A name is the ordinary way to ask who somebody is.
+    ///
+    /// A number is what you have when you are asking *about* a number, and
+    /// before this the command took nothing else — so it could not answer its
+    /// own question unless you already had the answer.
+    #[test]
+    fn finds_people_by_either_name_and_by_address() {
+        let index = index().nicknamed("3105551234", "Dee");
+
+        // The nickname, the filed name, and a fragment of either.
+        for term in ["Dee", "dee", "Dana Reyes", "reyes"] {
+            let found = index.find(term);
+            assert_eq!(found.len(), 1, "looking up {term}: {found:?}");
+            assert_eq!(found[0].name, "Dee", "looking up {term}");
+            // The address comes back in the shape Contacts stored it, not the
+            // digits the map is keyed by.
+            assert_eq!(found[0].handle, "3105551234", "looking up {term}");
+        }
+
+        // An address still works, and still reaches exactly one person.
+        let by_address = index.find("+1 (310) 555-1234");
+        assert_eq!(by_address.len(), 1);
+        assert_eq!(by_address[0].name, "Dee");
+
+        assert!(index.find("nobody").is_empty());
+        assert!(index.find("  ").is_empty());
+    }
+
+    /// An address given outright answers on its own, the way it does when
+    /// resolving a person — otherwise naming somebody exactly could drag in
+    /// whoever else happens to contain those characters.
+    #[test]
+    fn an_address_beats_a_name_that_contains_it() {
+        let index = ContactIndex::for_test([
+            ("dana@example.com", "test:1", "Dana Reyes"),
+            ("+13105551234", "test:2", "dana@example.com is my email"),
+        ]);
+
+        let found = index.find("dana@example.com");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].name, "Dana Reyes", "{found:?}");
     }
 
     /// The pair is two facts and stays two facts.
