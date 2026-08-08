@@ -5,3 +5,5 @@ Committed to, not started. One line each, same rules as [now](now.md). See
 
 - [Put a reaction on the message it reacted to](all/tapbacks.md) — `[😂♥♥]` after
   the body, instead of rows that interleave or are hidden.
+- [Stop matching in the middle of a word](all/search-boundaries.md) — a short
+  needle finds itself inside longer words, so `art` returns `apartment`.
