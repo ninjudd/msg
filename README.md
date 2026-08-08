@@ -97,9 +97,14 @@ their full name and known to you as something else is found by either.
 conversation per address, so someone you reach at a phone number and an email
 address has two of them, and naming that person matches both. They are one
 Contacts record, so `msg` answers with whichever was last active rather than
-asking a question that has no answer. Two *different* people who happen to share
-a name are still two people, and naming them still reports the ambiguity —
-what gets collapsed is the record, never the name it renders as.
+asking a question that has no answer. A fragment counts as naming them: typing
+fewer letters does not make it two people.
+
+What still reports an ambiguity is a question that has an answer. Two
+*different* people who happen to share a name are two people, and what gets
+collapsed is the Contacts record, never the name it renders as. And a name that
+reaches both somebody's own conversation and a group they are in is a genuine
+choice between a person and a room, so it is put back to you.
 
 ### Reading
 

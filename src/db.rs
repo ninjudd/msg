@@ -1483,14 +1483,26 @@ pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Res
     // Identity, never the rendered name: two records can carry one name and
     // those are two people, so collapsing by what they print as would answer
     // with a stranger's conversation.
-    if exact.len() > 1
-        && let Some(people) = exact
+    //
+    // A fragment counts as naming them. Typing fewer letters does not make it
+    // two people, and a substring is a documented way to name a chat, so a
+    // first name or a surname is how this is actually typed. Falling back to
+    // `matches` only when nothing matched exactly keeps the precedence intact:
+    // an exact match still beats a fragment rather than being pooled with one.
+    //
+    // `sole_person` is what makes this safe to widen — it refuses to speak for
+    // a group, so a `None` anywhere propagates through the `Option` and leaves
+    // the ambiguity standing. Which is right: a person and a room that both
+    // matched are a real question about which was meant.
+    let narrowed = if exact.is_empty() { &matches } else { &exact };
+    if narrowed.len() > 1
+        && let Some(people) = narrowed
             .iter()
             .map(|chat| sole_person(chat, contacts))
             .collect::<Option<BTreeSet<String>>>()
         && people.len() == 1
     {
-        return Ok(exact.remove(0));
+        return Ok(narrowed[0].clone());
     }
 
     // Say how many are not being shown, rather than printing six and reporting
@@ -2058,10 +2070,36 @@ mod tests {
         .nicknamed("+16175550147", "Rocket")
         .nicknamed("robin@example.com", "Rocket");
 
-        for spec in ["Robin Adeyemi", "Rocket"] {
+        // A fragment too. Fewer letters does not make it two people, and a
+        // substring is a documented way to name a chat, so it is how this
+        // actually gets typed.
+        for spec in ["Robin Adeyemi", "Rocket", "adeyemi", "robin"] {
             let chat = resolve_chat(&db, spec, &contacts).unwrap();
             assert_eq!(chat.rowid, newer, "resolving {spec}: {chat:?}");
         }
+    }
+
+    /// The collapse stops at a room.
+    ///
+    /// Reaching a person and a group with one fragment is a real question about
+    /// which was meant, and `sole_person` refusing to speak for a group is the
+    /// whole reason widening the collapse to fragments is safe.
+    #[test]
+    fn a_group_that_also_matched_keeps_the_ambiguity() {
+        let db = fixture();
+        let alone = one_to_one(&db, 4, "+16175550147");
+        message_in(&db, alone, 10, 5);
+        also_in_an_unnamed_group(&db, 4);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("+16175550148", "source:8", "Kit Alvarez"),
+        ]);
+
+        // The fragment reaches his one-to-one and the group he is in.
+        let error = resolve_chat(&db, "adeyemi", &contacts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 chats match"), "{error}");
     }
 
     /// The same shape, and the opposite answer, because these are two people.
