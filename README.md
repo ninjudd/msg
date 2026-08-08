@@ -93,6 +93,14 @@ instead of guessing.
 A [nickname](#contacts) counts as one of those names, so someone filed under
 their full name and known to you as something else is found by either.
 
+**Several conversations with one person are not an ambiguity.** Messages keeps a
+conversation per address, so someone you reach at a phone number and an email
+address has two of them, and naming that person matches both. They are one
+Contacts record, so `msg` answers with whichever was last active rather than
+asking a question that has no answer. Two *different* people who happen to share
+a name are still two people, and naming them still reports the ambiguity —
+what gets collapsed is the record, never the name it renders as.
+
 ### Reading
 
 ```sh

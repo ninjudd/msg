@@ -1240,6 +1240,41 @@ pub fn person_filter(
     }
 }
 
+/// Who an address belongs to, as a key two addresses can share.
+///
+/// The Contacts record where there is one, because a phone number and an email
+/// address on one record are one person — that is the whole reason `--from
+/// <their email>` finds what they sent from their phone. The normalized handle
+/// otherwise, which is the most that can be said without a record to join them
+/// by: two shapes of one unknown number are still one person.
+///
+/// Shared so that "the same person" means the same thing to everything that
+/// asks. A conversation and a search that disagreed about it would be a subtle
+/// and very confusing bug.
+fn person_identity(handle: &str, contact: Option<&Contact>) -> String {
+    match contact {
+        Some(contact) => format!("contact:{}", contact.id),
+        None => format!(
+            "handle:{}",
+            crate::contacts::handle_key(handle).unwrap_or_else(|| handle.to_string())
+        ),
+    }
+}
+
+/// The person a one-to-one conversation is with, or `None` for a group.
+///
+/// A group has no single person to be, which is exactly why it cannot stand in
+/// for one when conversations are being told apart.
+fn sole_person(chat: &Chat, contacts: &ContactIndex) -> Option<String> {
+    if chat.is_group {
+        return None;
+    }
+    // For a one-to-one this is the single handle, since it is the whole of the
+    // conversation's membership.
+    let handle = chat.handles.as_deref()?;
+    Some(person_identity(handle, contacts.contact(Some(handle))))
+}
+
 /// Find one person, and gather every address they use.
 ///
 /// The `handle` table is a few thousand rows even on a decade-old database, so
@@ -1291,15 +1326,7 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
             || handle.to_lowercase().contains(&lowered)
     };
 
-    let identity = |handle: &str, contact: Option<&Contact>| match contact {
-        Some(contact) => format!("contact:{}", contact.id),
-        // Two shapes of one unknown number are still one person, which is the
-        // most that can be said without a contact to join them by.
-        None => format!(
-            "handle:{}",
-            crate::contacts::handle_key(handle).unwrap_or_else(|| handle.to_string())
-        ),
-    };
+    let identity = |handle: &str, contact: Option<&Contact>| person_identity(handle, contact);
 
     let owners = |pick: &dyn Fn(&str, Option<&Contact>) -> bool| -> BTreeSet<String> {
         known
@@ -1393,6 +1420,11 @@ fn describe<'a>(people: impl Iterator<Item = &'a Person> + Clone) -> String {
         .join(", ")
 }
 
+/// How many candidates a name is resolved against before giving up on listing
+/// them. A cap rather than a total, which is why an error that reaches it says
+/// "at least" instead of naming a number it cannot stand behind.
+const CHAT_MATCH_SCAN: i64 = 50;
+
 /// Find a single chat by rowid, identifier, or name substring.
 pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Result<Chat> {
     // Naming a chat outright reaches it even when Messages filters it.
@@ -1406,7 +1438,7 @@ pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Res
             .filter(|chat| chat.rowid == wanted)
             .collect()
     } else {
-        fetch_chats(db, Some(spec), 50, contacts, true)?
+        fetch_chats(db, Some(spec), CHAT_MATCH_SCAN, contacts, true)?
     };
 
     if matches.is_empty() {
@@ -1438,15 +1470,52 @@ pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Res
         return Ok(exact.remove(0));
     }
 
+    // Several conversations with one person is not an ambiguity about who.
+    //
+    // Messages keeps a conversation per address, so someone reachable at a
+    // phone number and an email address has two, and naming them exactly hit
+    // both and asked which. But the addresses belong to one Contacts record, so
+    // the question it was asking was one nobody can answer from a name — it is
+    // the same person either way. Answer with the one last active, since
+    // `fetch_chats` ordered them that way and it is the conversation you would
+    // be continuing.
+    //
+    // Identity, never the rendered name: two records can carry one name and
+    // those are two people, so collapsing by what they print as would answer
+    // with a stranger's conversation.
+    if exact.len() > 1
+        && let Some(people) = exact
+            .iter()
+            .map(|chat| sole_person(chat, contacts))
+            .collect::<Option<BTreeSet<String>>>()
+        && people.len() == 1
+    {
+        return Ok(exact.remove(0));
+    }
+
+    // Say how many are not being shown, rather than printing six and reporting
+    // a bigger number with nothing to explain the gap. The total is itself a
+    // floor: the search stops at `CHAT_MATCH_SCAN`, so a count that reaches it
+    // says "at least", not "exactly".
+    const SHOWN: usize = 6;
     let names = matches
         .iter()
-        .take(6)
+        .take(SHOWN)
         .map(|chat| format!("{} ({})", chat.name, chat.rowid))
         .collect::<Vec<_>>()
         .join(", ");
+    let total = matches.len();
+    let at_least = if i64::try_from(total) == Ok(CHAT_MATCH_SCAN) {
+        "at least "
+    } else {
+        ""
+    };
+    let and_more = match total.saturating_sub(SHOWN) {
+        0 => String::new(),
+        rest => format!(", and {rest} more"),
+    };
     Err(Error::other(format!(
-        "{} chats match {spec}: {names}",
-        matches.len()
+        "{at_least}{total} chats match {spec}: {names}{and_more}"
     )))
 }
 
@@ -1949,6 +2018,96 @@ mod tests {
 
         let chat = resolve_chat(&db, "Rocket", &contacts).unwrap();
         assert_eq!(chat.rowid, alone, "{chat:?}");
+    }
+
+    /// Put a message in a conversation, so `lastDate` orders it against others.
+    fn message_in(db: &Connection, chat: i64, rowid: i64, minutes: i64) {
+        let date = at(minutes);
+        db.execute(
+            "INSERT INTO message (rowid, guid, text, is_from_me, handle_id, date, service)
+             VALUES (?, ?, 'hi', 0, ?, ?, 'iMessage')",
+            rusqlite::params![rowid, format!("g{rowid}"), chat, date],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (?, ?, ?)",
+            rusqlite::params![chat, rowid, date],
+        )
+        .unwrap();
+    }
+
+    /// One person reachable two ways is two conversations and one answer.
+    ///
+    /// Messages keeps a conversation per address, so naming someone who has a
+    /// phone number and an email address matched both exactly and asked which —
+    /// a question with no answer, since it is the same person either way. The
+    /// one last active is the conversation you would be continuing.
+    #[test]
+    fn two_conversations_with_one_person_resolve_to_the_latest() {
+        let db = fixture();
+        let older = one_to_one(&db, 4, "+16175550147");
+        let newer = one_to_one(&db, 5, "robin@example.com");
+        message_in(&db, older, 10, 5);
+        message_in(&db, newer, 11, 90);
+
+        // One Contacts record, so one person however they were reached.
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ])
+        .nicknamed("+16175550147", "Rocket")
+        .nicknamed("robin@example.com", "Rocket");
+
+        for spec in ["Robin Adeyemi", "Rocket"] {
+            let chat = resolve_chat(&db, spec, &contacts).unwrap();
+            assert_eq!(chat.rowid, newer, "resolving {spec}: {chat:?}");
+        }
+    }
+
+    /// The same shape, and the opposite answer, because these are two people.
+    ///
+    /// Collapsing by the rendered name rather than by the record would answer
+    /// with a stranger's conversation, which is the one outcome worse than
+    /// reporting the ambiguity.
+    #[test]
+    fn two_people_sharing_a_name_stay_ambiguous() {
+        let db = fixture();
+        let older = one_to_one(&db, 4, "+16175550147");
+        let newer = one_to_one(&db, 5, "robin@example.com");
+        message_in(&db, older, 10, 5);
+        message_in(&db, newer, 11, 90);
+
+        // Two records that happen to agree on a name: an old entry and a new
+        // one, a father and a son.
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:9", "Robin Adeyemi"),
+        ]);
+
+        let error = resolve_chat(&db, "Robin Adeyemi", &contacts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 chats match"), "{error}");
+    }
+
+    /// An error that shows six of fifty has to say so, or the list reads as the
+    /// whole answer and the count reads as a mistake.
+    #[test]
+    fn the_ambiguity_says_how_many_it_is_not_showing() {
+        let db = fixture();
+        // Ten conversations that all match, none of them exactly.
+        for n in 0..10 {
+            let chat = one_to_one(&db, 10 + n, &format!("+161755501{:02}", 40 + n));
+            message_in(&db, chat, 100 + n, 5 + n);
+        }
+        let error = resolve_chat(&db, "+16175550", &ContactIndex::empty())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("10 chats match"), "{error}");
+        assert!(error.contains("and 4 more"), "{error}");
+        // Not a cap, so it must not claim to be one.
+        assert!(!error.contains("at least"), "{error}");
     }
 
     /// A conversation with a name of its own is found by that name rather than
