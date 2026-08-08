@@ -17,10 +17,21 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 /// the database itself, which is the path a machine without the daemon installed
 /// takes on every command.
 pub fn connect_daemon(path: Option<&Path>) -> Option<UnixStream> {
+    connect_daemon_within(path, RESPONSE_TIMEOUT)
+}
+
+/// Connect with a caller-chosen deadline instead of the general one.
+///
+/// A socket that accepts and then says nothing is indistinguishable from a busy
+/// daemon until the read times out, so the wait is the only thing separating
+/// them. Thirty seconds is the right wait for a command that has nothing else
+/// to do; it is the wrong one for a caller that has a fallback and would rather
+/// take it than sit there.
+pub fn connect_daemon_within(path: Option<&Path>, timeout: Duration) -> Option<UnixStream> {
     let owned = path.map_or_else(socket_path, Path::to_path_buf);
     let stream = UnixStream::connect(owned).ok()?;
-    stream.set_read_timeout(Some(RESPONSE_TIMEOUT)).ok()?;
-    stream.set_write_timeout(Some(RESPONSE_TIMEOUT)).ok()?;
+    stream.set_read_timeout(Some(timeout)).ok()?;
+    stream.set_write_timeout(Some(timeout)).ok()?;
     Some(stream)
 }
 

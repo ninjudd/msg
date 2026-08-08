@@ -12,7 +12,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use msg::apple::to_apple_date;
-use msg::daemon::client::{connect_daemon, request};
+use msg::daemon::client::{connect_daemon, connect_daemon_within, request};
 use msg::daemon::protocol::{
     ChatsRequest, ContactsRequest, Empty, ReadRequest, Request, ResolveRequest, SearchRequest,
     SendRequest, WatchRequest, envelope,
@@ -545,6 +545,59 @@ fn drains_a_burst_larger_than_one_batch_oldest_first() {
     assert_eq!(mine, sorted, "delivered out of order");
     sorted.dedup();
     assert_eq!(sorted.len(), target, "delivered a duplicate");
+}
+
+/// A socket that accepts and then says nothing is neither refused nor slow, and
+/// it is what makes a caller's timeout the only thing that ends the wait.
+///
+/// `msg daemon install` probes a daemon it has just bootstrapped, so it is the
+/// caller most likely to meet one. Without a caller-chosen deadline it inherits
+/// the general thirty-second read timeout and the install looks hung.
+#[test]
+fn a_socket_that_accepts_and_never_answers_gives_up_on_the_callers_schedule() {
+    use std::os::unix::net::UnixListener;
+
+    let directory = msg::db::temporary_directory("msg-silent-").unwrap();
+    let path = directory.join("silent.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+
+    // Accept, hold the connection open, and never write a byte. Holding it is
+    // the point: dropping it would send EOF and end the read straight away.
+    let held = std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        while let Ok((stream, _)) = listener.accept() {
+            kept.push(stream);
+            if kept.len() == 2 {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    });
+
+    let short = Duration::from_millis(300);
+    let started = Instant::now();
+    let stream = connect_daemon_within(Some(&path), short).unwrap();
+    let outcome = request(stream, &Request::Status(Empty {}));
+    let waited = started.elapsed();
+
+    assert!(outcome.is_err(), "a silent socket somehow answered");
+    assert!(
+        waited < Duration::from_secs(2),
+        "waited {waited:?} on a {short:?} deadline, so the timeout was ignored"
+    );
+
+    // And the general connect really does carry the long one, which is why the
+    // install cannot just use it.
+    let long = connect_daemon(Some(&path)).unwrap();
+    assert_eq!(
+        long.read_timeout().unwrap(),
+        Some(Duration::from_secs(30)),
+        "the default deadline changed; the install's own is sized against it"
+    );
+    drop(long);
+
+    held.join().ok();
+    std::fs::remove_dir_all(&directory).ok();
 }
 
 /// The socket is the whole of the access control the daemon has or wants (§5).
