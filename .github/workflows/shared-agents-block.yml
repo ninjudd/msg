@@ -1,0 +1,19 @@
+name: Shared AGENTS.md block
+
+# The block in AGENTS.md is generated from ninjudd/agent-config. This fails if
+# it was edited in place, or if that repo moved on and this one has not.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch agent-config
+        run: git clone --depth 1 https://github.com/ninjudd/agent-config.git /tmp/agent-config
+      - name: Check the shared block is current
+        run: /tmp/agent-config/sync.sh --check "$GITHUB_WORKSPACE"
