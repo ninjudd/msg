@@ -1,11 +1,17 @@
 # Plan: Make the common commands stop taking two seconds
 
-**Status:** The chat list is fixed; `search` is not. §1 to §4 are the diagnosis
-as it was written, before any of it was acted on. §6 records what was done, what
-it cost, and what is left. §8 corrects a claim §7 made about early exit that
-turned out to be false when measured, and §9 is the plan that replaces it. **§10
-matters most: every measurement before it timed a predicate that was not actually
-searching message bodies.** Read it before trusting any number above.
+**Status:** Done, in the sense that matters: the chat list went from ~2.1s to
+~150ms, and `search` was found to have never worked at all and now does. Search
+costs a couple of seconds unscoped and 236ms scoped to a person, which was
+judged fast enough to stop here — §9 and [search-index.md](search-index.md)
+record the two ways to go faster, and neither is being built.
+
+§1 to §4 are the diagnosis as it was written, before any of it was acted on. §6
+records what was done and what it cost. §8 corrects a claim §7 made about early
+exit that turned out to be false when measured, and §9 is the plan that replaces
+it. **§10 matters most: every measurement before it timed a predicate that was
+not actually searching message bodies.** Read it before trusting any number
+above. §11 is the limit bug that fixing the predicate exposed.
 
 Nothing here was a regression from [the Rust rewrite](rust-rewrite.md): the same
 numbers came out of the TypeScript build, and that work simply removed

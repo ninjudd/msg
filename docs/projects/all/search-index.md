@@ -1,9 +1,11 @@
 # Plan: Index message bodies ourselves
 
-**Status:** Not started. The correctness fix it replaces has landed — search now
-reads the whole blob rather than the first 41 bytes of it — so this is about
-speed, not about finding messages at all. See
-[query-performance.md §10](query-performance.md) for what that fix cost.
+**Status:** Written down, deliberately not being built. The correctness fix it
+would have sat on top of has landed — search reads the whole blob now rather than
+the first 41 bytes of it — and the resulting speed was judged good enough, so
+this is on hold rather than in progress. §7 records that decision and what would
+reverse it. See [query-performance.md §10](query-performance.md) for the fix and
+what it cost.
 
 **Goal:** Make `msg search` answer in the tens of milliseconds, without writing
 to `chat.db` and without asking for any permission the daemon does not already
@@ -107,3 +109,37 @@ The high-water mark is one row: the newest `message.rowid` the index has seen.
 Not a reason to delay [searching backwards through
 time](query-performance.md), which is worth doing on its own: it bounds the work
 on the unindexed range, and this plan depends on that range being cheap to scan.
+
+## 7 Why it is not being built
+
+Search costs about 2.5 seconds unscoped and 236ms scoped to a person. An index
+would make both effectively instant. It is not being built anyway, because the
+gap between "a couple of seconds" and "instant" is not worth what §5 lists —
+and one item there is not a cost at all but a change in kind.
+
+**It would put a second copy of every message on disk in plaintext, outside the
+protection the original has.** `chat.db` is guarded by TCC: reading it needs a
+grant a human gave in System Settings, and this program's whole architecture
+exists to keep that grant on one small daemon instead of on a terminal. An index
+in `~/.local/state/msg/` has none of that. It is 0700 in a home directory, which
+stops other users and stops nothing else — every process running as this user can
+read it, with no grant and no prompt. That is the scope reduction in
+[daemon-and-permissions.md §6](daemon-and-permissions.md) being handed back, and
+for a search that is already fast enough to use.
+
+The rest is ordinary cost, and it is all recurring rather than one-off: staleness
+against deletions and edits, a rebuild path when the decoder changes, tens of
+megabytes to account for and document a way to remove, and a second store that
+every future filter has to be taught about or it silently answers from the wrong
+place.
+
+**What would reverse this.** Not a general wish for speed — a specific case where
+seconds are actually wrong: search becoming interactive rather than one-shot,
+where a keystroke is a query; or the database growing enough that a full scan
+stops fitting the "couple of seconds" this decision rests on. If either happens,
+§3 is the part to build first, because a partial index needs no migration and
+degrades to today's behaviour rather than to a wrong answer.
+
+Recorded rather than deleted, so the next person does not rediscover that
+Spotlight is a dead end and BlueBubbles injects a dylib. §1 is the durable part
+of this document; the design after it is only worth reading if §7 is revisited.
