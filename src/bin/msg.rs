@@ -97,6 +97,15 @@ enum Command {
         /// only messages after a duration like 30d or a date
         #[arg(long)]
         since: Option<String>,
+        /// show this many messages after each hit
+        #[arg(short = 'A', long, value_parser = counted)]
+        after: Option<i64>,
+        /// show this many messages before each hit
+        #[arg(short = 'B', long, value_parser = counted)]
+        before: Option<i64>,
+        /// show this many on both sides of each hit
+        #[arg(short = 'C', long, value_parser = counted)]
+        context: Option<i64>,
         #[arg(long)]
         json: bool,
     },
@@ -187,6 +196,14 @@ fn positive(value: &str) -> Result<i64, String> {
     match value.parse::<i64>() {
         Ok(count) if count > 0 => Ok(count),
         _ => Err(format!("expected a positive integer, got {value}")),
+    }
+}
+
+/// A count of messages, which may be zero but not negative.
+fn counted(value: &str) -> Result<i64, String> {
+    match value.parse::<i64>() {
+        Ok(count) if count >= 0 => Ok(count),
+        _ => Err(format!("expected a count of zero or more, got {value}")),
     }
 }
 
@@ -290,8 +307,19 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
             with,
             from,
             since,
+            after,
+            before,
+            context,
             json,
         } => {
+            // `-C` is shorthand for both, and loses to either given outright —
+            // including `-B 0`, which grep honours and which a count alone
+            // cannot express, since an unset flag and an explicit zero are the
+            // same number. Absence is what tells them apart.
+            let around = msg::db::Context {
+                before: before.or(*context).unwrap_or(0),
+                after: after.or(*context).unwrap_or(0),
+            };
             let messages = source.search(&SearchQuery {
                 query: query.clone(),
                 chat: chat.clone(),
@@ -301,6 +329,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                 since: since.clone(),
                 unknown: cli.unknown,
                 names: cli.names(),
+                context: around,
             })?;
             print(&if *json {
                 to_json(&messages)

@@ -24,8 +24,9 @@ use crate::daemon::protocol::{
 };
 use crate::daemon::send::{check_automation, send_attachment, send_message};
 use crate::db::{
-    Chat, FetchMessages, Message, PersonFilter, database_path, describe_target, fetch_chats,
-    fetch_messages, latest_rowid, open_database, person_filter, resolve_chat, unreadable,
+    Chat, Context, FetchMessages, Message, PersonFilter, database_path, describe_target,
+    fetch_chats, fetch_messages, latest_rowid, open_database, person_filter, resolve_chat,
+    unreadable, with_context,
 };
 use crate::{Error, Result, VERSION};
 
@@ -413,7 +414,7 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
                 // for. `--no-names` leaves only the addresses to match on.
                 let person =
                     person_filter(db, ask.with.as_deref(), ask.from.as_deref(), &contacts)?;
-                fetch_messages(
+                let hits = fetch_messages(
                     db,
                     &FetchMessages {
                         query: Some(&ask.query),
@@ -426,6 +427,15 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
                         limit: ask.limit.unwrap_or(25),
                         include_filtered: ask.unknown == Some(true),
                         ..Default::default()
+                    },
+                    &contacts,
+                )?;
+                with_context(
+                    db,
+                    hits,
+                    Context {
+                        before: ask.before.unwrap_or(0),
+                        after: ask.after.unwrap_or(0),
                     },
                     &contacts,
                 )

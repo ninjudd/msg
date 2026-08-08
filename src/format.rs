@@ -128,8 +128,30 @@ pub fn render_messages(messages: &[Message], show_chat: bool) -> String {
     if messages.is_empty() {
         return "no messages found\n".to_string();
     }
+    // Context was asked for exactly when the messages carry a run to belong to.
+    // Without it nothing below changes a byte of what this printed before.
+    let in_context = messages.iter().any(|message| message.group.is_some());
     let mut out = String::new();
+    let mut run: Option<i64> = None;
     for message in messages {
+        if in_context {
+            if let Some(group) = message.group
+                && run.is_some_and(|open| open != group)
+            {
+                // grep's separator, for grep's reason: a blank line would be
+                // ambiguous against a message whose body is empty.
+                out.push_str("--\n");
+            }
+            run = message.group;
+        }
+        // Two columns before the timestamp rather than colour, so a hit is still
+        // marked after the output has been piped, pasted, or grepped again —
+        // and so this program still writes no terminal control codes.
+        let gutter = match (in_context, message.matched) {
+            (false, _) => "",
+            (true, true) => "> ",
+            (true, false) => "  ",
+        };
         let stamp = format_timestamp(message.date);
         let where_ = match (show_chat, message.chat_name.as_deref()) {
             (true, Some(name)) => format!("[{name}] "),
@@ -142,13 +164,16 @@ pub fn render_messages(messages: &[Message], show_chat: bool) -> String {
         if let Some(answering) = &message.reply_to {
             let quoted = answering.excerpt.as_deref().unwrap_or("(no text)");
             out.push_str(&format!(
-                "{:width$}  ↳ replying to {}: {quoted}\n",
+                "{gutter}{:width$}  ↳ replying to {}: {quoted}\n",
                 "",
                 answering.sender,
                 width = stamp.chars().count()
             ));
         }
-        out.push_str(&format!("{stamp}  {where_}{}: {body}\n", message.sender));
+        out.push_str(&format!(
+            "{gutter}{stamp}  {where_}{}: {body}\n",
+            message.sender
+        ));
     }
     out
 }
@@ -322,7 +347,55 @@ mod tests {
             service: Some("iMessage".into()),
             attachments: Vec::new(),
             reply_to: None,
+            matched: true,
+            group: None,
         }
+    }
+
+    /// A hit is marked, its context is not, and the two line up.
+    ///
+    /// Without a marker the output stops being answerable: you can read the
+    /// conversation but not tell which line the search actually found.
+    #[test]
+    fn context_marks_the_hit_and_separates_the_runs() {
+        let context = |rowid, group, body| {
+            let mut message = message(rowid, "Dana Reyes", body);
+            message.matched = false;
+            message.group = Some(group);
+            message
+        };
+        let hit = |rowid, group, body| {
+            let mut message = message(rowid, "Dana Reyes", body);
+            message.group = Some(group);
+            message
+        };
+
+        let rendered = render_messages(
+            &[
+                context(1, 0, "before"),
+                hit(2, 0, "the needle"),
+                context(3, 1, "elsewhere"),
+                hit(4, 1, "the needle again"),
+            ],
+            false,
+        );
+
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert!(lines[0].starts_with("  Jan 15,"), "{lines:?}");
+        assert!(lines[1].starts_with("> Jan 15,"), "{lines:?}");
+        // A gap between runs, said the way grep says it.
+        assert_eq!(lines[2], "--", "{lines:?}");
+        assert!(lines[3].starts_with("  Jan 15,"), "{lines:?}");
+        assert!(lines[4].starts_with("> Jan 15,"), "{lines:?}");
+        // Only between runs, never before the first or after the last.
+        assert_eq!(rendered.matches("\n--\n").count(), 1, "{rendered}");
+    }
+
+    /// Every search that asks for no context prints exactly what it always did.
+    #[test]
+    fn without_context_nothing_gains_a_gutter() {
+        let rendered = render_messages(&[message(1, "Dana Reyes", "hello")], false);
+        assert_eq!(rendered, "Jan 15, 9:30 AM  Dana Reyes: hello\n");
     }
 
     /// A reply names what it answers, above itself and indented to the width of

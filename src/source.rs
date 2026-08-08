@@ -23,7 +23,7 @@ use crate::daemon::protocol::{
 use crate::daemon::send::attachment_name;
 use crate::db::{
     Chat, FetchMessages, Message, PersonFilter, attachment_path, fetch_chats, fetch_messages,
-    latest_rowid, open_database, person_filter, resolve_chat, unreadable,
+    latest_rowid, open_database, person_filter, resolve_chat, unreadable, with_context,
 };
 use crate::{Error, Result};
 
@@ -59,6 +59,8 @@ pub struct SearchQuery {
     pub since: Option<String>,
     pub unknown: bool,
     pub names: bool,
+    /// How much of the conversation to show around each hit.
+    pub context: crate::db::Context,
 }
 
 pub struct WatchQuery {
@@ -231,6 +233,8 @@ impl Source {
                 since: query.since.clone(),
                 unknown: query.unknown.then_some(true),
                 names: (!query.names).then_some(false),
+                before: (query.context.before > 0).then_some(query.context.before),
+                after: (query.context.after > 0).then_some(query.context.after),
             }))?;
             return Ok(serde_json::from_value(value)?);
         }
@@ -239,6 +243,7 @@ impl Source {
             .as_deref()
             .map(since_to_apple_date)
             .transpose()?;
+        let context = query.context;
         let (text, spec, with, from, limit, unknown) = (
             query.query.clone(),
             query.chat.clone(),
@@ -253,7 +258,7 @@ impl Source {
             .map(|spec| resolve_chat(db, spec, contacts).map(|chat| chat.rowid))
             .transpose()?;
         let person = person_filter(db, with.as_deref(), from.as_deref(), contacts)?;
-        fetch_messages(
+        let hits = fetch_messages(
             db,
             &FetchMessages {
                 query: Some(&text),
@@ -268,7 +273,8 @@ impl Source {
                 ..Default::default()
             },
             contacts,
-        )
+        )?;
+        with_context(db, hits, context, contacts)
     }
 
     pub fn resolve(&mut self, chat: &str, names: bool) -> Result<Chat> {

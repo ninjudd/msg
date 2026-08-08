@@ -177,7 +177,50 @@ msg search "deploy" -c "Ship Room"        # within one
 msg search "dinner" --with dana           # one person, wherever you talk
 msg search "dinner" --from dana           # only what they sent
 msg search "invoice" --since 30d -n 50
+msg search "dinner" -C 2                  # two messages either side of each hit
+msg search "dinner" -A 3 -B 1             # or each side separately
 ```
+
+**A match on its own is a line torn out of a conversation**, and it is often the
+least informative line in it — `sounds good`, `yeah ok`. `-A`, `-B` and `-C`
+put it back:
+
+```
+$ msg search "the inflator" -C 1
+  5:44 PM  [Dana Reyes] me: heading to the lake tomorrow
+> 5:46 PM  [Dana Reyes] Dana Reyes: Btw do you think we can find the inflator?
+  5:50 PM  [Dana Reyes] me: it is in the garage
+--
+  2:11 PM  [Ship Room] Sam Oyelaran: who packed the car
+> 2:12 PM  [Ship Room] Sam Oyelaran: no inflator either
+```
+
+`> ` marks the hit and two spaces mark its context, so the distinction survives
+being piped, pasted, or grepped again — this program writes no colour anywhere.
+`--` separates runs, as in grep. Windows that overlap **or touch** merge into
+one run, so several hits in one exchange print once rather than repeating the
+messages between them.
+
+The window is a slice of the conversation, not a continuation of the search.
+`--from dana -A 2` means "what Dana said, plus what came next, whoever sent it";
+filtering the window by the same person would return Dana's next two messages,
+which is almost never the reply she got. `--since` bounds what counts as a hit
+too, so a window on a hit near that boundary reaches back past it. And a window
+holds reactions even though a search can never match one, because `Liked "see
+you at 8"` is frequently the entire reply.
+
+`-C` is shorthand for both sides and loses to either given outright, including
+zero — `-C 2 -B 0` is two messages after each hit and none before, as in grep.
+
+`-n` still counts hits, not printed lines, so `-n 25 -C 5` is twenty-five
+matches and however many messages that comes to. `--json` carries the same as
+`matched: false` on context messages and a `group` number per run; a search
+without context is byte-identical to what it was before these existed.
+
+**`-C` and `-c` differ only in case and mean entirely different things** — `-c`
+scopes to a conversation, `-C` sets the context width. `-c 3` is a legitimate
+way to name chat 3, so a case slip cannot be guarded against. The `-A`/`-B`/`-C`
+muscle memory was judged worth it.
 
 Search matches the message body wherever it lives. Most bodies are not in
 `message.text` at all but archived into `attributedBody`, so matching has to look
@@ -393,6 +436,9 @@ authentication, and why the daemon is a single executable rather than a copy of
 | `--since <when>` | `read`, `search` | duration or date lower bound |
 | `-c, --chat <chat>` | `search`, `watch` | restrict to one conversation |
 | `--tapbacks` | `read`, `watch` | include reactions |
+| `-A, --after <count>` | `search` | messages to show after each hit |
+| `-B, --before <count>` | `search` | messages to show before each hit |
+| `-C, --context <count>` | `search` | both, and note the clash with `-c` |
 | `--interval <seconds>` | `watch` | poll frequency, without a daemon |
 | `-f, --file <path>` | `send` | send a file instead of text |
 | `--dry-run` | `send` | show without sending |

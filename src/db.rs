@@ -40,6 +40,32 @@ pub struct Message {
     /// Set when this message is an inline reply. 0.75% of a real database.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<ReplyTo>,
+    /// Whether this is a search hit, as against context shown around one.
+    ///
+    /// Defaulted true and omitted when true, so a search asked for without
+    /// context serializes byte-identically to what it did before context
+    /// existed, and only the surrounding messages carry `"matched": false`.
+    #[serde(default = "matched_unless_said", skip_serializing_if = "is_matched")]
+    pub matched: bool,
+    /// Which run of adjacent messages this belongs to, when context was asked
+    /// for.
+    ///
+    /// A consumer cannot work the runs out for itself: rowids are global, so
+    /// two messages adjacent in one conversation are not adjacent numbers, and
+    /// the separator between runs would be unreproducible without this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<i64>,
+}
+
+/// A message is a hit unless something says otherwise, which is what keeps the
+/// field out of the JSON for every search that asked for no context.
+fn matched_unless_said() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_matched(matched: &bool) -> bool {
+    *matched
 }
 
 /// One file attached to a message.
@@ -774,7 +800,184 @@ fn to_message(row: &Row<'_>, contacts: &ContactIndex) -> Message {
         service: text(row, "service"),
         attachments: Vec::new(),
         reply_to: None,
+        matched: true,
+        group: None,
     }
+}
+
+/// How much of the conversation to show around each hit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Context {
+    pub before: i64,
+    pub after: i64,
+}
+
+impl Context {
+    pub fn wanted(self) -> bool {
+        self.before > 0 || self.after > 0
+    }
+}
+
+/// One hit and the messages around it, contiguous within its conversation.
+struct Window {
+    messages: Vec<Message>,
+    /// The rowid of one message past the end, fetched but never shown.
+    ///
+    /// It is what makes "overlap **or touch**" answerable. Two runs touch when
+    /// nothing sits between them, and nothing in a rowid can say that, because
+    /// rowids are global and two adjacent messages in one conversation are not
+    /// adjacent numbers. Asking for one message more than will be displayed
+    /// turns that question into a comparison, at no extra query.
+    reach: i64,
+}
+
+/// Put each hit back into the conversation it came from.
+///
+/// Every hit gets its own two queries — backwards and forwards, both bounded to
+/// that hit's chat — because search results interleave conversations and "the
+/// three messages after this one" means three within *that* conversation, not
+/// the next three rows of the result stream.
+///
+/// The windows are then merged where they meet, so a stretch of conversation
+/// containing several hits prints once rather than once per hit. Printing each
+/// window whole would repeat those messages and, worse, disguise the fact that
+/// the hits were all the same exchange.
+///
+/// Nothing here narrows the window the way the search was narrowed. `--from`,
+/// `--since` and the body match all bound what counts as a hit; a window is a
+/// slice of the conversation around one, so it holds whatever was actually said
+/// — including tapbacks, which the search itself can never return and which are
+/// frequently the entire reply.
+pub fn with_context(
+    db: &Connection,
+    hits: Vec<Message>,
+    context: Context,
+    contacts: &ContactIndex,
+) -> Result<Vec<Message>> {
+    // A width is a count of messages, and a negative count is not a smaller
+    // window but a larger one: it reaches SQLite as `LIMIT -1`, which means no
+    // limit, so the whole conversation before each hit would be fetched and
+    // decoded. The CLI cannot produce one, but the daemon takes these off a
+    // socket, and clamping here covers every caller rather than the one path
+    // that happens to be untrusted today.
+    let context = Context {
+        before: context.before.max(0),
+        after: context.after.max(0),
+    };
+    if !context.wanted() || hits.is_empty() {
+        return Ok(hits);
+    }
+
+    // Which messages matched, decided once and up front.
+    //
+    // Stamping it per window instead is what made a later hit lose its marker:
+    // it arrives twice, as context around an earlier hit and as itself, and
+    // whichever copy the merge happened to keep decided the answer. A message
+    // is a hit because the search returned it, not because of which window it
+    // reached the run through.
+    let matched: BTreeSet<i64> = hits.iter().map(|hit| hit.rowid).collect();
+
+    let mut windows: BTreeMap<i64, Vec<Window>> = BTreeMap::new();
+    for hit in hits {
+        let chat_id = hit.chat_id;
+        let rowid = hit.rowid;
+        let around = |options: FetchMessages<'_>| -> Result<Vec<Message>> {
+            fetch_messages(
+                db,
+                &FetchMessages {
+                    chat_id: Some(chat_id),
+                    limit: options.limit,
+                    after_rowid: options.after_rowid,
+                    before_rowid: options.before_rowid,
+                    oldest_first: options.oldest_first,
+                    // A conversation is what was said in it.
+                    include_tapbacks: true,
+                    include_filtered: true,
+                    ..Default::default()
+                },
+                contacts,
+            )
+        };
+
+        // Taken newest-first so the `LIMIT` keeps the nearest ones rather than
+        // the oldest in the conversation; `fetch_messages` turns them back into
+        // reading order on the way out, as it does for every other caller.
+        let earlier = around(FetchMessages {
+            before_rowid: Some(rowid),
+            limit: context.before,
+            ..Default::default()
+        })?;
+
+        // One more than will be shown, for `reach`.
+        let mut later = around(FetchMessages {
+            after_rowid: Some(rowid),
+            limit: context.after.saturating_add(1),
+            oldest_first: true,
+            ..Default::default()
+        })?;
+        let probe = if i64::try_from(later.len()).unwrap_or(i64::MAX) > context.after {
+            later.pop().map(|message| message.rowid)
+        } else {
+            None
+        };
+
+        let mut messages = earlier;
+        messages.push(hit);
+        messages.extend(later);
+        let reach = probe.unwrap_or_else(|| messages.last().map_or(rowid, |last| last.rowid));
+        windows
+            .entry(chat_id)
+            .or_default()
+            .push(Window { messages, reach });
+    }
+
+    // Merge within each conversation, then order the runs the way the messages
+    // themselves are ordered, so the output reads oldest-first as it always has.
+    let mut runs: Vec<Vec<Message>> = Vec::new();
+    for (_, mut chat_windows) in windows {
+        chat_windows.sort_by_key(|window| window.messages.first().map_or(0, |first| first.rowid));
+        let mut open: Option<(Vec<Message>, i64)> = None;
+        for window in chat_windows {
+            let starts = window.messages.first().map_or(0, |first| first.rowid);
+            match &mut open {
+                // Touching counts, not only overlapping: `reach` is one past the
+                // run's last shown message, so a window starting at or before it
+                // has nothing between the two.
+                Some((run, reach)) if starts <= *reach => {
+                    let known: BTreeSet<i64> = run.iter().map(|message| message.rowid).collect();
+                    run.extend(
+                        window
+                            .messages
+                            .into_iter()
+                            .filter(|message| !known.contains(&message.rowid)),
+                    );
+                    run.sort_by_key(|message| message.rowid);
+                    *reach = (*reach).max(window.reach);
+                }
+                _ => {
+                    if let Some((run, _)) = open.take() {
+                        runs.push(run);
+                    }
+                    open = Some((window.messages, window.reach));
+                }
+            }
+        }
+        if let Some((run, _)) = open.take() {
+            runs.push(run);
+        }
+    }
+
+    runs.sort_by_key(|run| run.first().map_or(0, |first| first.rowid));
+    let mut out = Vec::new();
+    for (group, run) in runs.into_iter().enumerate() {
+        let group = i64::try_from(group).unwrap_or(i64::MAX);
+        for mut message in run {
+            message.matched = matched.contains(&message.rowid);
+            message.group = Some(group);
+            out.push(message);
+        }
+    }
+    Ok(out)
 }
 
 /// One person, and every address Messages knows them by.
@@ -821,6 +1024,11 @@ pub struct FetchMessages<'a> {
     pub chat_id: Option<i64>,
     pub after_date: Option<i64>,
     pub after_rowid: Option<i64>,
+    /// Stop below this rowid, for the half of a context window that reaches
+    /// backwards. Setting it also orders by rowid rather than by date, since a
+    /// window is "what came just before this in the conversation" and that is
+    /// arrival order — the same argument the watcher already makes.
+    pub before_rowid: Option<i64>,
     pub query: Option<&'a str>,
     /// Restrict to one person, across every conversation they appear in.
     pub person: Option<PersonFilter<'a>>,
@@ -842,6 +1050,7 @@ impl Default for FetchMessages<'_> {
             chat_id: None,
             after_date: None,
             after_rowid: None,
+            before_rowid: None,
             query: None,
             person: None,
             limit: 50,
@@ -897,9 +1106,25 @@ pub fn fetch_messages(
         clauses.push("message.date > ?".into());
         params.push(after_date.into());
     }
+    // Bounded against `chat_message_join.message_id` rather than
+    // `message.rowid` whenever a chat is named, though the two hold the same
+    // number. `chat_message_join` is keyed by (chat_id, message_id), so this
+    // shape is an index range scan; the other one makes SQLite walk message
+    // rowids and discard everything belonging to other conversations, which for
+    // a quiet chat means thousands of rows to find three. Measured at ~100ms
+    // per window against a real database before this, and unmeasurable after.
+    let ordinal = if options.chat_id.is_some() {
+        "chat_message_join.message_id"
+    } else {
+        "message.rowid"
+    };
     if let Some(after_rowid) = options.after_rowid {
-        clauses.push("message.rowid > ?".into());
+        clauses.push(format!("{ordinal} > ?"));
         params.push(after_rowid.into());
+    }
+    if let Some(before_rowid) = options.before_rowid {
+        clauses.push(format!("{ordinal} < ?"));
+        params.push(before_rowid.into());
     }
     if !options.include_tapbacks {
         clauses.push("message.associated_message_type = 0".into());
@@ -965,9 +1190,14 @@ pub fn fetch_messages(
     // Ordering by rowid rather than date when taking the oldest: a watcher walks
     // rowids, and the two orders disagree for messages that arrive out of order.
     let order = if options.oldest_first {
-        "ORDER BY message.rowid ASC"
+        format!("ORDER BY {ordinal} ASC")
+    } else if options.before_rowid.is_some() {
+        // The messages immediately before a hit are the largest rowids below
+        // it, and taking them by date would pick the wrong ones whenever the
+        // two orders disagree.
+        format!("ORDER BY {ordinal} DESC")
     } else {
-        "ORDER BY message.date DESC"
+        "ORDER BY message.date DESC".to_string()
     };
     let sql = format!("SELECT {MESSAGE_COLUMNS} {MESSAGE_FROM} {where_clause} {order} LIMIT ?");
     let mut statement = db.prepare(&sql)?;
@@ -1749,6 +1979,310 @@ mod tests {
         )
         .unwrap();
         assert_eq!(messages.len(), 1);
+    }
+
+    /// A conversation long enough to have a middle, so a window has something
+    /// to reach in both directions.
+    fn talkative(db: &Connection) -> i64 {
+        let chat = one_to_one(db, 4, "+16175550147");
+        for n in 0..12 {
+            message_in(db, chat, 100 + n, 10 + n);
+        }
+        // The hit sits in the middle, with room either side.
+        db.execute(
+            "UPDATE message SET text = 'the needle' WHERE rowid = 106",
+            [],
+        )
+        .unwrap();
+        chat
+    }
+
+    fn found(db: &Connection, context: Context) -> Vec<Message> {
+        let hits = fetch_messages(
+            db,
+            &FetchMessages {
+                query: Some("needle"),
+                ..Default::default()
+            },
+            &ContactIndex::empty(),
+        )
+        .unwrap();
+        with_context(db, hits, context, &ContactIndex::empty()).unwrap()
+    }
+
+    /// A window reaches both ways, in conversation order, and says which line
+    /// was the hit.
+    #[test]
+    fn a_hit_comes_back_inside_its_conversation() {
+        let db = fixture();
+        talkative(&db);
+
+        let out = found(
+            &db,
+            Context {
+                before: 2,
+                after: 3,
+            },
+        );
+        let rowids: Vec<i64> = out.iter().map(|message| message.rowid).collect();
+        assert_eq!(rowids, [104, 105, 106, 107, 108, 109], "{rowids:?}");
+
+        // Exactly one of them is the hit, and it is the one that matched.
+        let hits: Vec<i64> = out
+            .iter()
+            .filter(|message| message.matched)
+            .map(|message| message.rowid)
+            .collect();
+        assert_eq!(hits, [106]);
+        // All one run, since there is only one hit.
+        assert!(out.iter().all(|message| message.group == Some(0)));
+    }
+
+    /// Asking for no context leaves the answer exactly as it was, which is what
+    /// lets the JSON stay byte-identical for every caller that never asks.
+    #[test]
+    fn no_context_asked_for_changes_nothing() {
+        let db = fixture();
+        talkative(&db);
+
+        let out = found(&db, Context::default());
+        assert_eq!(out.len(), 1);
+        assert!(out[0].matched && out[0].group.is_none());
+    }
+
+    /// A window is a slice of the conversation, not a continuation of the
+    /// filter — so it holds what a search can never return.
+    #[test]
+    fn a_window_holds_what_the_search_itself_would_not() {
+        let db = fixture();
+        let chat = talkative(&db);
+        // A reaction to the message right after the hit.
+        db.execute(
+            "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
+                 associated_message_type, date, service)
+             VALUES (200, 'react', 'Liked \"the needle\"', 0, 4, 2000, ?, 'iMessage')",
+            [at(23)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (?, 200, ?)",
+            rusqlite::params![chat, at(23)],
+        )
+        .unwrap();
+
+        // A tapback can never be a hit...
+        let bare = found(&db, Context::default());
+        assert_eq!(bare.len(), 1, "{bare:?}");
+
+        // ...and is still context, because it is often the whole reply.
+        let out = found(
+            &db,
+            Context {
+                before: 0,
+                after: 8,
+            },
+        );
+        assert!(
+            out.iter().any(|message| message.rowid == 200),
+            "{:?}",
+            out.iter().map(|m| m.rowid).collect::<Vec<_>>()
+        );
+    }
+
+    /// Two hits close together are one stretch of conversation, and print once.
+    ///
+    /// Printing a window each would repeat the messages between them and read
+    /// as though the exchange happened twice.
+    #[test]
+    fn windows_that_meet_become_one_run() {
+        let db = fixture();
+        talkative(&db);
+        db.execute(
+            "UPDATE message SET text = 'the needle' WHERE rowid = 109",
+            [],
+        )
+        .unwrap();
+
+        // 106 and 109, with two either side: 104-108 and 107-111 overlap.
+        let out = found(
+            &db,
+            Context {
+                before: 2,
+                after: 2,
+            },
+        );
+        let rowids: Vec<i64> = out.iter().map(|message| message.rowid).collect();
+        assert_eq!(
+            rowids,
+            [104, 105, 106, 107, 108, 109, 110, 111],
+            "{rowids:?}"
+        );
+        // Nothing repeated, and all of it one run.
+        assert!(out.iter().all(|message| message.group == Some(0)));
+
+        let hits: Vec<i64> = out
+            .iter()
+            .filter(|message| message.matched)
+            .map(|message| message.rowid)
+            .collect();
+        assert_eq!(hits, [106, 109]);
+    }
+
+    /// A negative width asks for nothing, not for everything.
+    ///
+    /// The CLI cannot send one — `counted` refuses it — but the daemon takes
+    /// these off a socket from a client that need not hold Full Disk Access,
+    /// which makes them the one input here not already checked by the binary
+    /// that produced it. Unclamped, `limit: -1` reaches SQLite as `LIMIT -1`,
+    /// which means no limit at all, and the whole conversation is fetched and
+    /// decoded once per hit.
+    #[test]
+    fn a_negative_width_is_no_window_rather_than_the_whole_chat() {
+        let db = fixture();
+        talkative(&db);
+
+        let out = found(
+            &db,
+            Context {
+                before: -1,
+                after: 1,
+            },
+        );
+        let rowids: Vec<i64> = out.iter().map(|message| message.rowid).collect();
+        assert_eq!(rowids, [106, 107], "{rowids:?}");
+    }
+
+    /// A hit inside another hit's window is still a hit.
+    ///
+    /// The case `-C` exists for — several hits in one exchange — and the one
+    /// where the marker is easiest to lose, because the later hit arrives twice:
+    /// once as context around the earlier one, once as itself. Whichever copy
+    /// survives the merge has to be the one that says it matched.
+    #[test]
+    fn a_hit_inside_another_hits_window_keeps_its_marker() {
+        let db = fixture();
+        talkative(&db);
+        db.execute(
+            "UPDATE message SET text = 'the needle' WHERE rowid = 107",
+            [],
+        )
+        .unwrap();
+
+        let out = found(
+            &db,
+            Context {
+                before: 2,
+                after: 2,
+            },
+        );
+        let rowids: Vec<i64> = out.iter().map(|message| message.rowid).collect();
+        assert_eq!(rowids, [104, 105, 106, 107, 108, 109], "{rowids:?}");
+
+        let hits: Vec<i64> = out
+            .iter()
+            .filter(|message| message.matched)
+            .map(|message| message.rowid)
+            .collect();
+        assert_eq!(hits, [106, 107], "{hits:?}");
+    }
+
+    /// Touching counts as meeting, not only overlapping.
+    ///
+    /// With one either side, 106 reaches 107 and 109 reaches 108 — the two
+    /// windows share no message but leave no gap, so they are one stretch of
+    /// conversation and a separator between them would be a lie.
+    #[test]
+    fn windows_that_only_touch_become_one_run() {
+        let db = fixture();
+        talkative(&db);
+        db.execute(
+            "UPDATE message SET text = 'the needle' WHERE rowid = 109",
+            [],
+        )
+        .unwrap();
+
+        let out = found(
+            &db,
+            Context {
+                before: 1,
+                after: 1,
+            },
+        );
+        let rowids: Vec<i64> = out.iter().map(|message| message.rowid).collect();
+        assert_eq!(rowids, [105, 106, 107, 108, 109, 110], "{rowids:?}");
+        assert!(out.iter().all(|message| message.group == Some(0)));
+    }
+
+    /// And a real gap stays a gap, or the separator would mean nothing.
+    #[test]
+    fn windows_with_a_gap_stay_separate_runs() {
+        let db = fixture();
+        talkative(&db);
+        db.execute(
+            "UPDATE message SET text = 'the needle' WHERE rowid = 111",
+            [],
+        )
+        .unwrap();
+
+        // 106 reaches 107, 111 reaches back to 110: 108 and 109 sit between.
+        // 111 is the last message there is, so its run has no forward half.
+        let out = found(
+            &db,
+            Context {
+                before: 1,
+                after: 1,
+            },
+        );
+        let rowids: Vec<i64> = out.iter().map(|message| message.rowid).collect();
+        assert_eq!(rowids, [105, 106, 107, 110, 111], "{rowids:?}");
+        let groups: Vec<Option<i64>> = out.iter().map(|message| message.group).collect();
+        assert_eq!(
+            groups,
+            [Some(0), Some(0), Some(0), Some(1), Some(1)],
+            "{rowids:?}"
+        );
+    }
+
+    /// A window belongs to its own conversation. Two hits in two chats have
+    /// nothing to do with each other, however close their rowids happen to be.
+    #[test]
+    fn a_window_never_reaches_into_another_conversation() {
+        let db = fixture();
+        let chat = talkative(&db);
+        let other = one_to_one(&db, 5, "+16175550148");
+        // Interleaved rowids, so a window that ignored the chat would grab them.
+        for n in 0..4 {
+            message_in(&db, other, 300 + n, 40 + n);
+        }
+        db.execute(
+            "UPDATE message SET text = 'the needle' WHERE rowid = 301",
+            [],
+        )
+        .unwrap();
+
+        let out = found(
+            &db,
+            Context {
+                before: 9,
+                after: 9,
+            },
+        );
+        let strayed: Vec<i64> = out
+            .iter()
+            .filter(|message| message.chat_id != chat && message.chat_id != other)
+            .map(|message| message.rowid)
+            .collect();
+        assert!(strayed.is_empty(), "{strayed:?}");
+
+        // Each conversation's run holds only its own messages.
+        for group in [Some(0), Some(1)] {
+            let chats: BTreeSet<i64> = out
+                .iter()
+                .filter(|message| message.group == group)
+                .map(|message| message.chat_id)
+                .collect();
+            assert_eq!(chats.len(), 1, "run {group:?} spans {chats:?}");
+        }
     }
 
     #[test]
@@ -3281,6 +3815,35 @@ mod tests {
                 .collect::<Vec<_>>(),
             [1, 2]
         );
+    }
+
+    /// The two new fields are invisible until context is asked for.
+    ///
+    /// That is the whole of what keeps this change from reaching consumers who
+    /// never wanted it: a hit is a hit by default, so `matched` is omitted, and
+    /// `group` exists only once there are runs to belong to.
+    #[test]
+    fn context_fields_stay_out_of_the_json_until_they_mean_something() {
+        let db = fixture();
+        talkative(&db);
+
+        let bare = serde_json::to_value(found(&db, Context::default())).unwrap();
+        assert!(bare[0].get("matched").is_none(), "{bare}");
+        assert!(bare[0].get("group").is_none(), "{bare}");
+
+        let with = serde_json::to_value(found(
+            &db,
+            Context {
+                before: 1,
+                after: 0,
+            },
+        ))
+        .unwrap();
+        // Context says so; the hit still says nothing, exactly as before.
+        assert_eq!(with[0]["matched"], serde_json::json!(false), "{with}");
+        assert_eq!(with[0]["group"], serde_json::json!(0), "{with}");
+        assert!(with[1].get("matched").is_none(), "{with}");
+        assert_eq!(with[1]["group"], serde_json::json!(0), "{with}");
     }
 
     /// The wire format is the seam the TypeScript client still reads
