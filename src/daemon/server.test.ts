@@ -107,6 +107,27 @@ async function ask(message: Request): Promise<unknown> {
   return request(socket, message);
 }
 
+/**
+ * One request, one frame back, undecoded.
+ *
+ * `request` raises an error frame as a `DaemonError`, which is right for the
+ * CLI and wrong for asserting on the frame itself.
+ */
+async function raw(message: Request): Promise<unknown> {
+  const line = await new Promise<string>((resolve, reject) => {
+    const socket = connect(socketPath, () => {
+      socket.write(encode({ ...message, v: PROTOCOL_VERSION }));
+    });
+    const reader = createInterface({ input: socket, crlfDelay: Infinity });
+    reader.once('line', (value: string) => {
+      socket.destroy();
+      resolve(value);
+    });
+    socket.once('error', reject);
+  });
+  return JSON.parse(line);
+}
+
 describe('chats', () => {
   it('lists conversations and hides the filtered ones', async () => {
     const chats = (await ask({ cmd: 'chats', names: false })) as Chat[];
@@ -247,6 +268,21 @@ describe('protocol', () => {
     const frame = JSON.parse(reply) as { type: string; code: string };
     expect(frame.type).toBe('error');
     expect(frame.code).toBe('version');
+  });
+
+  // A daemon older than a command does not reject it: its switch runs off the
+  // end and answers `result` with no value, which the CLI reads a field off and
+  // crashes on. The version check is what prevents that, so adding a request
+  // means bumping the version — and this is the backstop for forgetting to.
+  it('refuses a command it does not know rather than answering nothing', async () => {
+    const frame = (await raw({ cmd: 'nonesuch' } as never)) as {
+      type: string;
+      code: string;
+      message: string;
+    };
+    expect(frame.type).toBe('error');
+    expect(frame.code).toBe('error');
+    expect(frame.message).toMatch(/does not understand/);
   });
 });
 

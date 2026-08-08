@@ -415,6 +415,17 @@ export class Daemon {
         };
         return reply;
       }
+      default: {
+        // Unreachable for a client of the same version, and the whole point:
+        // without this the switch runs off the end and answers `result` with no
+        // value, which the caller reads a field off and crashes on. The version
+        // check should have caught it first; this is what makes forgetting to
+        // bump it a clear error rather than a TypeError in the CLI.
+        const { cmd } = request as { cmd: string };
+        throw new Error(
+          `msgd does not understand \`${cmd}\`. Reinstall it with \`msg daemon install\`.`,
+        );
+      }
     }
   }
 

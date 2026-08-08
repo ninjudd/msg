@@ -218,8 +218,12 @@ export function install(source = builtBundle()): Installed {
  */
 export function describeSignature(text: string): string {
   if (/flags=[^\s]*adhoc/.test(text)) return 'ad-hoc';
-  const authority = /Authority=(.+)/.exec(text);
-  if (authority?.[1] !== undefined) return authority[1].trim();
+  // The first Authority line is the leaf, which is the certificate the grant is
+  // anchored to. `(unavailable)` is codesign's placeholder for a chain it could
+  // not build — what any machine holding the bundle but not the signing key
+  // reports — and repeating it back says less than "signed" does.
+  const authority = /^Authority=(.+)$/m.exec(text)?.[1]?.trim();
+  if (authority !== undefined && authority !== '(unavailable)') return authority;
   return /^Signature size=/m.test(text) ? 'signed' : 'unsigned';
 }
 

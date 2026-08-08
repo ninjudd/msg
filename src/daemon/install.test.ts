@@ -91,6 +91,28 @@ describe('describeSignature', () => {
   it('reports an unsigned binary as unsigned', () => {
     expect(describeSignature('Identifier=x\nFormat=Mach-O thin (arm64)\n')).toBe('unsigned');
   });
+
+  // What `--verbose=2` prints on a machine holding the bundle but not the key
+  // it was signed with. Returning the placeholder reports `signed (unavailable)`
+  // where the certificate name belongs, and says less than "signed" alone.
+  it('ignores the placeholder codesign prints for a chain it cannot build', () => {
+    expect(
+      describeSignature('Identifier=com.ninjudd.msgd\nSignature size=1660\nAuthority=(unavailable)\n'),
+    ).toBe('signed');
+  });
+
+  it('takes the leaf when a full chain is printed', () => {
+    expect(
+      describeSignature(
+        [
+          'Signature size=4813',
+          'Authority=Developer ID Application: Someone (ABCDE12345)',
+          'Authority=Developer ID Certification Authority',
+          'Authority=Apple Root CA',
+        ].join('\n'),
+      ),
+    ).toBe('Developer ID Application: Someone (ABCDE12345)');
+  });
 });
 
 describe('daemon environment', () => {

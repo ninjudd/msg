@@ -373,6 +373,12 @@ daemon
   .description('check whether macOS lets the daemon drive Messages, sending nothing')
   .option('--settings', 'open the pane holding the switch')
   .action(async (opts: { settings?: boolean }) => {
+    // Before the probe, not after it. The grant outlives the daemon, so the
+    // case where someone most wants to revoke it — daemon stopped or
+    // uninstalled, permission still granted — is exactly the case where the
+    // probe fails and anything after it never runs.
+    if (opts.settings === true) openAutomation();
+
     await withSource(async (source) => {
       const reply = await source.automation();
       process.stdout.write(
@@ -390,7 +396,6 @@ daemon
       } else if (reply.allowed) {
         process.stdout.write('\nmacOS would allow a send; the config is what is refusing it.\n');
       }
-      if (opts.settings === true) openAutomation();
     });
   });
 
