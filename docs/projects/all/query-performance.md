@@ -11,7 +11,8 @@ records what was done and what it cost. §8 corrects a claim §7 made about earl
 exit that turned out to be false when measured, and §9 is the plan that replaces
 it. **§10 matters most: every measurement before it timed a predicate that was
 not actually searching message bodies.** Read it before trusting any number
-above. §11 is the limit bug that fixing the predicate exposed.
+above. §11 is the limit bug that fixing the predicate exposed, and §12 is the
+case folding it got wrong for anything outside ASCII.
 
 Nothing here was a regression from [the Rust rewrite](rust-rewrite.md): the same
 numbers came out of the TypeScript build, and that work simply removed
@@ -247,7 +248,8 @@ never case sensitivity, it was that one predicate read the whole blob and the
 other did not.
 
 The fix is a scalar function registered on the connection, `msg_body_has(text,
-attributedBody, needle)`, doing a case-insensitive byte scan in Rust. Sound
+attributedBody, needle)`, doing a case-insensitive byte scan in Rust — a byte
+scan only for ASCII needles, as §12 goes on to correct. Sound
 rather than approximate: the decoder reads a slice of those same bytes as UTF-8,
 so anything surviving into the decoded body is present in the blob, which makes
 this a superset of what the decoded filter accepts — what a prefilter has to be.
@@ -294,3 +296,36 @@ is flat in the limit again.
 A cursor would beat all three, continuing from the oldest row already seen rather
 than re-reading from the top. That is §9's windowing, and it is the reason to
 build it.
+
+## 12 Case is a property of characters, not of bytes
+
+§10's byte scan folded case a byte at a time, which is only case folding inside
+ASCII: `É` and `é` differ in both of their bytes, so `café` did not find `CAFÉ`.
+Worse than a missing convenience, because this is the prefilter — a row it
+rejects never reaches the decoded filter, which folds properly and would have
+accepted it. The two disagreed, and the stricter one ran first.
+
+They cannot disagree now, because they are one function: the decode-and-check
+calls the same predicate the SQL prefilter does, differing only in what it is
+handed. A needle outside ASCII decodes the blob and folds per character. Since
+the framing between the text is not valid UTF-8 and text never spans it, each
+valid run is searched on its own and the framing never matches.
+
+An ASCII needle keeps the byte scan, which is why the common case did not get
+slower. Lowercasing an ASCII character never leaves ASCII, so only an ASCII
+character can match one — near enough: `K` U+212A lowercases to `k`, and that
+curiosity is knowingly not found.
+
+| Needle | Cost |
+| --- | --- |
+| ASCII, matching | 2.15s |
+| ASCII, matching nothing | 2.05s |
+| Outside ASCII | 4.15s |
+
+The ASCII rows are the 2.4s §11 measured, within noise, so the common search did
+not get slower. A needle outside ASCII costs roughly twice that, and only
+searches that need decoding pay it. Left there deliberately: the exact
+alternative is a reverse fold table, and an approximate one is a second predicate
+that disagrees with the first, which is the bug this section is about. If that
+4.15s ever matters, [search-index.md §7](search-index.md) is the decision to
+revisit rather than this scan to sharpen.
