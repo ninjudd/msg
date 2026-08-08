@@ -137,10 +137,11 @@ changes.
 Rendered output prints no rowid — `--json` has them, but a person reading a
 transcript has nothing to type. Attachments met exactly this and answered it by
 printing the id in the description, which is what made `msg save` usable at all
-([attachments.md §4](attachments.md)). The same answer fits here and costs almost nothing: the
-`↳ replying to …` line is the one line that exists *only* on replies, so putting
-the originator's rowid in it adds nothing to the 99% of messages that are not
-replies, and a thread would announce its own handle wherever one is visible.
+([attachments.md §4](attachments.md)). The same answer fits here and costs
+almost nothing: the `↳ replying to …` line is the one line that exists *only* on
+replies, so putting the originator's rowid in it adds nothing to the 99% of
+messages that are not replies, and a thread would announce its own handle
+wherever one is visible.
 
 That is the piece to build first if this is ever picked up — the command is
 straightforward and unusable without it.
