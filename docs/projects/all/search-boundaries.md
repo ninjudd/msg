@@ -62,9 +62,21 @@ check — and it is not a contrived body, being §1's noise example and §1's re
 example in the same message, which is what a conversation about one subject
 actually looks like.
 
-`run_contains` already has the right shape to carry this: it scans
-`haystack.char_indices().any(...)`, so the boundary test belongs inside that
-`any`, not in a wrapper around a single found position.
+Both existing scans already have the right shape to carry this — each is an
+`any` over candidate positions, so the boundary test belongs inside that `any`
+rather than in a wrapper around one found position.
+
+**It has to go in both of them, and the ASCII one is the one that matters.**
+`contains_ignoring_case` returns early for an ASCII needle, into
+`contains_ignoring_ascii_case`; only a needle that leaves ASCII reaches
+`run_contains`. Every needle in this document — `art`, `start`, `starting`,
+`apartment`, `ing` — is ASCII and takes the early return, so a rule implemented
+only in `run_contains` would be inert for all of them, and inert in a way none
+of the four cases above would catch, since those needles are ASCII too. Measured
+rather than read: with a marker in `run_contains`, the existing suite reaches it
+for `café`, `zürich`, and `É` and for no ASCII needle at all.
+
+§3 says how to keep that from being two places the rule can drift apart.
 
 ## 3 It has to run on the decoded body, not the blob
 
@@ -103,10 +115,23 @@ nothing in the tree yields an occurrence offset — so there is no match positio
 for a caller to look before, and the rule cannot be applied by wrapping the
 existing call. The decoded side needs a boundary-aware variant of the predicate
 itself, after which the two call sites call different functions rather than the
-same one twice. Design that variant's signature once, here: §7 asks that a
-future chat-name version share one predicate rather than grow a second
-definition of what a word start is, and that is a constraint on this function's
-shape.
+same one twice.
+
+**It takes `&str`, and that is the whole point of the signature.** The
+paragraph above is a precondition, not a nicety: the rule needs the character
+before an occurrence, which exists only where the haystack is known to be UTF-8.
+Taking `&str` makes that a type rather than a comment the next reader has to
+find. It also settles §2's split cleanly — inside a `&str` the ASCII fast path
+goes back to being a pure optimisation over the same rule, rather than one of two
+branches the boundary logic has to be kept in step across. The byte-offset
+detail follows from it too: `contains_ignoring_ascii_case` scans
+`haystack.windows(..)` and so yields a byte offset, where the preceding
+character is `body[..at].chars().next_back()` — well defined on a `&str` and
+meaningless on the blob.
+
+Design that signature once, here: §7 asks that a future chat-name version share
+one predicate rather than grow a second definition of what a word start is, and
+that is a constraint on this function's shape.
 
 ## 4 What counts as a word character
 
