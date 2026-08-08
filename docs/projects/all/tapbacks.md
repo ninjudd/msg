@@ -146,8 +146,15 @@ the symbol deliberately: a consumer that wants Messages' own glyphs, or wants to
 count Love separately from a heart emoji, should not have to re-derive it from a
 string this program chose.
 
-The protocol version bumps. **`search-context.md` also bumps it** — whichever
-lands second takes the next number, and neither should assume 7.
+The protocol version bumps. **[search-context](search-context.md) also bumps
+it** — whichever lands second takes the next number, and neither should assume
+7.
+
+The link points that way round on purpose. That plan is the base this one is
+stacked on, so it merges first and its file is always already there; a link from
+it to this one would resolve to nothing for the whole interval between the two
+merges. A forward reference from a base to its child is the one direction
+ordering cannot make safe.
 
 ## 8 Slices
 
