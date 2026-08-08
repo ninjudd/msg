@@ -326,7 +326,14 @@ impl Frame {
 
     pub fn from_error(error: &crate::Error) -> Self {
         let (code, message) = match error {
-            crate::Error::AccessDenied(_) => (ErrorCode::AccessDenied, DENIED.to_string()),
+            // The message is kept rather than replaced. It used to be swapped
+            // for `DENIED` because the only denial that reached here was about
+            // `chat.db`, and the words it carried were aimed at a CLI without a
+            // daemon. Now a refused *attachment* can reach here too, and telling
+            // that caller the database is unreadable is untrue — the daemon just
+            // read it to resolve the rowid — and names a remedy that would not
+            // touch a per-file refusal. `open_database` puts `DENIED` in itself.
+            crate::Error::AccessDenied(message) => (ErrorCode::AccessDenied, message.clone()),
             crate::Error::SendDisabled(message) => (ErrorCode::SendDisabled, message.clone()),
             crate::Error::Other(message) => (ErrorCode::Error, message.clone()),
         };

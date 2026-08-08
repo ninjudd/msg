@@ -326,8 +326,19 @@ pub fn open_database(path: Option<&str>, allow_snapshot: bool) -> Result<Connect
         Ok(db) => Ok(db),
         Err(error) => {
             let text = error.to_string();
+            // Whose advice this is depends on who is denied. `allow_snapshot`
+            // is the daemon's tell — it is the one caller that has no snapshot
+            // to fall back on — and telling a daemon to install a daemon helps
+            // nobody. Put the right words in here rather than substituting them
+            // on the way out: the wire now carries whatever an `AccessDenied`
+            // was given, so this is the only place that decides.
+            let denied = if allow_snapshot {
+                denied_message(&location)
+            } else {
+                crate::daemon::protocol::DENIED.to_string()
+            };
             if reads_as_permission(&text) {
-                return Err(Error::AccessDenied(denied_message(&location)));
+                return Err(Error::AccessDenied(denied));
             }
             if !allow_snapshot {
                 // TCC denial reaches us as SQLite's "unable to open database
@@ -335,10 +346,7 @@ pub fn open_database(path: Option<&str>, allow_snapshot: bool) -> Result<Connect
                 // log. The CLI resolves that ambiguity by trying a snapshot; a
                 // daemon has no snapshot to fall back to, so for it the answer
                 // is always the permission.
-                return Err(Error::AccessDenied(format!(
-                    "{}\n\n{text}",
-                    denied_message(&location)
-                )));
+                return Err(Error::AccessDenied(format!("{denied}\n\n{text}")));
             }
             open_snapshot(&location)
         }

@@ -799,18 +799,74 @@ fn an_attachment_it_may_not_read_is_not_reported_as_missing() {
 
     let stream = UnixStream::connect(&harness.socket).unwrap();
     let error = msg::daemon::client::save(stream, &SaveRequest { id: 92 }, |_| Ok(())).unwrap_err();
+    let said = error.to_string();
     assert!(
-        !error.to_string().contains("gone"),
-        "a refused file is not a missing one: {error}"
+        !said.contains("gone"),
+        "a refused file is not a missing one: {said}"
     );
     // Exit 2 is the documented "the data is there, the grant is not".
     assert!(
         matches!(error, msg::Error::AccessDenied(_)),
         "{error:?} should be AccessDenied"
     );
+    // What the caller is *told*, not only which variant was raised. Both
+    // assertions above pass on a message that never mentions the attachment,
+    // which is how a wire that replaced the words with a fixed sentence about
+    // the database went unnoticed.
+    assert!(said.contains("92"), "should name the attachment: {said}");
+    assert!(
+        !said.contains("cannot read the Messages database"),
+        "msgd read the database to resolve the rowid, so this is untrue: {said}"
+    );
 
     std::fs::set_permissions(
         &refused,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .unwrap();
+}
+
+/// A daemon that cannot open the database still says the right thing.
+///
+/// The wire used to substitute a fixed sentence for every `AccessDenied`, and
+/// that substitution is what kept this text correct. Now `open_database` puts it
+/// in directly, so this is the assertion holding it in place: the daemon must
+/// not tell a client to "install the daemon", which is the wording the CLI uses
+/// when *it* is the one refused.
+#[test]
+fn a_daemon_that_cannot_read_the_database_says_so_in_its_own_words() {
+    let directory = msg::db::temporary_directory("msg-denied-").unwrap();
+    let database = directory.join("chat.db");
+    build_fixture(&database);
+    std::fs::set_permissions(
+        &database,
+        std::os::unix::fs::PermissionsExt::from_mode(0o000),
+    )
+    .unwrap();
+
+    let socket = directory.join("msgd.sock");
+    let daemon = Daemon::new(DaemonOptions {
+        db_path: Some(database.to_string_lossy().into_owned()),
+        config_path: Some(directory.join("config-that-does-not-exist.toml")),
+    });
+    daemon.listen(Some(socket.clone())).unwrap();
+
+    let stream = UnixStream::connect(&socket).unwrap();
+    let error = request(stream, &Request::Chats(ChatsRequest::default()))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("Grant Full Disk Access to msgd"),
+        "the daemon's own advice: {error}"
+    );
+    assert!(
+        !error.contains("Install the daemon"),
+        "that is the CLI's advice, not the daemon's: {error}"
+    );
+
+    std::fs::set_permissions(
+        &database,
         std::os::unix::fs::PermissionsExt::from_mode(0o600),
     )
     .unwrap();
