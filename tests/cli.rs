@@ -419,3 +419,27 @@ fn it_reports_an_attachment_whose_file_is_gone() {
     // Nothing at all should be left in the destination.
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
 }
+
+/// An explicit zero beats `-C`, the way it does in grep.
+///
+/// `-C 2 -B 0` asks for two messages after each hit and none before, and the
+/// difference between "not given" and "given as zero" is the whole of what
+/// makes that expressible.
+#[test]
+fn an_explicit_zero_width_beats_the_shorthand() {
+    let output = msg(&["--no-names", "search", "after 6", "-C", "1", "-B", "0"]);
+    assert_eq!(code(&output), 0);
+    let text = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = text.lines().collect();
+
+    // The hit and the one after it, and nothing before.
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(
+        lines[0].starts_with("> ") && lines[0].contains("after 6"),
+        "{text}"
+    );
+    assert!(
+        lines[1].starts_with("  ") && lines[1].contains("works, see"),
+        "{text}"
+    );
+}

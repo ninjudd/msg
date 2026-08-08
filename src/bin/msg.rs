@@ -98,14 +98,14 @@ enum Command {
         #[arg(long)]
         since: Option<String>,
         /// show this many messages after each hit
-        #[arg(short = 'A', long, default_value_t = 0, value_parser = counted)]
-        after: i64,
+        #[arg(short = 'A', long, value_parser = counted)]
+        after: Option<i64>,
         /// show this many messages before each hit
-        #[arg(short = 'B', long, default_value_t = 0, value_parser = counted)]
-        before: i64,
+        #[arg(short = 'B', long, value_parser = counted)]
+        before: Option<i64>,
         /// show this many on both sides of each hit
-        #[arg(short = 'C', long, default_value_t = 0, value_parser = counted)]
-        context: i64,
+        #[arg(short = 'C', long, value_parser = counted)]
+        context: Option<i64>,
         #[arg(long)]
         json: bool,
     },
@@ -312,10 +312,13 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
             context,
             json,
         } => {
-            // `-C` is shorthand for both, and loses to either given outright.
+            // `-C` is shorthand for both, and loses to either given outright —
+            // including `-B 0`, which grep honours and which a count alone
+            // cannot express, since an unset flag and an explicit zero are the
+            // same number. Absence is what tells them apart.
             let around = msg::db::Context {
-                before: if *before > 0 { *before } else { *context },
-                after: if *after > 0 { *after } else { *context },
+                before: before.or(*context).unwrap_or(0),
+                after: after.or(*context).unwrap_or(0),
             };
             let messages = source.search(&SearchQuery {
                 query: query.clone(),
