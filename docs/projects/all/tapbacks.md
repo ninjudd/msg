@@ -26,8 +26,15 @@ is never read. That column is the whole feature.
 ## 2 What the database actually holds
 
 Measured through the daemon across the 25 most recent conversations: 8,165
-messages, of which 622 are tapbacks. Types paired with the verb Messages
-synthesizes into the body, which is what identifies each one.
+messages, of which **626 carry a nonzero `associated_message_type`** — which is
+the whole of what `is_tapback` means today — and **622 fall in the 2000 and 3000
+ranges**. Every other figure in this plan counts the 622. The four type 1000
+rows are in the table and outside that total, because nothing yet identifies
+them (§9); they are tapbacks by the program's definition and not by any
+definition this plan can act on.
+
+Types paired with the verb Messages synthesizes into the body, which is what
+identifies each one.
 
 | Type | Verb observed | Count | Meaning |
 | --- | --- | --- | --- |
@@ -40,7 +47,7 @@ synthesizes into the body, which is what identifies each one.
 | 2006 | `Reacted <emoji> to`, and two more shapes | 44 | arbitrary emoji |
 | 3000 | `Removed a heart from` | 2 | loved, taken back |
 | 3003 | `Removed a laugh from` | 1 | laughed, taken back |
-| 1000 | no quoted target | 4 | unidentified, see §9 |
+| 1000 | no quoted target | 4 | unidentified, see §9 — *outside the 622* |
 
 ## 3 Three things that measurement settles
 
@@ -183,8 +190,17 @@ characters stripped.
 plausible stored form is part-prefixed — `p:0/<guid>` — and a join written as
 `= message.guid` would then match nothing while looking correct, silently
 shipping a feature that renders no brackets on a machine whose data is fine.
-`threading.md §2` compared the two columns and found them equal 71 times, which
-says they are comparable but not that they are identical in form.
+The evidence available is weaker than a direct measurement, and worth stating as
+what it is. `threading.md §2` never compared `associated_message_guid` against
+`message.guid`; it compared it against `reply_to_guid`, to establish something
+else. What can be inferred from there: `reply_to_guid` resolves to a real
+message 117,452 times out of 117,577, so it is in `message.guid`'s form, and
+`associated_message_guid` equals it in 71 rows — so in at least those 71 rows
+`associated_message_guid` is bare too.
+
+That attests the bare form and says nothing about whether the part-prefixed form
+also occurs. A sample of 71 out of 622 is a reason to expect the join to work
+sometimes, which is the worst way for it to fail.
 
 **What is type 1000?** Four rows, no quoted target, excluded by the `!= 0` test
 today and so already invisible. Most likely a sticker placed on a message rather
