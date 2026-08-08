@@ -666,15 +666,13 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
 
     let lowered = trimmed.to_lowercase();
     let wanted_key = crate::contacts::handle_key(trimmed);
-    let hit = |handle: &str, contact: Option<&Contact>| {
-        // An address given outright matches on the same key the contact index
-        // uses, so the shape it was typed in does not matter.
-        if let (Some(wanted), Some(key)) =
-            (wanted_key.as_ref(), crate::contacts::handle_key(handle))
-            && *wanted == key
-        {
-            return true;
-        }
+    // An address given outright matches on the same key the contact index uses,
+    // so the shape it was typed in does not matter.
+    let exactly = |handle: &str| match (wanted_key.as_ref(), crate::contacts::handle_key(handle)) {
+        (Some(wanted), Some(key)) => *wanted == key,
+        _ => false,
+    };
+    let loosely = |handle: &str, contact: Option<&Contact>| {
         contact.is_some_and(|contact| contact.name.to_lowercase().contains(&lowered))
             || handle.to_lowercase().contains(&lowered)
     };
@@ -689,11 +687,24 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
         ),
     };
 
-    let matched: BTreeSet<String> = known
-        .iter()
-        .filter(|(_, handle, contact)| hit(handle, contact.as_ref()))
-        .map(|(_, handle, contact)| identity(handle, contact.as_ref()))
-        .collect();
+    let owners = |pick: &dyn Fn(&str, Option<&Contact>) -> bool| -> BTreeSet<String> {
+        known
+            .iter()
+            .filter(|(_, handle, contact)| pick(handle, contact.as_ref()))
+            .map(|(_, handle, contact)| identity(handle, contact.as_ref()))
+            .collect()
+    };
+
+    // An address typed in full names one person outright, and only when none
+    // does is the spec read as a fragment to search for. Otherwise an address
+    // that happens to read as part of a longer one — `someone@example.com`
+    // inside `notsomeone@example.com` — drags a stranger in and turns naming
+    // somebody exactly into an ambiguity, which is the opposite of what naming
+    // an address is for.
+    let mut matched = owners(&|handle, _| exactly(handle));
+    if matched.is_empty() {
+        matched = owners(&loosely);
+    }
 
     let mut people: BTreeMap<String, Person> = BTreeMap::new();
     for (rowid, handle, contact) in &known {
@@ -1140,6 +1151,44 @@ mod tests {
                 "resolving {spec}"
             );
         }
+    }
+
+    /// An address names one person outright, even when a longer address
+    /// contains it.
+    ///
+    /// `someone@example.com` reads as part of `notsomeone@example.com`, so the
+    /// substring arm matched a second, unrelated contact and naming somebody
+    /// exactly came back as an ambiguity. Nothing could recover it either: the
+    /// tie-break after it compares *display names* against what was typed, and
+    /// no name equals an email address. That contradicts the README, which says
+    /// to name an address when a name is ambiguous.
+    #[test]
+    fn an_address_typed_in_full_beats_a_longer_one_containing_it() {
+        let db = fixture();
+        db.execute(
+            "INSERT INTO handle (rowid, id) VALUES (3, 'notsomeone@example.com')",
+            [],
+        )
+        .unwrap();
+        let contacts = ContactIndex::for_test([
+            ("someone@example.com", "source:7", "Sam Rivera"),
+            ("notsomeone@example.com", "source:9", "Kit Alvarez"),
+        ]);
+
+        let person = resolve_person(&db, "someone@example.com", &contacts).unwrap();
+        assert_eq!(person.name, "Sam Rivera", "{person:?}");
+        assert_eq!(person.handles, ["someone@example.com"], "{person:?}");
+
+        // The longer address is still reachable, and reaches only itself.
+        let other = resolve_person(&db, "notsomeone@example.com", &contacts).unwrap();
+        assert_eq!(other.name, "Kit Alvarez", "{other:?}");
+        assert_eq!(other.handles, ["notsomeone@example.com"], "{other:?}");
+
+        // A fragment of an address is still a fragment, and still ambiguous.
+        let error = resolve_person(&db, "example.com", &contacts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 people match"), "{error}");
     }
 
     /// Two people can answer to one name, and a rendered name is not an identity.
