@@ -204,8 +204,9 @@ denominator to put them over: what would make them a fraction is the number of
 rows database-wide with `associated_message_guid` set, which nothing has
 measured. Scaling this plan's own sample is only an order of magnitude — 757,842
 messages against the 8,165 sampled is a factor of about 93, so roughly 58,000
-tapbacks if the rate holds, and the 25 most recent conversations are if anything
-busier than average, which makes that a floor.
+tapbacks if the rate holds — and the sample is the 25 most recent conversations,
+so it is uncertain in size and in direction. Nothing here turns on which way it
+errs.
 
 So 71 attested rows against an unmeasured but far larger number is thin. Thin
 enough that a join working on some rows and not others is the expected outcome
