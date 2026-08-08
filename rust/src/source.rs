@@ -1,0 +1,358 @@
+//! Where the CLI gets its data.
+//!
+//! The daemon when one is listening, the database directly when it is not. The
+//! fallback is deliberate: without it, a machine that has not installed the
+//! daemon has no working `msg` at all, and a denied read is the first thing a
+//! new user meets.
+
+use std::time::Duration;
+
+use rusqlite::Connection;
+
+use crate::apple::since_to_apple_date;
+use crate::contacts::{ContactIndex, load_contacts};
+use crate::daemon::client::{connect_daemon, request, watch};
+use crate::daemon::protocol::{
+    AutomationReply, ChatsRequest, ContactsReply, ContactsRequest, Empty, ReadReply, ReadRequest,
+    Request, ResolveRequest, ResolvedHandle, SearchRequest, SendReply, SendRequest, StatusReply,
+    WatchRequest,
+};
+use crate::db::{
+    Chat, FetchMessages, Message, fetch_chats, fetch_messages, latest_rowid, open_database,
+    resolve_chat,
+};
+use crate::{Error, Result};
+
+/// How many new messages one poll of the direct path will report.
+const WATCH_BATCH: i64 = 200;
+
+pub struct ChatsQuery {
+    pub query: Option<String>,
+    pub limit: i64,
+    pub unknown: bool,
+    pub names: bool,
+}
+
+pub struct ReadQuery {
+    pub chat: String,
+    pub limit: i64,
+    pub since: Option<String>,
+    pub tapbacks: bool,
+    pub names: bool,
+}
+
+pub struct SearchQuery {
+    pub query: String,
+    pub chat: Option<String>,
+    pub limit: i64,
+    pub since: Option<String>,
+    pub unknown: bool,
+    pub names: bool,
+}
+
+pub struct WatchQuery {
+    pub chat: Option<String>,
+    pub tapbacks: bool,
+    pub unknown: bool,
+    pub names: bool,
+    /// Poll frequency for the direct path. The daemon has its own tick.
+    pub interval: u64,
+}
+
+pub struct SendQuery {
+    pub chat: String,
+    pub body: Option<String>,
+    /// Bytes rather than a path: the daemon never reads a path a client named (§6).
+    pub file: Option<crate::daemon::protocol::Attachment>,
+    pub names: bool,
+}
+
+/// Which end answered, which `msg daemon status` and the tests both care about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Daemon,
+    Direct,
+}
+
+pub struct Source {
+    kind: Kind,
+    db_path: Option<String>,
+    db: Option<Connection>,
+    contacts: Option<ContactIndex>,
+}
+
+/// `--db` names a path, so it is answered locally and never sent to the daemon
+/// (§6). `MSG_DB` is documented as `--db` by another name, so it has to steer
+/// the same way: without this, pointing it at a fixture while a daemon is
+/// listening would read the real database instead, the opposite of what it is
+/// for.
+pub fn open_source(db: Option<String>) -> Source {
+    let db_path = db.or_else(|| std::env::var("MSG_DB").ok().filter(|v| !v.is_empty()));
+    let kind = if db_path.is_some() {
+        Kind::Direct
+    } else if connect_daemon(None).is_some() {
+        Kind::Daemon
+    } else {
+        Kind::Direct
+    };
+    Source {
+        kind,
+        db_path,
+        db: None,
+        contacts: None,
+    }
+}
+
+fn call(message: &Request) -> Result<serde_json::Value> {
+    let stream = connect_daemon(None)
+        .ok_or_else(|| Error::other("msgd stopped listening; try `msg daemon status`"))?;
+    request(stream, message)
+}
+
+/// Ask the daemon how it is doing, or `None` when it is not listening.
+pub fn daemon_status() -> Result<Option<StatusReply>> {
+    let Some(stream) = connect_daemon(None) else {
+        return Ok(None);
+    };
+    let value = request(stream, &Request::Status(Empty {}))?;
+    Ok(Some(serde_json::from_value(value)?))
+}
+
+impl Source {
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
+    /// The index and the connection, borrowed together — the borrow checker
+    /// will not hand out both through separate `&mut self` calls.
+    fn parts(&mut self, wanted: bool) -> Result<(&Connection, &ContactIndex)> {
+        if self.db.is_none() {
+            self.db = Some(open_database(self.db_path.as_deref(), true)?);
+        }
+        if wanted {
+            if self.contacts.is_none() {
+                self.contacts = Some(load_contacts(None));
+            }
+        } else if self.contacts.is_none() {
+            self.contacts = Some(ContactIndex::empty());
+        }
+        Ok((
+            self.db.as_ref().expect("just opened"),
+            self.contacts.as_ref().expect("just loaded"),
+        ))
+    }
+
+    pub fn chats(&mut self, query: &ChatsQuery) -> Result<Vec<Chat>> {
+        if self.kind == Kind::Daemon {
+            let value = call(&Request::Chats(ChatsRequest {
+                query: query.query.clone(),
+                limit: Some(query.limit),
+                unknown: query.unknown.then_some(true),
+                names: (!query.names).then_some(false),
+            }))?;
+            return Ok(serde_json::from_value(value)?);
+        }
+        let unknown = query.unknown;
+        let limit = query.limit;
+        let text = query.query.clone();
+        let (db, contacts) = self.parts(query.names)?;
+        fetch_chats(db, text.as_deref(), limit, contacts, unknown)
+    }
+
+    pub fn read(&mut self, query: &ReadQuery) -> Result<ReadReply> {
+        if self.kind == Kind::Daemon {
+            let value = call(&Request::Read(ReadRequest {
+                chat: query.chat.clone(),
+                limit: Some(query.limit),
+                since: query.since.clone(),
+                tapbacks: query.tapbacks.then_some(true),
+                names: (!query.names).then_some(false),
+            }))?;
+            return Ok(serde_json::from_value(value)?);
+        }
+        let after_date = query
+            .since
+            .as_deref()
+            .map(since_to_apple_date)
+            .transpose()?;
+        let (spec, limit, tapbacks) = (query.chat.clone(), query.limit, query.tapbacks);
+        let (db, contacts) = self.parts(query.names)?;
+        let chat = resolve_chat(db, &spec, contacts)?;
+        let messages = fetch_messages(
+            db,
+            &FetchMessages {
+                chat_id: Some(chat.rowid),
+                after_date,
+                limit,
+                include_tapbacks: tapbacks,
+                ..Default::default()
+            },
+            contacts,
+        )?;
+        Ok(ReadReply { chat, messages })
+    }
+
+    pub fn search(&mut self, query: &SearchQuery) -> Result<Vec<Message>> {
+        if self.kind == Kind::Daemon {
+            let value = call(&Request::Search(SearchRequest {
+                query: query.query.clone(),
+                chat: query.chat.clone(),
+                limit: Some(query.limit),
+                since: query.since.clone(),
+                unknown: query.unknown.then_some(true),
+                names: (!query.names).then_some(false),
+            }))?;
+            return Ok(serde_json::from_value(value)?);
+        }
+        let after_date = query
+            .since
+            .as_deref()
+            .map(since_to_apple_date)
+            .transpose()?;
+        let (text, spec, limit, unknown) = (
+            query.query.clone(),
+            query.chat.clone(),
+            query.limit,
+            query.unknown,
+        );
+        let (db, contacts) = self.parts(query.names)?;
+        let chat_id = spec
+            .as_deref()
+            .map(|spec| resolve_chat(db, spec, contacts).map(|chat| chat.rowid))
+            .transpose()?;
+        fetch_messages(
+            db,
+            &FetchMessages {
+                query: Some(&text),
+                chat_id,
+                after_date,
+                limit,
+                include_filtered: unknown,
+                ..Default::default()
+            },
+            contacts,
+        )
+    }
+
+    pub fn resolve(&mut self, chat: &str, names: bool) -> Result<Chat> {
+        if self.kind == Kind::Daemon {
+            let value = call(&Request::Resolve(ResolveRequest {
+                chat: chat.to_string(),
+                names: (!names).then_some(false),
+            }))?;
+            return Ok(serde_json::from_value(value)?);
+        }
+        let spec = chat.to_string();
+        let (db, contacts) = self.parts(names)?;
+        resolve_chat(db, &spec, contacts)
+    }
+
+    pub fn contacts(&mut self, handles: &[String]) -> Result<ContactsReply> {
+        if self.kind == Kind::Daemon {
+            let value = call(&Request::Contacts(ContactsRequest {
+                handles: handles.to_vec(),
+            }))?;
+            return Ok(serde_json::from_value(value)?);
+        }
+        // Loaded here rather than reused: `msg contacts` is the one command
+        // whose whole subject is the index, so it always reads a fresh one.
+        let index = load_contacts(None);
+        Ok(ContactsReply {
+            size: index.len(),
+            resolved: handles
+                .iter()
+                .map(|handle| ResolvedHandle {
+                    handle: handle.clone(),
+                    name: index.lookup(Some(handle)).map(str::to_string),
+                })
+                .collect(),
+        })
+    }
+
+    /// Sending needs Automation, and the CLI deliberately no longer asks for it.
+    /// A gate the sending process enforces on itself is not a gate, so the only
+    /// way to send is through a daemon macOS has been told may drive Messages
+    /// (§7).
+    pub fn send(&mut self, query: &SendQuery) -> Result<SendReply> {
+        if self.kind != Kind::Daemon {
+            return Err(Error::other(
+                "sending needs the daemon, which holds the Automation permission.\n\
+                 Install it with `msg daemon install`.",
+            ));
+        }
+        let value = call(&Request::Send(SendRequest {
+            chat: query.chat.clone(),
+            body: query.body.clone(),
+            file: query.file.clone(),
+            names: (!query.names).then_some(false),
+        }))?;
+        Ok(serde_json::from_value(value)?)
+    }
+
+    pub fn automation(&mut self) -> Result<AutomationReply> {
+        if self.kind != Kind::Daemon {
+            return Err(Error::other(
+                "the Automation permission belongs to the daemon, which is not running.\n\
+                 Install it with `msg daemon install`.",
+            ));
+        }
+        Ok(serde_json::from_value(call(&Request::Automation(
+            Empty {},
+        ))?)?)
+    }
+
+    pub fn watch(
+        &mut self,
+        query: &WatchQuery,
+        mut on_message: impl FnMut(&Message) -> Result<()>,
+    ) -> Result<()> {
+        if self.kind == Kind::Daemon {
+            let stream = connect_daemon(None)
+                .ok_or_else(|| Error::other("msgd stopped listening; try `msg daemon status`"))?;
+            return watch(
+                stream,
+                &WatchRequest {
+                    chat: query.chat.clone(),
+                    tapbacks: query.tapbacks.then_some(true),
+                    unknown: query.unknown.then_some(true),
+                    names: (!query.names).then_some(false),
+                },
+                |value| on_message(&serde_json::from_value::<Message>(value)?),
+            );
+        }
+
+        let (spec, tapbacks, unknown, interval) = (
+            query.chat.clone(),
+            query.tapbacks,
+            query.unknown,
+            query.interval,
+        );
+        let (db, contacts) = self.parts(query.names)?;
+        let chat_id = spec
+            .as_deref()
+            .map(|spec| resolve_chat(db, spec, contacts).map(|chat| chat.rowid))
+            .transpose()?;
+        let mut watermark = latest_rowid(db)?;
+
+        loop {
+            let messages = fetch_messages(
+                db,
+                &FetchMessages {
+                    chat_id,
+                    after_rowid: Some(watermark),
+                    limit: WATCH_BATCH,
+                    include_tapbacks: tapbacks,
+                    include_filtered: unknown,
+                    oldest_first: true,
+                    ..Default::default()
+                },
+                contacts,
+            )?;
+            for message in &messages {
+                watermark = watermark.max(message.rowid);
+                on_message(message)?;
+            }
+            std::thread::sleep(Duration::from_secs(interval));
+        }
+    }
+}

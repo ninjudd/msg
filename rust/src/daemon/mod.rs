@@ -8,6 +8,7 @@
 
 pub mod client;
 pub mod config;
+pub mod install;
 pub mod protocol;
 pub mod send;
 pub mod server;

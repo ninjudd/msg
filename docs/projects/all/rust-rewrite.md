@@ -269,3 +269,49 @@ still passes.
 carries it instead, alongside the database path, which is the same
 "the daemon's own environment, never a client" category. The test suite asserts
 the gate is shut rather than assuming it.
+
+**§5.5 and most of §5.6 are done: rendering, `source.rs`, the `clap` CLI, and
+`install.rs`.** Both binaries build — `msg` at 3.0MB and `msgd` at 2.4MB against
+the 116MB Node SEA each replaces.
+
+The check was every combination that exists while both builds do. Sixteen
+commands were run through six paths — each CLI against each daemon, and each CLI
+reading the database directly — and five of the six are byte-identical to the
+TypeScript-through-TypeScript baseline, 159 lines each.
+
+The sixth, the TypeScript CLI talking to the Rust daemon, differs in one way:
+`serde_json` sorts object keys, so a `--json` payload that the TypeScript client
+re-serialises comes out alphabetical rather than in field order. Normalising key
+order makes it identical too. This is not worth a dependency to fix
+(`preserve_order` pulls in `indexmap` for cosmetics) and it disappears with the
+TypeScript: a Rust CLI parses into the struct and prints in field order, which
+is why the other five paths match exactly. Worth recording only so the next
+person who diffs them is not surprised.
+
+`watch` was checked separately across all three of its paths — Rust CLI to Rust
+daemon, Rust CLI to TypeScript daemon, and Rust CLI direct — and all three
+deliver an identical frame for a message inserted while they were listening.
+That the Rust *client* satisfies the TypeScript *daemon* is §4's other
+direction, and closes it.
+
+**Two behaviour changes, both deliberate:**
+
+- **Timestamps are English.** `Intl.DateTimeFormat` rendered `9:35 AM` and
+  `Jan 15, 9:36 AM` in the system locale. There is no ICU here and it is not
+  worth 10MB for two format strings, so they are fixed. Identical on this
+  machine; English on a machine set to something else.
+- **Column widths count characters, not UTF-16 units.** `String.length` measured
+  `café` as four and an emoji as two, so a conversation named with either was
+  padded wrong. Rust would additionally have panicked slicing mid-character, so
+  this had to be decided rather than inherited.
+
+**Exit status 2 was nearly lost.** The README documents 2 as "the data is there,
+the grant is not" and tells people to branch on it. `clap` exits 2 for a usage
+error by default, so `-n 0` would have claimed the permission status. Usage
+errors are forced to 1, matching commander, and `tests/cli.rs` pins both that
+and the permission path — including the case that broke once before, where a
+readable-but-refused database raised a raw errno instead of the explanation.
+
+**`built_bundle()` changed meaning.** It resolved from the source file's own URL,
+which only made sense inside a checkout. A shipped `msg` has no checkout, so the
+bundle now travels beside the binary and `--from` names it otherwise.

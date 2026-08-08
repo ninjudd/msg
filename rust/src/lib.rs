@@ -10,6 +10,8 @@ pub mod apple;
 pub mod contacts;
 pub mod daemon;
 pub mod db;
+pub mod format;
+pub mod source;
 
 /// One version string, shared by the CLI, the daemon, and their handshake.
 pub const VERSION: &str = "0.1.0";
