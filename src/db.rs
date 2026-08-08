@@ -487,6 +487,31 @@ fn attachments_for(db: &Connection, rowids: &[i64]) -> Result<BTreeMap<i64, Vec<
     Ok(found)
 }
 
+/// Why one attachment could not be opened, told apart rather than guessed at.
+///
+/// "Gone" is a diagnosis, and `File::open` fails for more than one reason. A
+/// permission error is the opposite of a missing file — it is there and this
+/// process may not have it — and reporting it as absence sends a reader looking
+/// for the wrong thing. It also has to exit 2 rather than 1, which is the
+/// documented "the data is there, the grant is not".
+///
+/// Not a first-run problem: a database this program cannot read at all becomes
+/// `AccessDenied` in `open_database` long before anything asks for an
+/// attachment. This is the per-file case, which the daemon can meet while
+/// holding the grant — see daemon-and-permissions.md §12 for the time it did.
+pub fn unreadable(id: i64, error: &std::io::Error) -> Error {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        return Error::AccessDenied(format!(
+            "attachment {id} is there, but reading it was refused ({error})"
+        ));
+    }
+    // Messages purges files behind its own back, so a missing one is a normal
+    // state rather than a broken database.
+    Error::other(format!(
+        "attachment {id} is recorded but its file is gone ({error})"
+    ))
+}
+
 /// Where one attachment's bytes are, by rowid.
 ///
 /// This is the only function that turns an identifier into a path, and it goes
@@ -500,7 +525,8 @@ fn attachments_for(db: &Connection, rowids: &[i64]) -> Result<BTreeMap<i64, Vec<
 pub fn attachment_path(db: &Connection, rowid: i64) -> Result<(PathBuf, Attachment)> {
     let mut statement = db.prepare(
         "SELECT ROWID AS rowid, transfer_name AS name, mime_type AS mimeType,
-                total_bytes AS totalBytes, is_sticker AS isSticker, filename AS filename
+                uti AS uti, total_bytes AS totalBytes, is_sticker AS isSticker,
+                filename AS filename
            FROM attachment WHERE ROWID = ?",
     )?;
     let mut rows = statement.query([rowid])?;
@@ -513,6 +539,7 @@ pub fn attachment_path(db: &Connection, rowid: i64) -> Result<(PathBuf, Attachme
         rowid: number(row, "rowid"),
         name: text(row, "name"),
         mime_type: text(row, "mimeType"),
+        uti: text(row, "uti"),
         total_bytes: number(row, "totalBytes"),
         is_sticker: number(row, "isSticker") == 1,
         is_downloaded: filename.is_some(),

@@ -25,7 +25,7 @@ use crate::daemon::protocol::{
 use crate::daemon::send::{check_automation, send_attachment, send_message};
 use crate::db::{
     Chat, FetchMessages, Message, PersonFilter, database_path, fetch_chats, fetch_messages,
-    latest_rowid, open_database, person_filter, resolve_chat,
+    latest_rowid, open_database, person_filter, resolve_chat, unreadable,
 };
 use crate::{Error, Result, VERSION};
 
@@ -542,13 +542,7 @@ fn stream_attachment(shared: &Arc<Shared>, stream: &UnixStream, id: i64) -> Resu
     };
 
     let result = (|| -> Result<i64> {
-        let mut file = std::fs::File::open(&path).map_err(|error| {
-            // The row said there was a file. Messages purges them behind its own
-            // back, so this is a normal state rather than a broken database.
-            Error::other(format!(
-                "attachment {id} is recorded but its file is gone ({error})"
-            ))
-        })?;
+        let mut file = std::fs::File::open(&path).map_err(|error| unreadable(id, &error))?;
         write_frame(
             stream,
             &Frame::item(&SavePart::Head {

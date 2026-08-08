@@ -161,7 +161,11 @@ pub struct SaveRequest {
 /// again in the client. `Head` arrives first, then `Chunk` until the file is
 /// done, so peak memory is one chunk rather than one file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "part", rename_all = "camelCase")]
+#[serde(
+    tag = "part",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SavePart {
     Head {
         name: String,

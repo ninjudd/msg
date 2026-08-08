@@ -714,17 +714,21 @@ fn it_streams_an_attachment_larger_than_one_chunk() {
 
     let stream = UnixStream::connect(&harness.socket).unwrap();
     let mut head = None;
+    let mut chunks = 0usize;
     let mut written: Vec<u8> = Vec::new();
     let reply = msg::daemon::client::save(stream, &SaveRequest { id: 91 }, |part| {
         match part {
             SavePart::Head {
                 name, total_bytes, ..
             } => head = Some((name, total_bytes)),
-            SavePart::Chunk { base64 } => written.extend_from_slice(
-                &base64::engine::general_purpose::STANDARD
-                    .decode(base64)
-                    .unwrap(),
-            ),
+            SavePart::Chunk { base64 } => {
+                chunks += 1;
+                written.extend_from_slice(
+                    &base64::engine::general_purpose::STANDARD
+                        .decode(base64)
+                        .unwrap(),
+                );
+            }
         }
         Ok(())
     })
@@ -734,8 +738,11 @@ fn it_streams_an_attachment_larger_than_one_chunk() {
     assert_eq!(reply.bytes, payload.len() as i64);
     assert_eq!(written.len(), payload.len(), "wrong number of bytes");
     assert!(written == payload, "bytes differ");
-    // More than one chunk actually crossed the wire, or this proved nothing.
-    assert!(payload.len() > 4 * 1024 * 1024);
+    // Counted rather than inferred from the payload size, which is two
+    // constants agreeing with each other. Raising the chunk size to 16MB would
+    // leave every other assertion here passing while the chunked path stopped
+    // being exercised at all.
+    assert!(chunks >= 3, "{chunks} chunks crossed the wire");
 }
 
 /// An id that is not there is an error, not an empty file.
@@ -747,4 +754,64 @@ fn it_refuses_an_attachment_id_that_does_not_exist() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("no attachment 999999"), "{error}");
+}
+
+/// Protocol 5 should spell a field one way, not two.
+///
+/// `rename_all` on an enum renames its *variants*; the fields inside a struct
+/// variant need `rename_all_fields`. Both ends here are the same Rust type, so
+/// nothing breaks either way and only a look at the wire catches it.
+#[test]
+fn a_save_frame_spells_its_fields_the_way_every_other_frame_does() {
+    let head = serde_json::to_value(SavePart::Head {
+        name: "a.png".into(),
+        mime_type: Some("image/png".into()),
+        total_bytes: 7,
+    })
+    .unwrap();
+    assert_eq!(head["part"], serde_json::json!("head"));
+    assert_eq!(head["mimeType"], serde_json::json!("image/png"));
+    assert_eq!(head["totalBytes"], serde_json::json!(7));
+    assert!(head.get("mime_type").is_none(), "{head}");
+    assert!(head.get("total_bytes").is_none(), "{head}");
+}
+
+/// A file that is there and refused is not a file that is gone.
+#[test]
+fn an_attachment_it_may_not_read_is_not_reported_as_missing() {
+    let harness = harness();
+    let refused = harness.directory.join("refused.bin");
+    std::fs::write(&refused, b"secret").unwrap();
+    std::fs::set_permissions(
+        &refused,
+        std::os::unix::fs::PermissionsExt::from_mode(0o000),
+    )
+    .unwrap();
+
+    let db = Connection::open(&harness.database).unwrap();
+    db.execute(
+        "INSERT INTO attachment (ROWID, guid, filename, transfer_name, total_bytes)
+         VALUES (92, 'a92', ?, 'refused.bin', 6)",
+        rusqlite::params![refused.to_string_lossy()],
+    )
+    .unwrap();
+    drop(db);
+
+    let stream = UnixStream::connect(&harness.socket).unwrap();
+    let error = msg::daemon::client::save(stream, &SaveRequest { id: 92 }, |_| Ok(())).unwrap_err();
+    assert!(
+        !error.to_string().contains("gone"),
+        "a refused file is not a missing one: {error}"
+    );
+    // Exit 2 is the documented "the data is there, the grant is not".
+    assert!(
+        matches!(error, msg::Error::AccessDenied(_)),
+        "{error:?} should be AccessDenied"
+    );
+
+    std::fs::set_permissions(
+        &refused,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .unwrap();
 }

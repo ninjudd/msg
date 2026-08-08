@@ -23,7 +23,7 @@ use crate::daemon::protocol::{
 use crate::daemon::send::attachment_name;
 use crate::db::{
     Chat, FetchMessages, Message, PersonFilter, attachment_path, fetch_chats, fetch_messages,
-    latest_rowid, open_database, person_filter, resolve_chat,
+    latest_rowid, open_database, person_filter, resolve_chat, unreadable,
 };
 use crate::{Error, Result};
 
@@ -377,11 +377,7 @@ impl Source {
 
             let (db, _) = self.parts(false)?;
             let (path, attachment) = attachment_path(db, id)?;
-            let mut source = std::fs::File::open(&path).map_err(|error| {
-                Error::other(format!(
-                    "attachment {id} is recorded but its file is gone ({error})"
-                ))
-            })?;
+            let mut source = std::fs::File::open(&path).map_err(|error| unreadable(id, &error))?;
             name = Some(
                 attachment
                     .name
