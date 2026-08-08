@@ -487,12 +487,23 @@ matters because it is the one you have when a nickname is all you remember of
 somebody and the one somebody else would search by.
 
 `msg contacts` shows both, because identifying somebody is its whole job rather
-than a label on something else:
+than a label on something else — and it takes a name as readily as an address,
+since a name is the ordinary way to ask who somebody is:
 
 ```
+$ msg contacts bob
++13105551234        Bob (Robert Chen)
+bob@example.com     Bob (Robert Chen)
+
 $ msg contacts +13105551234
-+13105551234    Bob (Robert Chen)
++13105551234        Bob (Robert Chen)
 ```
+
+A name matches either of somebody's two names, as a substring, so it can reach
+more than one person and lists every address of each. An address given in full
+answers on its own instead — otherwise naming somebody exactly could drag in
+whoever else happens to contain those characters. A term matching nobody is
+echoed back as `(unknown)`.
 
 That is the one place the pair appears. A transcript labelled `Bob (Robert
 Chen)` on every line would be unreadable, and a chat list of them worse.

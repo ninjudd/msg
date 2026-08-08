@@ -489,13 +489,26 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
                 resolved: ask
                     .handles
                     .into_iter()
-                    .map(|handle| {
-                        let contact = index.contact(Some(&handle));
-                        ResolvedHandle {
-                            name: contact.map(|c| c.name.clone()),
-                            filed_as: contact.and_then(|c| c.filed_as.clone()),
-                            handle,
+                    .flat_map(|term| {
+                        let found = index.find(&term);
+                        if found.is_empty() {
+                            // Nothing matched, so the term is echoed back
+                            // unresolved — the same answer an unknown address
+                            // has always given.
+                            return vec![ResolvedHandle {
+                                handle: term,
+                                name: None,
+                                filed_as: None,
+                            }];
                         }
+                        found
+                            .into_iter()
+                            .map(|contact| ResolvedHandle {
+                                handle: contact.handle.clone(),
+                                name: Some(contact.name.clone()),
+                                filed_as: contact.filed_as.clone(),
+                            })
+                            .collect()
                     })
                     .collect(),
             })?)
