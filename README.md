@@ -209,6 +209,9 @@ too, so a window on a hit near that boundary reaches back past it. And a window
 holds reactions even though a search can never match one, because `Liked "see
 you at 8"` is frequently the entire reply.
 
+`-C` is shorthand for both sides and loses to either given outright, including
+zero — `-C 2 -B 0` is two messages after each hit and none before, as in grep.
+
 `-n` still counts hits, not printed lines, so `-n 25 -C 5` is twenty-five
 matches and however many messages that comes to. `--json` carries the same as
 `matched: false` on context messages and a `group` number per run; a search
