@@ -510,26 +510,64 @@ pub fn fetch_messages(
     } else {
         "ORDER BY message.date DESC"
     };
-    params.push(options.limit.into());
-
     let sql = format!("SELECT {MESSAGE_COLUMNS} {MESSAGE_FROM} {where_clause} {order} LIMIT ?");
     let mut statement = db.prepare(&sql)?;
-    let mut rows = statement.query(params_from_iter(params))?;
 
-    let mut messages = Vec::new();
-    while let Some(row) = rows.next()? {
-        messages.push(to_message(row, contacts));
-    }
+    // Ask for more than was wanted when the first answer came up short.
+    //
+    // The `LIMIT` bounds *raw* matches, and the decode below then drops the ones
+    // where the needle was in the archive metadata rather than in the visible
+    // body. So asking for 100 could return 99 while hundreds more matched: one
+    // false positive inside the limit cost a real result instead of being
+    // replaced by the next one. Fetching wider and trimming afterwards is what
+    // makes the limit mean "up to this many matches" rather than "this many
+    // candidates, minus however many were wrong".
+    // The first ask is already generous, because a wider `LIMIT` is close to
+    // free and a second pass is not. There is no early exit — §8 of
+    // query-performance.md measured a tenfold limit costing the same — so the
+    // scan dominates either way, and re-running it to recover from a handful of
+    // false positives roughly doubles the query. Over-fetching once instead
+    // keeps almost every search to a single pass.
+    let wanted = usize::try_from(options.limit).unwrap_or(usize::MAX);
+    let mut asking = if options.query.is_some() {
+        options.limit.saturating_mul(4).saturating_add(64)
+    } else {
+        options.limit
+    };
+    let mut messages;
+    loop {
+        let mut round = params.clone();
+        round.push(asking.into());
+        let mut rows = statement.query(params_from_iter(round))?;
 
-    if let Some(query) = options.query {
-        let needle = query.to_lowercase();
-        messages.retain(|message| {
-            message
-                .body
-                .as_ref()
-                .is_some_and(|body| body.to_lowercase().contains(&needle))
-        });
+        let mut candidates = Vec::new();
+        while let Some(row) = rows.next()? {
+            candidates.push(to_message(row, contacts));
+        }
+        let exhausted = i64::try_from(candidates.len()).unwrap_or(i64::MAX) < asking;
+
+        messages = candidates;
+        if let Some(query) = options.query {
+            let needle = query.to_lowercase();
+            messages.retain(|message| {
+                message
+                    .body
+                    .as_ref()
+                    .is_some_and(|body| body.to_lowercase().contains(&needle))
+            });
+        }
+
+        // Nothing was dropped, or there is nothing further back to find. The
+        // second is what stops this looping forever on a genuinely short result.
+        if messages.len() >= wanted || exhausted || options.query.is_none() {
+            break;
+        }
+        let Some(wider) = asking.checked_mul(4) else {
+            break;
+        };
+        asking = wider;
     }
+    messages.truncate(wanted);
     if !options.oldest_first {
         messages.reverse();
     }
@@ -1375,6 +1413,88 @@ mod tests {
             .unwrap();
             assert_eq!(bodies(&hit), ["pinball tonight"], "searching {needle}");
         }
+    }
+
+    /// A limit means "up to this many matches", not "this many candidates minus
+    /// however many turned out to be metadata hits".
+    ///
+    /// The blob here contains the needle only in an archived class name, so the
+    /// SQL predicate accepts it and the decode rejects it. Before the widening
+    /// retry, one of these inside the limit silently cost a real result.
+    #[test]
+    fn a_false_positive_does_not_eat_one_of_the_results_asked_for() {
+        let db = fixture();
+        let decoy = b"\x04\x0bstreamtyped\x81\xe8\x03NSMutableStringPINBALL\x00\x84\x84";
+        let mut rowid = 100;
+        // Newer than everything real, so they sort first and are seen first.
+        for offset in 0..3 {
+            db.execute(
+                "INSERT INTO message (rowid, guid, text, attributedBody, is_from_me,
+                     handle_id, associated_message_type, date, service)
+                 VALUES (?, ?, NULL, ?, 0, 1, 0, ?, 'iMessage')",
+                rusqlite::params![rowid, format!("d{offset}"), decoy.to_vec(), at(50 + offset)],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+                 VALUES (1, ?, ?)",
+                rusqlite::params![rowid, at(50 + offset)],
+            )
+            .unwrap();
+            rowid += 1;
+        }
+        // Two real ones, older than the decoys.
+        for offset in 0..2 {
+            db.execute(
+                "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
+                     associated_message_type, date, service)
+                 VALUES (?, ?, 'pinball night', 0, 1, 0, ?, 'iMessage')",
+                rusqlite::params![rowid, format!("r{offset}"), at(40 + offset)],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+                 VALUES (1, ?, ?)",
+                rusqlite::params![rowid, at(40 + offset)],
+            )
+            .unwrap();
+            rowid += 1;
+        }
+
+        let found = fetch_messages(
+            &db,
+            &FetchMessages {
+                query: Some("pinball"),
+                limit: 2,
+                ..Default::default()
+            },
+            &ContactIndex::empty(),
+        )
+        .unwrap();
+        // Both real matches, despite three decoys sorting ahead of them.
+        assert_eq!(found.len(), 2, "{:?}", bodies(&found));
+        assert!(
+            found
+                .iter()
+                .all(|m| m.body.as_deref() == Some("pinball night"))
+        );
+    }
+
+    /// The widening retry has to stop when there is genuinely nothing more.
+    #[test]
+    fn asking_for_more_than_exists_stops_rather_than_looping() {
+        let db = fixture();
+        let found = fetch_messages(
+            &db,
+            &FetchMessages {
+                query: Some("deploy"),
+                limit: 10_000,
+                ..Default::default()
+            },
+            &ContactIndex::empty(),
+        )
+        .unwrap();
+        assert_eq!(bodies(&found), ["deploy is green"]);
     }
 
     #[test]

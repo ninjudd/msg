@@ -260,3 +260,31 @@ That last row is the shape of the answer. A person filter rejects rows on an
 integer before the blob is ever read, and it is ten times faster than the
 unscoped search as a result. Narrowing before scanning is what works; §9 does it
 by date, and [search-index.md](search-index.md) removes the scan entirely.
+
+## 11 The limit was under-delivering, not truncating
+
+Fixing the predicate exposed the wart §9 had predicted. `LIMIT` bounds *raw*
+matches and the decode-and-check narrows them afterwards, so a needle found in
+archived metadata rather than in the visible body consumed one of the results
+asked for instead of being replaced by the next real one. Asking for 100 returned
+99 while 247 matched.
+
+The fix is to over-fetch and trim. The first ask is `limit * 4 + 64`, widening
+fourfold if even that comes up short, and stopping when the database returns
+fewer rows than asked — which is what proves there is nothing further back.
+
+Over-fetching on the *first* pass rather than retrying matters, and §8 is why: a
+wider `LIMIT` costs almost nothing because there is no early exit, while a second
+pass re-runs the whole scan. Measured, recovering by retry took `-n 100` from
+1948ms to 5490ms; recovering by asking wide once takes it to 2412ms, and the cost
+is flat in the limit again.
+
+| `-n` | Under-delivering | Retrying | Asking wide once |
+| --- | --- | --- | --- |
+| 100 | 99 results, 1948ms | 100, 5490ms | 100, 2412ms |
+| 247 | — | 247, 4522ms | 247, 2596ms |
+| 1000 | — | 247, 2686ms | 247, 2386ms |
+
+A cursor would beat all three, continuing from the oldest row already seen rather
+than re-reading from the top. That is §9's windowing, and it is the reason to
+build it.
