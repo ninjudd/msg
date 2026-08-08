@@ -858,6 +858,15 @@ pub fn with_context(
         return Ok(hits);
     }
 
+    // Which messages matched, decided once and up front.
+    //
+    // Stamping it per window instead is what made a later hit lose its marker:
+    // it arrives twice, as context around an earlier hit and as itself, and
+    // whichever copy the merge happened to keep decided the answer. A message
+    // is a hit because the search returned it, not because of which window it
+    // reached the run through.
+    let matched: BTreeSet<i64> = hits.iter().map(|hit| hit.rowid).collect();
+
     let mut windows: BTreeMap<i64, Vec<Window>> = BTreeMap::new();
     for hit in hits {
         let chat_id = hit.chat_id;
@@ -905,11 +914,6 @@ pub fn with_context(
         let mut messages = earlier;
         messages.push(hit);
         messages.extend(later);
-        for message in &mut messages {
-            if message.rowid != rowid {
-                message.matched = false;
-            }
-        }
         let reach = probe.unwrap_or_else(|| messages.last().map_or(rowid, |last| last.rowid));
         windows
             .entry(chat_id)
@@ -958,6 +962,7 @@ pub fn with_context(
     for (group, run) in runs.into_iter().enumerate() {
         let group = i64::try_from(group).unwrap_or(i64::MAX);
         for mut message in run {
+            message.matched = matched.contains(&message.rowid);
             message.group = Some(group);
             out.push(message);
         }
@@ -2111,6 +2116,40 @@ mod tests {
             .map(|message| message.rowid)
             .collect();
         assert_eq!(hits, [106, 109]);
+    }
+
+    /// A hit inside another hit's window is still a hit.
+    ///
+    /// The case `-C` exists for — several hits in one exchange — and the one
+    /// where the marker is easiest to lose, because the later hit arrives twice:
+    /// once as context around the earlier one, once as itself. Whichever copy
+    /// survives the merge has to be the one that says it matched.
+    #[test]
+    fn a_hit_inside_another_hits_window_keeps_its_marker() {
+        let db = fixture();
+        talkative(&db);
+        db.execute(
+            "UPDATE message SET text = 'the needle' WHERE rowid = 107",
+            [],
+        )
+        .unwrap();
+
+        let out = found(
+            &db,
+            Context {
+                before: 2,
+                after: 2,
+            },
+        );
+        let rowids: Vec<i64> = out.iter().map(|message| message.rowid).collect();
+        assert_eq!(rowids, [104, 105, 106, 107, 108, 109], "{rowids:?}");
+
+        let hits: Vec<i64> = out
+            .iter()
+            .filter(|message| message.matched)
+            .map(|message| message.rowid)
+            .collect();
+        assert_eq!(hits, [106, 107], "{hits:?}");
     }
 
     /// Touching counts as meeting, not only overlapping.
