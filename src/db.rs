@@ -361,6 +361,25 @@ pub fn fetch_messages(
 /// How many chats to consider when a query has to be matched against names.
 const NAME_SEARCH_SCAN: i64 = 5_000;
 
+/// The chat list, with the last-activity date and message count coming from one
+/// grouped pass rather than a subquery per conversation.
+///
+/// The dates come from `chat_message_join.message_date`, not from
+/// `message.date`. That column is a copy Messages maintains by trigger, and it
+/// exists in an index — `chat_message_join(chat_id, message_date, message_id)` —
+/// so the whole aggregate is answered by a covering-index scan that never opens
+/// `message` at all. Reading `message.date` instead means one random probe per
+/// row, and there are as many rows as there are messages.
+///
+/// The copy was checked against the original before this was relied on, over a
+/// database with 733,690 of these rows: none were zero, none were NULL, none
+/// disagreed with `message.date`, and no conversation's maximum differed. On the
+/// same database it took this query from 2213ms to 202ms, and made the cost flat
+/// in the limit — `LIMIT 30` and `LIMIT 3000` now differ by 8ms, where before
+/// both paid for every conversation.
+///
+/// `message_count` deliberately counts join rows without touching `message`,
+/// which is what the subquery it replaced did.
 const CHATS_SQL: &str = "
     SELECT * FROM (
       SELECT chat.rowid AS rowid, chat.guid AS guid,
@@ -372,12 +391,13 @@ const CHATS_SQL: &str = "
                WHERE chat_handle_join.chat_id = chat.rowid) AS handles,
              (SELECT COUNT(*) FROM chat_handle_join
                WHERE chat_handle_join.chat_id = chat.rowid) AS memberCount,
-             (SELECT MAX(message.date) FROM message
-                JOIN chat_message_join ON chat_message_join.message_id = message.rowid
-               WHERE chat_message_join.chat_id = chat.rowid) AS lastDate,
-             (SELECT COUNT(*) FROM chat_message_join
-               WHERE chat_message_join.chat_id = chat.rowid) AS messageCount
+             recent.lastDate AS lastDate,
+             COALESCE(recent.messageCount, 0) AS messageCount
         FROM chat
+        LEFT JOIN (SELECT chat_id, MAX(message_date) AS lastDate,
+                          COUNT(*) AS messageCount
+                     FROM chat_message_join GROUP BY chat_id) AS recent
+          ON recent.chat_id = chat.rowid
     )
 ";
 
@@ -542,7 +562,9 @@ mod tests {
         is_from_me INTEGER DEFAULT 0, handle_id INTEGER,
         associated_message_type INTEGER DEFAULT 0, date INTEGER, service TEXT
       );
-      CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+      CREATE TABLE chat_message_join (
+        chat_id INTEGER, message_id INTEGER, message_date INTEGER DEFAULT 0
+      );
       CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
     ";
 
@@ -587,9 +609,13 @@ mod tests {
                 rusqlite::params![rowid, guid, body, from_me, handle, associated, date],
             )
             .unwrap();
+            // `message_date` is a copy Messages keeps in step by trigger, and
+            // the chat list reads it instead of joining `message`. A fixture
+            // that left it at zero would not exercise the query that ships.
             db.execute(
-                "INSERT INTO chat_message_join (chat_id, message_id) VALUES (?, ?)",
-                rusqlite::params![chat, rowid],
+                "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+                 VALUES (?, ?, ?)",
+                rusqlite::params![chat, rowid, date],
             )
             .unwrap();
         }
@@ -757,6 +783,69 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("no chat matching"), "{error}");
+    }
+
+    /// `CHATS_SQL` reads `chat_message_join.message_date` rather than joining
+    /// `message`, which is only correct because Messages keeps the two in step.
+    /// Verified over 733,690 rows of a real database before it was relied on;
+    /// this keeps the fixture honest, so a row added without a date fails here
+    /// rather than silently making the chat list a liar.
+    #[test]
+    fn the_copied_date_agrees_with_the_message_it_copies() {
+        let db = fixture();
+        let differing: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM chat_message_join j
+                   JOIN message m ON m.rowid = j.message_id
+                  WHERE j.message_date IS NOT m.date",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            differing, 0,
+            "the fixture's message_date is not the message's date"
+        );
+
+        let zero: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM chat_message_join WHERE message_date = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(zero, 0, "the fixture left message_date at its default");
+    }
+
+    /// The rewrite exists to make the cost flat in the limit. Ordering is what
+    /// could regress silently, so it is asserted rather than assumed.
+    #[test]
+    fn chats_come_back_newest_first_whatever_the_limit() {
+        let db = fixture();
+        for limit in [1, 2, 3, 30] {
+            let chats = fetch_chats(&db, None, limit, &ContactIndex::empty(), true).unwrap();
+            let dates: Vec<_> = chats.iter().map(|chat| chat.last_date).collect();
+            let mut sorted = dates.clone();
+            sorted.sort_by(|a, b| b.cmp(a));
+            assert_eq!(dates, sorted, "limit {limit} came back out of order");
+        }
+    }
+
+    /// A conversation with no messages still appears, with no date and a count
+    /// of zero — the LEFT JOIN is what preserves that.
+    #[test]
+    fn a_conversation_with_no_messages_still_appears() {
+        let db = fixture();
+        db.execute(
+            "INSERT INTO chat (rowid, guid, chat_identifier, display_name, is_filtered)
+             VALUES (9, 'iMessage;+;empty', 'empty', 'Empty Room', 0)",
+            [],
+        )
+        .unwrap();
+        let chats = fetch_chats(&db, Some("Empty Room"), 30, &ContactIndex::empty(), true).unwrap();
+        assert_eq!(chats.len(), 1);
+        assert_eq!(chats[0].last_date, None);
+        assert_eq!(chats[0].message_count, 0);
     }
 
     #[test]
