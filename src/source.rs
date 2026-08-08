@@ -298,10 +298,13 @@ impl Source {
             size: index.len(),
             resolved: handles
                 .iter()
-                .map(|handle| ResolvedHandle {
-                    handle: handle.clone(),
-                    // Both names: this command's job is identification.
-                    name: index.identify(Some(handle)),
+                .map(|handle| {
+                    let contact = index.contact(Some(handle));
+                    ResolvedHandle {
+                        handle: handle.clone(),
+                        name: contact.map(|contact| contact.name.clone()),
+                        filed_as: contact.and_then(|contact| contact.filed_as.clone()),
+                    }
                 })
                 .collect(),
         })

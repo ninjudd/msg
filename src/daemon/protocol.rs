@@ -60,7 +60,14 @@ use crate::db::{Chat, Message};
 /// squash. 5 is already merged and installed, so builds that speak 5 *without*
 /// `replyTo` exist right now. A version names a protocol somebody can speak, and
 /// two of them cannot both be 5.
-pub const PROTOCOL_VERSION: u32 = 6;
+///
+/// 7 added `filedAs` to a resolved handle: the name a Contacts record is filed
+/// under, when a nickname is being shown in its place. A new *reply* field
+/// again, and a stale daemon omitting it is mild — `msg contacts` prints the
+/// name somebody goes by and simply cannot add the other one. It is still a
+/// bump, for the reason 6 was: builds that speak 6 without it are merged and
+/// installed right now, so 6 cannot also name the protocol that has it.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";
@@ -287,9 +294,23 @@ pub struct StatusReply {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// `handle` and `name` are single words and unaffected; this is here so the new
+// field goes out as `filedAs`, matching `mimeType` and `totalBytes` elsewhere.
+#[serde(rename_all = "camelCase")]
 pub struct ResolvedHandle {
     pub handle: String,
+    /// What this person is called: the nickname when Contacts holds one.
     pub name: Option<String>,
+    /// The name their record is filed under, when a nickname displaced it.
+    ///
+    /// Its own field rather than parentheses inside `name`, because a field
+    /// that sometimes holds one name and sometimes holds two is one a consumer
+    /// cannot act on — it would have to parse a format this program invented,
+    /// and that parse breaks the first time a filed name legitimately contains
+    /// a bracket. The CLI composes the two into a line for a person to read;
+    /// nothing on the wire has to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filed_as: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -414,6 +435,35 @@ pub fn is_chat_guid(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A consumer can read the two names apart, which is the whole reason
+    /// `filedAs` is a field instead of parentheses inside `name`.
+    ///
+    /// A field that sometimes holds one name and sometimes holds two can only
+    /// be used by parsing a format this program invented, and that parse breaks
+    /// on the first filed name containing a bracket.
+    #[test]
+    fn a_resolved_handle_keeps_its_two_names_in_two_fields() {
+        let paired = serde_json::to_value(ResolvedHandle {
+            handle: "+13105551234".into(),
+            name: Some("Dee".into()),
+            filed_as: Some("Dana Reyes".into()),
+        })
+        .unwrap();
+        assert_eq!(paired["name"], "Dee");
+        assert_eq!(paired["filedAs"], "Dana Reyes");
+
+        // Nothing displaced: the key is absent rather than null, so a consumer
+        // reading `name` alone sees exactly what it saw before this existed.
+        let bare = serde_json::to_value(ResolvedHandle {
+            handle: "+14155559876".into(),
+            name: Some("Sam Oyelaran".into()),
+            filed_as: None,
+        })
+        .unwrap();
+        assert_eq!(bare["name"], "Sam Oyelaran");
+        assert!(bare.get("filedAs").is_none(), "{bare}");
+    }
 
     #[test]
     fn recognises_the_guids_messages_writes() {

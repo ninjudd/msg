@@ -497,6 +497,10 @@ $ msg contacts +13105551234
 That is the one place the pair appears. A transcript labelled `Bob (Robert
 Chen)` on every line would be unreadable, and a chat list of them worse.
 
+`--json` keeps them apart, as `name` and `filedAs`, and omits `filedAs` when
+nothing was displaced. The line above is composed for a person to read; a
+program should not have to take it apart again.
+
 Both names are matched exactly where a name is matched, and nowhere else. A
 conversation with a name of its own is found by that name rather than by who is
 in it, so a group called Ship Room is not reachable through a member's name or

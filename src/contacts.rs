@@ -125,24 +125,6 @@ impl ContactIndex {
         Some(self.contact(handle)?.name.as_str())
     }
 
-    /// Who a handle belongs to, said in full: the name they go by, and the one
-    /// they are filed under when a nickname displaced it.
-    ///
-    /// Every other rendering shows one name, which is right for a transcript —
-    /// a conversation labelled `Bob (Robert Chen)` on every line would be
-    /// unreadable. `msg contacts` is the exception, because identifying
-    /// somebody is its whole job rather than a label on something else. It is
-    /// the answer to "who is this number", and knowing that Bob is Robert Chen
-    /// is exactly what you need in order to look him up anywhere that is not
-    /// this program.
-    pub fn identify(&self, handle: Option<&str>) -> Option<String> {
-        let contact = self.contact(handle)?;
-        Some(match &contact.filed_as {
-            Some(filed) => format!("{} ({filed})", contact.name),
-            None => contact.name.clone(),
-        })
-    }
-
     /// The whole record, for callers that have to tell two people apart rather
     /// than print one.
     pub fn contact(&self, handle: Option<&str>) -> Option<&Contact> {
@@ -549,28 +531,25 @@ mod tests {
         assert!(named.answers_to("adeyemi"));
     }
 
-    /// Every rendering shows one name; the lookup command shows the pair.
+    /// The pair is two facts and stays two facts.
     ///
-    /// Which is the whole difference between labelling a message and answering
-    /// "who is this". Without it, displacing the filed name would leave no way
-    /// to learn that Dee is Dana Reyes — the thing you need in order to find
-    /// her anywhere outside this program.
+    /// `msg contacts` shows both, but it composes them at the edge. The index
+    /// hands out the shown name and the displaced one separately, because a
+    /// single field holding sometimes one name and sometimes two is one nobody
+    /// downstream can act on without parsing a format this program invented.
     #[test]
-    fn identifying_a_handle_says_both_names_where_naming_one_says_one() {
+    fn keeps_the_shown_name_and_the_filed_one_apart() {
         let index = index().nicknamed("3105551234", "Dee");
 
+        let dee = index.contact(Some("+13105551234")).unwrap();
+        assert_eq!(dee.name, "Dee");
+        assert_eq!(dee.filed_as.as_deref(), Some("Dana Reyes"));
         assert_eq!(index.lookup(Some("+13105551234")), Some("Dee"));
-        assert_eq!(
-            index.identify(Some("+13105551234")).as_deref(),
-            Some("Dee (Dana Reyes)")
-        );
 
-        // Nothing displaced, nothing to add — no empty parentheses.
-        assert_eq!(
-            index.identify(Some("+14155559876")).as_deref(),
-            Some("Sam Oyelaran")
-        );
-        assert_eq!(index.identify(Some("+19998887777")), None);
+        // Nothing displaced, nothing held: no second fact to report.
+        let sam = index.contact(Some("+14155559876")).unwrap();
+        assert_eq!(sam.name, "Sam Oyelaran");
+        assert_eq!(sam.filed_as, None);
     }
 
     #[test]
