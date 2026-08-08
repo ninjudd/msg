@@ -145,6 +145,17 @@ impl ContactIndex {
     /// a person: otherwise a name that happened to read as part of an address
     /// would drag strangers into a question that had exactly one answer.
     ///
+    /// Stated exactly, because the two differ and the difference is visible:
+    /// what wins is a term whose [`handle_key`] is one the index holds, and
+    /// that key is every digit in the term with everything else discarded. So a
+    /// name carrying digits can be read as an address — `R2D2` keys to `22`,
+    /// and someone with a short code saved as `22` would answer a lookup meant
+    /// for a company. Left alone deliberately: two digits colliding with a
+    /// saved short code is plausible and has not been seen, and a guard for an
+    /// unobserved case is untested code implying a problem exists. The shape it
+    /// would take, if one ever turns up, is requiring an `@` or nothing but
+    /// digits and separators before a term counts as an address.
+    ///
     /// Ordered by name and then address, so repeating a lookup repeats its
     /// output. The map underneath is a `HashMap`, whose order is not stable
     /// even within one run.

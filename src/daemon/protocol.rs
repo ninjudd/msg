@@ -67,7 +67,23 @@ use crate::db::{Chat, Message};
 /// name somebody goes by and simply cannot add the other one. It is still a
 /// bump, for the reason 6 was: builds that speak 6 without it are merged and
 /// installed right now, so 6 cannot also name the protocol that has it.
-pub const PROTOCOL_VERSION: u32 = 7;
+///
+/// 8 changed what `contacts` answers without changing the shape it answers in,
+/// which is the case this constant is easiest to forget for. A term may now be
+/// a name or a nickname; it may resolve to several rows rather than exactly
+/// one; and `handle` comes back as the contact's stored address rather than
+/// echoing what was asked. Same three fields, different contract.
+///
+/// It is a bump for the reason 6 was, not the reason `uti` was not: 7 is merged
+/// and installed with the old lookup, so builds answering 7 the old way exist
+/// right now, and two protocols cannot both be 7.
+///
+/// The failure it prevents is the quiet one. The gate compares numbers, so a
+/// new CLI against a 7 daemon would pass it and print `(unknown)` for a name —
+/// which is exactly the symptom this change exists to remove, with nothing
+/// pointing at the daemon as the reason. Being told to reinstall is the whole
+/// value of the number.
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";
