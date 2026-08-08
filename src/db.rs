@@ -51,6 +51,11 @@ pub struct Attachment {
     pub rowid: i64,
     pub name: Option<String>,
     pub mime_type: Option<String>,
+    /// Apple's own type identifier, kept beside `mime_type` rather than folded
+    /// into it. A UTI is not a MIME type, and slice 2 of attachments.md §6
+    /// exists so a consumer can act on this field instead of parsing the body —
+    /// which it cannot do if the field sometimes holds the other thing.
+    pub uti: Option<String>,
     pub total_bytes: i64,
     pub is_sticker: bool,
     /// False when Messages kept the row but not the file — never downloaded, or
@@ -59,15 +64,28 @@ pub struct Attachment {
 }
 
 impl Attachment {
+    /// What type to call this, for a reader rather than for a consumer.
+    ///
+    /// A MIME type when Messages recorded one, and otherwise Apple's UTI — which
+    /// on a real database is the only type information 225 visible attachments
+    /// have. The `dyn.…` kind macOS synthesizes for a file it cannot type names
+    /// the extension back to itself, so those are dropped and the fallback can
+    /// never make a description worse than saying nothing.
+    fn kind(&self) -> Option<&str> {
+        self.mime_type
+            .as_deref()
+            .or_else(|| self.uti.as_deref().filter(|uti| !uti.starts_with("dyn.")))
+    }
+
     /// What stands in for this attachment in the body, in place of U+FFFC.
     pub fn describe(&self) -> String {
         let mut parts = Vec::new();
         if self.is_sticker {
             parts.push("sticker".to_string());
         }
-        match (self.name.as_deref(), self.mime_type.as_deref()) {
+        match (self.name.as_deref(), self.kind()) {
             (Some(name), _) => parts.push(name.to_string()),
-            (None, Some(mime)) => parts.push(mime.to_string()),
+            (None, Some(kind)) => parts.push(kind.to_string()),
             (None, None) if parts.is_empty() => parts.push("attachment".to_string()),
             (None, None) => {}
         }
@@ -399,15 +417,6 @@ const MESSAGE_FROM: &str = "
 /// REPLACEMENT CHARACTER. The file itself lives outside the database.
 const PLACEHOLDER: char = '\u{fffc}';
 
-/// The `uti` column, when it says anything a reader can use.
-///
-/// macOS synthesizes a `dyn.…` identifier for a file it cannot type, which names
-/// the extension back to itself and tells a person nothing. Those are dropped,
-/// so falling back to `uti` cannot make a description worse than saying nothing.
-fn readable_uti(row: &Row<'_>) -> Option<String> {
-    text(row, "uti").filter(|uti| !uti.starts_with("dyn."))
-}
-
 /// How many message rowids one attachment lookup binds at a time.
 ///
 /// `IN (?, ?, ...)` costs one host parameter per rowid, and SQLite refuses more
@@ -432,7 +441,17 @@ const ATTACHMENT_BATCH: usize = 900;
 fn attachments_for(db: &Connection, rowids: &[i64]) -> Result<BTreeMap<i64, Vec<Attachment>>> {
     let mut found: BTreeMap<i64, Vec<Attachment>> = BTreeMap::new();
 
-    for batch in rowids.chunks(ATTACHMENT_BATCH) {
+    // Deduplicated before batching, and the two are not independent. A message
+    // in two conversations is two returned rows with one rowid, so this list can
+    // hold it twice; `IN` is set membership, so within one batch that is
+    // harmless, but across two batches it is two queries both pushing into the
+    // same entry and the attachment is described twice. Sorting also means the
+    // duplicates are never bound in the first place.
+    let mut wanted = rowids.to_vec();
+    wanted.sort_unstable();
+    wanted.dedup();
+
+    for batch in wanted.chunks(ATTACHMENT_BATCH) {
         let slots = vec!["?"; batch.len()].join(",");
         let sql = format!(
             "SELECT j.message_id AS messageId, a.ROWID AS rowid,
@@ -453,7 +472,8 @@ fn attachments_for(db: &Connection, rowids: &[i64]) -> Result<BTreeMap<i64, Vec<
                 .push(Attachment {
                     rowid: number(row, "rowid"),
                     name: text(row, "name"),
-                    mime_type: text(row, "mimeType").or_else(|| readable_uti(row)),
+                    mime_type: text(row, "mimeType"),
+                    uti: text(row, "uti"),
                     total_bytes: number(row, "totalBytes"),
                     is_sticker: number(row, "isSticker") == 1,
                     is_downloaded: text(row, "filename").is_some(),
@@ -1806,6 +1826,48 @@ mod tests {
         }
 
         assert_eq!(body_of(&db, 1), "[com.apple.coreaudio-format][attachment]");
+
+        // And the structured field stays honest: a UTI is not a MIME type, and
+        // a consumer reading `mimeType` must not be handed one.
+        let found = fetch_messages(&db, &FetchMessages::default(), &ContactIndex::empty()).unwrap();
+        let message = found.iter().find(|m| m.rowid == 1).unwrap();
+        assert_eq!(message.attachments[0].mime_type, None);
+        assert_eq!(
+            message.attachments[0].uti.as_deref(),
+            Some("com.apple.coreaudio-format")
+        );
+    }
+
+    /// Deduplication and batching are one fix, not two.
+    ///
+    /// A message in two conversations puts its rowid in the list twice. Within
+    /// one batch `IN` is set membership and that is harmless; straddling a batch
+    /// boundary it is two queries pushing into the same entry, so the photo is
+    /// described twice and listed twice. The pair here sits either side of
+    /// `ATTACHMENT_BATCH` on purpose.
+    #[test]
+    fn a_rowid_asked_for_twice_is_answered_once() {
+        let db = fixture();
+        attach(
+            &db,
+            1,
+            &[(1, Some("one.png"), Some("image/png"), 512, false, true)],
+        );
+
+        let mut rowids: Vec<i64> = (2..=ATTACHMENT_BATCH as i64).collect();
+        rowids.insert(0, 1);
+        rowids.push(1);
+        assert!(
+            rowids.len() > ATTACHMENT_BATCH,
+            "the pair must straddle a batch boundary"
+        );
+
+        let found = attachments_for(&db, &rowids).unwrap();
+        assert_eq!(found.get(&1).map(Vec::len), Some(1), "{found:?}");
+
+        // And within a single batch, which was always fine and must stay so.
+        let found = attachments_for(&db, &[1, 1, 1]).unwrap();
+        assert_eq!(found.get(&1).map(Vec::len), Some(1), "{found:?}");
     }
 
     /// An address names one person outright, even when a longer address
