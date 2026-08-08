@@ -202,6 +202,10 @@ the toggle asks for Touch ID and then silently does nothing — which makes
 granting Automation a one-way door. The reasoning and the measurements are in
 [daemon-and-permissions.md §13](docs/projects/all/daemon-and-permissions.md).
 
+Being a bundle, it has an icon, which is how you find it in those two lists.
+`assets/msgd.icns` is committed and the build only copies it; `pnpm icon`
+redraws it from `scripts/build-icon.mjs` and is not part of the build.
+
 `msg` talks to the daemon whenever one is listening and reads the database
 directly when one is not, so nothing breaks if you never install it. `--db`
 always reads locally and never reaches the daemon.

@@ -15,7 +15,7 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -75,6 +75,7 @@ function infoPlist() {
   <key>CFBundleIdentifier</key><string>${IDENTIFIER}</string>
   <key>CFBundleName</key><string>msgd</string>
   <key>CFBundleExecutable</key><string>msgd</string>
+  <key>CFBundleIconFile</key><string>msgd</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>LSBackgroundOnly</key><true/>
@@ -118,6 +119,15 @@ writeFileSync(
 run(process.execPath, ['--experimental-sea-config', join(out, 'sea-config.json')]);
 
 writeFileSync(join(app, 'Contents', 'Info.plist'), infoPlist());
+
+// Committed rather than generated, so the build needs nothing but a copy.
+// scripts/build-icon.mjs redraws it, and is not run from here.
+const icon = join(root, 'assets', 'msgd.icns');
+if (!existsSync(icon)) {
+  throw new Error(`no icon at ${icon}\nRedraw it with \`node scripts/build-icon.mjs\`.`);
+}
+mkdirSync(join(app, 'Contents', 'Resources'), { recursive: true });
+copyFileSync(icon, join(app, 'Contents', 'Resources', 'msgd.icns'));
 
 copyFileSync(process.execPath, binary);
 run('codesign', ['--remove-signature', binary]);
