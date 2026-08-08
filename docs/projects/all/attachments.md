@@ -106,6 +106,12 @@ internally and not what a reader needs.
 Alongside it, whichever of `mime_type` and `uti` is present, and `total_bytes`
 rendered in human units. A sticker and a not-yet-downloaded file each say so.
 
+**And the rowid, first.** Added with slice 3, because it is the only way to name
+this file: the path is deliberately not published, and `msg save` takes an id. A
+reader looking at a transcript has nothing else to type, so printing it here is
+what makes the command usable at all — without it there would have to be a second
+command whose only job was to list ids.
+
 ## 5 The placeholder is positional
 
 13,148 messages carry more than one attachment, so substitution has to be in

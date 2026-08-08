@@ -13,9 +13,6 @@ See [README](README.md) for how these lists work.
 - [What the signing identity costs, and what to fix before this is public](all/signing-identity.md)
   — the key that keeps the grant across rebuilds is also a way to re-grant
   silently.
-- [Get attachment bytes out, by rowid](all/attachments.md) — §6 slice 3, the one
-  that makes the daemon open a file for a caller who cannot. §3 is the thinking
-  it has to satisfy first.
 - [Show one thread on demand](all/threading.md) — §8. Not regrouping the
   transcript, which is deliberately not being built; showing every message in a
   thread given any message in it. Needs message ids to be visible first, which
