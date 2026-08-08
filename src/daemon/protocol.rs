@@ -29,7 +29,14 @@ use crate::db::{Chat, Message};
 /// not know the field ignores it and answers with everyone's messages when one
 /// person was asked for. A stale daemon crashing is better than a stale daemon
 /// quietly answering a question nobody asked.
-pub const PROTOCOL_VERSION: u32 = 3;
+///
+/// 4 added `attachments` to every message, and put a description of each one in
+/// the body where Messages leaves a U+FFFC. This one is a new *reply* field, and
+/// a stale daemon answering it would be wrong in the mild direction — the body
+/// simply reads as it did before. It is still a version bump, because "reinstall
+/// the daemon" is a better thing to be told than to wonder why a photo prints as
+/// an invisible character in one build and not another.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";
