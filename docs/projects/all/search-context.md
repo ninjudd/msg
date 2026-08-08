@@ -87,7 +87,7 @@ Note that `msg search` has no `--tapbacks` flag at all today; only `read` and
 "what counts as a hit" with "what may be shown around one", and nobody wants
 `Liked "…"` returned as a search result.
 
-If [tapbacks](tapbacks.md) lands first, this narrows rather than changes: a
+If the tapbacks plan lands first, this narrows rather than changes: a
 reaction will already be attached to the message it reacted to, so the window
 carries the bracket along with the message and this decision becomes "the window
 does not suppress them".
@@ -153,7 +153,7 @@ are installed right now, so 6 cannot also mean the version that has them. A new
 client against an older daemon must be told, not silently answered without
 context.
 
-**Do not assume the next number is 7.** [tapbacks](tapbacks.md) bumps the
+**Do not assume the next number is 7.** The tapbacks plan bumps the
 version too, and both plans were written against 6. Whichever lands second takes
 the number after whatever the first one took; a plan that hard-codes 7 is wrong
 the moment the other merges first.
