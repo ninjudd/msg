@@ -1,6 +1,6 @@
 //! Read-only access to the Messages database.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -9,7 +9,7 @@ use rusqlite::{Connection, OpenFlags, Row, params_from_iter};
 use serde::{Deserialize, Serialize};
 
 use crate::apple::{from_apple_date, message_body};
-use crate::contacts::{ContactIndex, name_handles};
+use crate::contacts::{Contact, ContactIndex, name_handles};
 use crate::{Error, Result};
 
 pub fn default_db() -> PathBuf {
@@ -634,9 +634,18 @@ pub fn person_filter(
 /// [`handle_key`] for addresses, so `+13105551234` and `(310) 555-1234` are one
 /// person, and the contact index for names.
 ///
-/// Two addresses belong to the same person when they resolve to the same
-/// contact name. Addresses with no contact behind them are each their own
+/// Two addresses belong to the same person when they belong to the same Contacts
+/// record — the record, not the name it renders as, because two records can
+/// legitimately share a name and merging them would answer with two people's
+/// messages under one. Addresses with no contact behind them are each their own
 /// person, since there is nothing to join them by.
+///
+/// Matching happens in two passes, and the second is the point. Naming any one
+/// address has to reach the rest: someone whose phone and email are one contact
+/// is one person, so `--from <their email>` must find what they sent from their
+/// phone. So the first pass decides *who* matched and the second gathers every
+/// address those people have, whether or not it looks anything like what was
+/// typed.
 pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> Result<Person> {
     let trimmed = spec.trim();
     if trimmed.is_empty() {
@@ -645,19 +654,19 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
 
     let mut statement = db.prepare("SELECT rowid, id FROM handle")?;
     let mut rows = statement.query([])?;
-    let mut known: Vec<(i64, String, Option<String>)> = Vec::new();
+    let mut known: Vec<(i64, String, Option<Contact>)> = Vec::new();
     while let Some(row) = rows.next()? {
         let rowid: i64 = row.get(0)?;
         let Ok(handle) = row.get::<_, String>(1) else {
             continue;
         };
-        let name = contacts.lookup(Some(&handle)).map(str::to_string);
-        known.push((rowid, handle, name));
+        let contact = contacts.contact(Some(&handle)).cloned();
+        known.push((rowid, handle, contact));
     }
 
     let lowered = trimmed.to_lowercase();
     let wanted_key = crate::contacts::handle_key(trimmed);
-    let hit = |handle: &str, name: Option<&str>| {
+    let hit = |handle: &str, contact: Option<&Contact>| {
         // An address given outright matches on the same key the contact index
         // uses, so the shape it was typed in does not matter.
         if let (Some(wanted), Some(key)) =
@@ -666,21 +675,36 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
         {
             return true;
         }
-        name.is_some_and(|name| name.to_lowercase().contains(&lowered))
+        contact.is_some_and(|contact| contact.name.to_lowercase().contains(&lowered))
             || handle.to_lowercase().contains(&lowered)
     };
 
+    let identity = |handle: &str, contact: Option<&Contact>| match contact {
+        Some(contact) => format!("contact:{}", contact.id),
+        // Two shapes of one unknown number are still one person, which is the
+        // most that can be said without a contact to join them by.
+        None => format!(
+            "handle:{}",
+            crate::contacts::handle_key(handle).unwrap_or_else(|| handle.to_string())
+        ),
+    };
+
+    let matched: BTreeSet<String> = known
+        .iter()
+        .filter(|(_, handle, contact)| hit(handle, contact.as_ref()))
+        .map(|(_, handle, contact)| identity(handle, contact.as_ref()))
+        .collect();
+
     let mut people: BTreeMap<String, Person> = BTreeMap::new();
-    for (rowid, handle, name) in &known {
-        if !hit(handle, name.as_deref()) {
+    for (rowid, handle, contact) in &known {
+        let key = identity(handle, contact.as_ref());
+        if !matched.contains(&key) {
             continue;
         }
-        // Named contacts group by name; anonymous handles stand alone.
-        let key = name
-            .clone()
-            .unwrap_or_else(|| format!("\u{0}handle:{handle}"));
         let person = people.entry(key).or_insert_with(|| Person {
-            name: name.clone().unwrap_or_else(|| handle.clone()),
+            name: contact
+                .as_ref()
+                .map_or_else(|| handle.clone(), |contact| contact.name.clone()),
             handle_ids: Vec::new(),
             handles: Vec::new(),
         });
@@ -695,7 +719,8 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
         return Ok(people.into_values().next().expect("one match"));
     }
 
-    // An exact name breaks a tie, the same way it does for a chat.
+    // An exact name breaks a tie, the same way it does for a chat — unless two
+    // records answer to it, which is the case this cannot silently pick from.
     let exact: Vec<Person> = people
         .values()
         .filter(|person| person.name.to_lowercase() == lowered)
@@ -705,16 +730,30 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
         return Ok(exact.into_iter().next().expect("one match"));
     }
 
-    let names = people
-        .values()
-        .take(6)
-        .map(|person| person.name.clone())
-        .collect::<Vec<_>>()
-        .join(", ");
     Err(Error::other(format!(
-        "{} people match {spec}: {names}",
-        people.len()
+        "{} people match {spec}: {}",
+        people.len(),
+        describe(people.values().take(6))
     )))
+}
+
+/// Label each person well enough to tell them apart, which their names alone may
+/// not do. An address is added only where the name is ambiguous, so the usual
+/// message stays a list of names.
+fn describe<'a>(people: impl Iterator<Item = &'a Person> + Clone) -> String {
+    let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+    for person in people.clone() {
+        *seen.entry(person.name.as_str()).or_default() += 1;
+    }
+    people
+        .map(
+            |person| match (seen.get(person.name.as_str()), person.handles.first()) {
+                (Some(2..), Some(handle)) => format!("{} ({handle})", person.name),
+                _ => person.name.clone(),
+            },
+        )
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Find a single chat by rowid, identifier, or name substring.
@@ -1059,36 +1098,75 @@ mod tests {
         assert_eq!(bodies(&messages), ["deploy is green"]);
     }
 
-    /// One person, two addresses, one answer.
+    /// One person, two addresses, one answer — however they were named.
+    ///
+    /// The spec cases matter separately. Naming the *name* matches both handles
+    /// on its own, so it would pass even if an address reached only itself;
+    /// naming one address is what proves the rest of the contact comes with it.
     #[test]
     fn a_contact_is_searched_by_every_address_they_use() {
         let db = fixture();
-        let mut names = std::collections::HashMap::new();
-        names.insert("+13105551234".to_string(), "Sam Rivera".to_string());
-        names.insert("someone@example.com".to_string(), "Sam Rivera".to_string());
-        let contacts = ContactIndex::for_test(names);
+        let contacts = ContactIndex::for_test([
+            ("+13105551234", "source:7", "Sam Rivera"),
+            ("someone@example.com", "source:7", "Sam Rivera"),
+        ]);
 
-        let person = resolve_person(&db, "Sam", &contacts).unwrap();
-        assert_eq!(person.name, "Sam Rivera");
-        assert_eq!(person.handle_ids.len(), 2, "{person:?}");
+        for spec in [
+            "Sam",
+            "+13105551234",
+            "someone@example.com",
+            "(310) 555-1234",
+        ] {
+            let person = resolve_person(&db, spec, &contacts).unwrap();
+            assert_eq!(person.name, "Sam Rivera", "resolving {spec}");
+            assert_eq!(person.handle_ids.len(), 2, "resolving {spec}: {person:?}");
 
-        let messages = fetch_messages(
-            &db,
-            &FetchMessages {
-                person: Some(PersonFilter {
-                    person: &person,
-                    sender: Sender::Only,
-                }),
-                ..Default::default()
-            },
-            &contacts,
-        )
-        .unwrap();
-        // One from each address, gathered under the one contact.
-        assert_eq!(
-            bodies(&messages),
-            ["are you around later", "deploy is green"]
-        );
+            let messages = fetch_messages(
+                &db,
+                &FetchMessages {
+                    person: Some(PersonFilter {
+                        person: &person,
+                        sender: Sender::Only,
+                    }),
+                    ..Default::default()
+                },
+                &contacts,
+            )
+            .unwrap();
+            // One from each address, gathered under the one contact.
+            assert_eq!(
+                bodies(&messages),
+                ["are you around later", "deploy is green"],
+                "resolving {spec}"
+            );
+        }
+    }
+
+    /// Two people can answer to one name, and a rendered name is not an identity.
+    ///
+    /// Keying people by what they render as merges them, and a search then
+    /// quietly returns two people's messages as one person's. Reporting the
+    /// ambiguity is the least this can do; picking one silently is the thing it
+    /// must not.
+    #[test]
+    fn two_contacts_sharing_a_name_are_two_people() {
+        let db = fixture();
+        let contacts = ContactIndex::for_test([
+            ("+13105551234", "source:7", "Sam Rivera"),
+            ("someone@example.com", "source:9", "Sam Rivera"),
+        ]);
+
+        let error = resolve_person(&db, "Sam Rivera", &contacts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 people match"), "{error}");
+        // Named twice over, so the addresses are what tell them apart.
+        assert!(error.contains("+13105551234"), "{error}");
+        assert!(error.contains("someone@example.com"), "{error}");
+
+        // Naming one address still reaches exactly one of them.
+        let person = resolve_person(&db, "someone@example.com", &contacts).unwrap();
+        assert_eq!(person.handles, ["someone@example.com"], "{person:?}");
     }
 
     #[test]

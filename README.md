@@ -120,6 +120,12 @@ addresses — phone, email, a second number — as a separate handle. Both flags
 gather all of them, so a search is of the person rather than of whichever
 address happened to be used.
 
+Naming any one of a person's addresses reaches all of them, because what is
+being resolved is the Contacts record rather than the address you typed. Two
+records can carry the same name, though, and those are two people: naming them
+reports the ambiguity, with an address alongside each, rather than answering with
+both people's messages under one name. Name an address to say which.
+
 The two differ in whose messages come back. `--from` is only theirs. `--with` is
 the exchange: theirs everywhere, plus your own where the conversation is just
 the two of you — in a group your messages went to the room rather than to them,
