@@ -131,7 +131,7 @@ pub fn open_database(path: Option<&str>, allow_snapshot: bool) -> Result<Connect
 }
 
 /// `mkdtemp(3)`, which creates the directory atomically with mode 0700.
-fn temporary_directory(prefix: &str) -> std::io::Result<PathBuf> {
+pub fn temporary_directory(prefix: &str) -> std::io::Result<PathBuf> {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
 

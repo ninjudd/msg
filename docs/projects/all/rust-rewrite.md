@@ -220,3 +220,52 @@ One thing preserved that looks like a bug and is not: when macOS names no
 default Contacts source, both sides of the source comparison are absent, which
 makes the legacy top-level database the preferred one. That is what the
 TypeScript `===` did, so it is what this does.
+
+**§5.4, the protocol and the socket, is done, and §4's seam paid off exactly as
+written.** The Rust daemon was checked by pointing the *TypeScript* CLI at it —
+no Rust client involved — and it answers every command: `chats`, `read`,
+`search`, `contacts`, `status`, `send --dry-run`, and streaming `watch`. Then
+both daemons were run against the same fixture and asked the same ten questions
+through that same client: 393 lines of JSON, identical. A message inserted while
+the TypeScript client was watching the Rust daemon arrived as an `item` frame
+with the fields in the right shape.
+
+That is the check worth having. Ported tests prove the new code matches what
+someone thought the old code did; running the old client against the new server
+proves it matches what the old code *actually* did.
+
+**No async runtime (DECIDED).** A thread per connection, one tick thread, and a
+`Mutex` around the connection. The TypeScript daemon was a single event loop, so
+this is not a concurrency model the design depended on. Two consequences worth
+recording:
+
+- **Lock order is watchers, then database, never the reverse.** The tick holds
+  the watcher list while it queries and writes; every request handler takes the
+  two in sequence and never nests them.
+- **Watcher writes have a five-second timeout.** Node buffers socket writes in
+  userspace and never blocks, so the TypeScript daemon could not be wedged by a
+  client that stopped reading. A blocking `write` inside the watcher lock can be,
+  so it is bounded, and a watcher that trips it is dropped.
+
+**Watch latency is polled rather than event-driven.** The TypeScript daemon
+paired a 2-second timer with `fs.watch` on the database directory, reaching
+about 100ms. Rust has no equivalent without either a `notify` dependency or
+hand-written FSEvents FFI, and both cost more than they buy: `SELECT MAX(rowid)`
+against a local SQLite file is cheap, so the tick asks every 200ms while a
+watcher is attached and every 2 seconds when none is. Idle costs a wakeup and no
+query. Net latency is better than what it replaces, with no new dependency.
+
+**One improvement over the original.** The TypeScript daemon reported a
+malformed but *known* request the same way it reported an unknown command,
+because both fell out of the same switch. Here the command name is checked
+against the known set before the body is parsed, so `{"cmd":"nonesuch"}` and
+`{"cmd":"read"}` with no chat give different, accurate errors. The protocol test
+that guards the version-bump rule (§13 of daemon-and-permissions) is ported and
+still passes.
+
+**The daemon takes its config path as an option.** The TypeScript tests set
+`MSG_CONFIG` in the process environment to keep sending switched off; in Rust
+`set_var` is `unsafe` and racy against concurrent test threads. `DaemonOptions`
+carries it instead, alongside the database path, which is the same
+"the daemon's own environment, never a client" category. The test suite asserts
+the gate is shut rather than assuming it.

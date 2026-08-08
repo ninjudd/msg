@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 pub mod apple;
 pub mod contacts;
+pub mod daemon;
 pub mod db;
 
 /// One version string, shared by the CLI, the daemon, and their handshake.
