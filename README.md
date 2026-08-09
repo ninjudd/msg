@@ -478,10 +478,10 @@ authentication, and why the daemon is a single executable rather than a copy of
 | `--db <path>` | all | read a different `chat.db` |
 | `--no-names` | all | skip Contacts, show raw handles |
 | `--unknown` | `chats`, `search`, `watch` | include filtered unknown senders |
-| `-n, --limit <count>` | `chats`, `read`, `search` | how many results |
-| `--since <when>` | `read`, `search` | duration or date lower bound |
+| `-n, --limit <count>` | `chats`, `chat`, `search` | how many results |
+| `--since <when>` | `chat`, `search` | duration or date lower bound |
 | `-c, --chat <chat>` | `search`, `watch` | restrict to one conversation |
-| `--tapbacks` | `read`, `watch` | include reactions |
+| `--tapbacks` | `chat`, `watch` | include reactions |
 | `-A, --after <count>` | `search` | messages to show after each hit |
 | `-B, --before <count>` | `search` | messages to show before each hit |
 | `-C, --context <count>` | `search` | both, and note the clash with `-c` |
