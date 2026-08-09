@@ -1382,13 +1382,8 @@ pub fn fetch_conversation(
     Ok(merged)
 }
 
-/// How many chats to consider before merging and filtering in Rust.
-///
-/// Both of those happen above SQL, so neither can be given to `LIMIT`. That
-/// costs less than it looks: the aggregate `CHATS_SQL` joins against is
-/// uncorrelated, so it is computed in full whatever the limit says, and asking
-/// for every chat on a decade-old database measured the same as asking for five.
-const CHATS_SCAN: i64 = 5_000;
+/// How many chats to consider when a query has to be matched against names.
+const NAME_SEARCH_SCAN: i64 = 5_000;
 
 /// The chat list, with the last-activity date and message count coming from one
 /// grouped pass rather than a subquery per conversation.
@@ -1516,7 +1511,14 @@ pub fn fetch_chats(
     } else {
         format!("WHERE {}", conditions.join(" AND "))
     };
-    params.push(if filter_by_name { CHATS_SCAN } else { limit }.into());
+    params.push(
+        if filter_by_name {
+            NAME_SEARCH_SCAN
+        } else {
+            limit
+        }
+        .into(),
+    );
 
     let sql = format!("{CHATS_SQL} {where_clause} ORDER BY lastDate DESC LIMIT ?");
     let mut statement = db.prepare(&sql)?;
@@ -1532,6 +1534,39 @@ pub fn fetch_chats(
     };
     retain_matching(&mut chats, query, contacts);
     chats.truncate(want(limit));
+    Ok(chats)
+}
+
+/// Every chat, newest first, with no upper bound on how many.
+///
+/// The listing cannot use a `LIMIT`, and no budget would do instead. It merges,
+/// so a number of threads does not become a knowable number of conversations
+/// until after the merge has run — and a budget generous enough to look safe
+/// would still be a cap nobody was told about, which is the failure that hides
+/// rather than the one that complains. A scan of 5,000 measured as a listing of
+/// 4,998 conversations for a caller who asked for 100,000.
+///
+/// The cost is the chat table, which is the thing being listed: 1,165 rows on a
+/// decade-old database, measured at the same 0.11s as asking for five, because
+/// the aggregate `CHATS_SQL` joins against is uncorrelated and was always
+/// computed in full whatever the `LIMIT` said.
+fn scan_all_chats(
+    db: &Connection,
+    contacts: &ContactIndex,
+    include_filtered: bool,
+) -> Result<Vec<Chat>> {
+    let where_clause = if include_filtered {
+        ""
+    } else {
+        "WHERE isFiltered = 0"
+    };
+    let sql = format!("{CHATS_SQL} {where_clause} ORDER BY lastDate DESC");
+    let mut statement = db.prepare(&sql)?;
+    let mut rows = statement.query([])?;
+    let mut chats = Vec::new();
+    while let Some(row) = rows.next()? {
+        chats.push(chat_from_row(row, contacts));
+    }
     Ok(chats)
 }
 
@@ -1581,7 +1616,10 @@ fn retain_matching(chats: &mut Vec<Chat>, query: &str, contacts: &ContactIndex) 
 /// Neither the query nor the limit can be pushed down. The limit counts
 /// conversations, and applying it to threads answers with fewer than were asked
 /// for; the query has to run after the merge, so it can reach a person by an
-/// address that is not the one their newest thread uses.
+/// address that is not the one their newest thread uses. Which is why the fetch
+/// behind this is [`scan_all_chats`] rather than [`fetch_chats`] with a budget:
+/// a budget would be a cap on how many conversations exist, imposed before
+/// anything knew how many that was.
 pub fn fetch_conversations(
     db: &Connection,
     query: Option<&str>,
@@ -1589,7 +1627,7 @@ pub fn fetch_conversations(
     contacts: &ContactIndex,
     include_filtered: bool,
 ) -> Result<Vec<Chat>> {
-    let threads = fetch_chats(db, None, CHATS_SCAN, contacts, include_filtered)?;
+    let threads = scan_all_chats(db, contacts, include_filtered)?;
     let mut chats = merge_listing(threads, contacts);
     if let Some(query) = query {
         retain_matching(&mut chats, query, contacts);
@@ -4941,6 +4979,101 @@ mod tests {
         let chats = fetch_conversations(&db, None, 30, &ContactIndex::empty(), false).unwrap();
         let rooms = chats.iter().filter(|chat| chat.is_group).count();
         assert_eq!(rooms, 2, "same membership, still two rooms");
+    }
+
+    /// Insert `n` one-to-one chats, each with its own address and no messages.
+    fn many_chats(db: &Connection, n: i64) {
+        db.execute_batch("BEGIN").unwrap();
+        for i in 100..(100 + n) {
+            db.execute(
+                "INSERT INTO handle (rowid, id) VALUES (?, ?)",
+                rusqlite::params![i, format!("+1310555{i}")],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chat (rowid, guid, chat_identifier, display_name, is_filtered)
+                 VALUES (?, ?, ?, '', 0)",
+                rusqlite::params![i, format!("iMessage;-;p{i}"), format!("+1310555{i}")],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)",
+                rusqlite::params![i, i],
+            )
+            .unwrap();
+        }
+        db.execute_batch("COMMIT").unwrap();
+    }
+
+    /// The listing has no scan budget, because a budget is a cap.
+    ///
+    /// It cannot push the limit into SQL — merging means a count of threads is
+    /// not a count of conversations — so the tempting fix is a generous budget
+    /// instead. That is worse than the bug it replaces: with one of 5,000, a
+    /// caller asking for 100,000 conversations got 4,998 and nothing said why.
+    #[test]
+    fn the_listing_has_no_upper_bound_of_its_own() {
+        let db = fixture();
+        let n = NAME_SEARCH_SCAN + 200;
+        many_chats(&db, n);
+
+        let all = fetch_conversations(&db, None, 100_000, &ContactIndex::empty(), true).unwrap();
+        assert!(
+            i64::try_from(all.len()).unwrap() > NAME_SEARCH_SCAN,
+            "{} conversations came back, capped at the old budget",
+            all.len()
+        );
+    }
+
+    /// And a query still reaches past where that budget used to stop.
+    ///
+    /// With names off there is no contact index, so this is the path that used
+    /// to hand the query to SQL. It is matched in Rust now, after the merge, and
+    /// the chat it has to find is the oldest one there is.
+    #[test]
+    fn a_search_reaches_the_oldest_conversation() {
+        let db = fixture();
+        many_chats(&db, NAME_SEARCH_SCAN + 200);
+        // Every chat above has no messages, so they sort last as a block; this
+        // one is given the address that is searched for.
+        db.execute(
+            "UPDATE chat SET chat_identifier = '+13105559999' WHERE rowid = 5299",
+            [],
+        )
+        .unwrap();
+
+        let found =
+            fetch_conversations(&db, Some("5559999"), 30, &ContactIndex::empty(), true).unwrap();
+        let rowids: Vec<i64> = found.iter().map(|chat| chat.rowid).collect();
+        assert_eq!(rowids, [5299], "found past where the scan used to stop");
+    }
+
+    /// `--no-names` matches a room's name by the same rule everything else does.
+    ///
+    /// It did not before this: with no contact index there was nothing to match
+    /// in Rust, so the query went to SQL as `displayName LIKE '%q%'` and found
+    /// the middle of a word. Moving the filter above the merge moved it off SQL
+    /// for this case too, which settles the inconsistency in favour of the rule
+    /// `naming-a-conversation.md §2` decided — the named path had already been
+    /// matching from a word start, and only `--no-names` disagreed.
+    ///
+    /// An address is unchanged and still matches anywhere, because a fragment of
+    /// a phone number is how anyone types part of one.
+    #[test]
+    fn a_room_is_matched_from_a_word_start_with_names_off() {
+        let db = fixture();
+        let empty = ContactIndex::empty();
+        let found = |spec: &str| {
+            fetch_conversations(&db, Some(spec), 30, &empty, true)
+                .unwrap()
+                .iter()
+                .any(|chat| chat.rowid == 2)
+        };
+        assert!(found("Ship"), "the start of the name");
+        assert!(found("room"), "the start of its second word");
+        assert!(!found("hip"), "inside a word, which SQL LIKE used to find");
+        // The same conversation by an address, which is a substring match.
+        assert!(found("5551234"), "the middle of a member's number");
     }
 
     /// A conversation with no messages still appears, with no date and a count
