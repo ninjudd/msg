@@ -6,6 +6,5 @@ Delete the line when the work is genuinely over. Committed but not started lives
 in [next](next.md); uncommitted ideas in [later](later.md). See
 [README](README.md) for how these lists work.
 
-- [Put a reaction on the message it reacted to](all/tapbacks.md) — slice 1,
-  open as #43: the bracket after the body, removals cancelled, the JSON field,
-  protocol 16.
+- [Put a reaction on the message it reacted to](all/tapbacks.md) — slice 1
+  merged as #43; its rendering fix, brackets to a trailing arrow, open as #44.

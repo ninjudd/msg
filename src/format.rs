@@ -124,10 +124,10 @@ pub fn render_chats(chats: &[Chat]) -> String {
     out
 }
 
-/// `brackets` is false exactly when `--tapbacks` is showing reaction rows as
+/// `trail` is false exactly when `--tapbacks` is showing reaction rows as
 /// their own messages — printing both is the same information twice
 /// (tapbacks.md §6).
-pub fn render_messages(messages: &[Message], show_chat: bool, brackets: bool) -> String {
+pub fn render_messages(messages: &[Message], show_chat: bool, trail: bool) -> String {
     if messages.is_empty() {
         return "no messages found\n".to_string();
     }
@@ -173,15 +173,18 @@ pub fn render_messages(messages: &[Message], show_chat: bool, brackets: bool) ->
                 width = stamp.chars().count()
             ));
         }
-        // Reactions ride the message they answer, oldest first, skipped
-        // entirely when there are none — so ordinary output is unchanged.
-        let reactions = if brackets && !message.tapbacks.is_empty() {
+        // Reactions trail the message they answer after an arrow, oldest
+        // first, skipped entirely when there are none — so ordinary output is
+        // unchanged. An arrow rather than brackets, because brackets collided
+        // with the emoji: a double-width glyph overdraws `[` and `]` in real
+        // terminals, and the arrow needs nothing on the far side.
+        let reactions = if trail && !message.tapbacks.is_empty() {
             let symbols: String = message
                 .tapbacks
                 .iter()
                 .map(|tapback| tapback.symbol.as_str())
                 .collect();
-            format!(" [{symbols}]")
+            format!(" ← {symbols}")
         } else {
             String::new()
         };

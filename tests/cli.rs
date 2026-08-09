@@ -283,31 +283,31 @@ fn a_search_hit_starts_where_a_word_starts() {
     assert!(stdout(&output).contains("we started at six"));
 }
 
-/// The bracket rides the message it reacts to — both stored guid forms reach
-/// it, a type 2006 reads the column — and `--tapbacks` trades the brackets
-/// for the rows, so the same information is never printed twice.
+/// Reactions trail the message they react to — both stored guid forms reach
+/// it, a type 2006 reads the column — and `--tapbacks` trades the trail for
+/// the rows, so the same information is never printed twice.
 #[test]
 fn reactions_ride_the_message_and_the_flag_trades_them_for_rows() {
     let output = msg(&["--no-names", "chat", "3"]);
     assert_eq!(code(&output), 0);
     let text = stdout(&output);
-    assert!(text.contains("art deco [❤️🙏]"), "{text}");
+    assert!(text.contains("art deco ← ❤️🙏"), "{text}");
     // The third stored form, `bp:<guid>` with no part number — 867 rows on a
     // real database, found hiding inside an implausible orphan count (§9).
-    assert!(text.contains("gallery downtown [👍]"), "{text}");
+    assert!(text.contains("gallery downtown ← 👍"), "{text}");
 
     let output = msg(&["--no-names", "chat", "3", "--tapbacks"]);
     assert_eq!(code(&output), 0);
     let text = stdout(&output);
-    assert!(!text.contains("[❤️🙏]"), "{text}");
+    assert!(!text.contains("← ❤️🙏"), "{text}");
     assert!(text.contains("Loved"), "{text}");
 
-    // A context window shows a reaction once, as the bracket on its target —
-    // the rows stay out, or `-A` would print the same reaction twice.
+    // A context window shows a reaction once, trailing its target — the rows
+    // stay out, or `-A` would print the same reaction twice.
     let output = msg(&["--no-names", "search", "art deco", "-A", "4"]);
     assert_eq!(code(&output), 0);
     let text = stdout(&output);
-    assert!(text.contains("[❤️🙏]"), "{text}");
+    assert!(text.contains("← ❤️🙏"), "{text}");
     assert!(!text.contains("Loved"), "{text}");
 
     let output = msg(&["--no-names", "chat", "3", "--json"]);

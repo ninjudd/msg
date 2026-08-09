@@ -90,16 +90,16 @@ use crate::db::{Chat, Message};
 /// `-C 3` would silently produce exactly what the flag was asked to change.
 ///
 /// 17 takes `tapbacks` back off the messages `watch` streams. 16 attached
-/// them everywhere, which on a stream meant a bracket appeared exactly when
-/// the reaction happened to land before its target was emitted — a race, not
-/// a contract, and a bracket whose absence means nothing teaches a reader
-/// that it does. A stale daemon keeps racing: same command, changed answers,
-/// the quiet kind again.
+/// them everywhere, which on a stream meant a reaction appeared exactly when
+/// it happened to land before its target was emitted — a race, not a
+/// contract, and a marker whose absence means nothing teaches a reader that
+/// it does. A stale daemon keeps racing: same command, changed answers, the
+/// quiet kind again.
 ///
 /// 16 added `tapbacks` to every message: the reactions on it, oldest first,
 /// removals already cancelled, each carrying the raw type beside the rendered
 /// symbol. A new *reply* field, wrong in the mild direction — a stale daemon
-/// omits it and a message reads as it did before, no brackets anywhere. Still
+/// omits it and a message reads as it did before, no reactions shown. Still
 /// a bump, for the reason 4 gave: "reinstall the daemon" is a better thing to
 /// be told than to wonder why reactions show on one machine and not another.
 ///

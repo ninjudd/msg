@@ -1,6 +1,6 @@
 # Plan: Put a reaction on the message it reacted to
 
-**Status:** Slice 1 built, open as #43 at protocol 16 — the bracket, the
+**Status:** Slice 1 shipped 2026-08-09 as #43 at protocol 17 — the trailing render, the
 table, removals cancelled, the JSON field. Slice 2 (names behind a flag) stays
 in [next](../next.md). The type numbering in §2 is measured against the real
 database, and the two questions §9 opened are measured too (2026-08-09): the
@@ -13,7 +13,7 @@ at 0.95s a page without that clause and 0.2s with it — and 51 reactions live
 in a different chat than their target, so the lookup must not be scoped to the
 conversation being read.
 
-**Goal:** Render tapbacks as `[😂🙏❤️❤️]` after the message they react to, instead
+**Goal:** Render tapbacks as `← 😂🙏❤️❤️` after the message they react to, instead
 of as separate rows that either interleave into the transcript or are hidden
 entirely.
 
@@ -70,7 +70,7 @@ than a parser.
 
 **The classic six dominate, so §4's table is the main path and not a
 fallback.** Of 619 reactions added, 575 — 93% — are one of the classic six, which
-carry no emoji anywhere. Only 44 are an arbitrary emoji. The bracket this
+carry no emoji anywhere. Only 44 are an arbitrary emoji. The trail this
 feature prints will usually come straight from the table, and an emoji read
 off the row is the uncommon case.
 
@@ -102,7 +102,7 @@ symbol next to everything else in a terminal that renders emoji at full width.
 The reversal knowingly gives up the distinction the shorthand preserved: `❤️`
 for the built-in Love tapback is now the same glyph as a literal `❤️` someone
 chose as a type 2006 reaction. The two mean different things and render
-identically — in the bracket. The JSON keeps them apart, because §7 publishes
+identically — in the transcript. The JSON keeps them apart, because §7 publishes
 the raw `associatedMessageType` beside the symbol for exactly this kind of
 consumer, so the cost is confined to the glance and not the data. The shorthand
 kept them apart on screen and was judged not worth its rendering; if the
@@ -127,26 +127,34 @@ surviving more rowids than SQLite will bind.
 ## 6 Decisions
 
 **Attached rendering is always on; `--tapbacks` keeps its current meaning.
-(DECIDED)** Brackets appear by default, and are skipped entirely when a message
+(DECIDED)** The trail appears by default, and is skipped entirely when a message
 has no reactions — the `attachments`/`reply_to` habit, so ordinary output is
 unchanged. `--tapbacks` continues to mean "show reaction rows as their own
 messages", which stays useful for timestamps and for debugging, and it
-*suppresses* the brackets, since printing both is the same information twice.
+*suppresses* the trail, since printing both is the same information twice.
 *Rejected:* repurposing `--tapbacks` to mean "show who reacted". It would break a
 documented flag to save inventing one.
 
 **Names are off by default, behind a flag. (DECIDED — requested)** Default
-`[😂❤️❤️]`; with the flag, `[😂 dana, ❤️ sam, ❤️ kit]`. Naming the flag is left
-to the slice.
+`← 😂❤️❤️`; with the flag, `← 😂 dana, ❤️ sam, ❤️ kit`. Naming the flag is
+left to the slice.
 
-**Duplicates are kept and ordered by reaction time. (DECIDED)** `[❤️❤️]` is two
-people, and collapsing it to `[❤️×2]` or `[❤️]` throws away the count, which is
-the main thing a bracket communicates at a glance. Chronological rather than
-grouped by type, so the bracket reads as what happened. This was first argued
+**Reactions trail the message after `←`, not inside brackets. (DECIDED —
+requested 2026-08-09, reversing the bracket this plan was written around.)**
+`[❤️]` looked right in prose and broke on screen: a double-width emoji
+overdraws the bracket glyphs in real terminals, seen rather than predicted,
+the same way §4's shorthand fell. `works, see you then ← ❤️` needs nothing
+drawn on the far side of the emoji, which is the whole fix.
+
+**Duplicates are kept and ordered by reaction time. (DECIDED)** `← ❤️❤️` is
+two people, and collapsing it to `← ❤️×2` or `← ❤️` throws away the count,
+which is the main thing the trail communicates at a glance. Chronological
+rather than grouped by type, so it reads as what happened. This was first
+argued
 against the shorthand's narrow glyphs, and §4's reversal changes the picture it
 defends: five loves are now five double-width emoji rather than five hairline
 symbols, which makes the collapsed form more tempting, not less. The decision
-stands anyway — a count is still not a list, and a bracket long enough for the
+stands anyway — a count is still not a list, and a trail long enough for the
 width to matter is the uncommon case — but it stands re-argued, not carried
 over.
 
@@ -156,7 +164,7 @@ what still needs checking about the pairing.
 
 **No reaction to a reaction.** Not a decision so much as a fact worth writing
 down: a tapback's own guid can be a target in principle, and this renders one
-level. If the data turns out to nest, the bracket goes on the tapback row that
+level. If the data turns out to nest, the trail goes on the tapback row that
 `--tapbacks` prints and nowhere else.
 
 ## 7 JSON and the protocol
@@ -183,7 +191,7 @@ remembers.
 
 ## 8 Slices
 
-1. **The attachment and the bracket.** `tapbacks_for`, the type table, removals
+1. **The attachment and the trail.** `tapbacks_for`, the type table, removals
    cancelled, default rendering, `--tapbacks` suppressing it, JSON field,
    protocol bump. Everything in §4 through §7 except names.
 2. **Names behind a flag.** Small, and separable because the sender is already
@@ -238,16 +246,16 @@ the 2000/3000 ranges are the whole story.
 
 A reaction that arrives after its target was already streamed is invisible to
 a default `msg watch`: the new row crosses the watermark but is filtered as a
-tapback, and the target — which now carries the reaction in its bracket — is
+tapback, and the target — which now carries the reaction attached — is
 not re-emitted, because nothing re-emits an already-streamed message. Caught
-by review on slice 1, which first shipped the half-behaviour: a bracket
-appeared exactly when the reaction happened to land before its target was
+by review on slice 1, which first shipped the half-behaviour: a reaction
+appeared exactly when it happened to land before its target was
 emitted — on the CLI's poll and the daemon's delivery alike — and nothing
 appeared otherwise. `--tapbacks` still streams reactions as rows, which
 remains the way to follow them live.
 
 Deliberately not fixed in slice 1, because the fix is a design decision and
-not a patch. Re-emitting the target with its updated bracket is an *update
+not a patch. Re-emitting the target with its updated reactions is an *update
 event*: a JSON consumer that appends lines would show the message twice, one
 that keys by rowid would do the right thing, and nothing in the protocol says
 which a consumer is.
@@ -257,12 +265,12 @@ answer — so a default watch attaches no `tapbacks` at all, at protocol 17.**
 A stream that revises already-printed lines is a terminal UI's job, and this
 program is not growing one; short of that, re-emission is a half-measure with
 the consumer ambiguity above built in. The racy half-behaviour came out with
-the decision rather than surviving beside it: a bracket that appears exactly
-when the reaction beat the delivery is a race, not a contract, and a bracket
-whose absence means nothing teaches a reader that it does. Snapshots attach
+the decision rather than surviving beside it: a reaction that appears exactly
+when it beat the delivery is a race, not a contract, and a marker whose
+absence means nothing teaches a reader that it does. Snapshots attach
 reactions; streams show them as events, behind the flag. So "a default watch
 shows messages only" — the sentence every summary of this section kept
 reaching for, twice corrected for overclaiming — is now true by construction.
 *Rejected:* re-emitting the target as an update event, for the reason above;
-a TUI, as a different program; keeping the beat-the-delivery bracket, as the
-unreliable half of a feature.
+a TUI, as a different program; keeping the beat-the-delivery attachment, as
+the unreliable half of a feature.
