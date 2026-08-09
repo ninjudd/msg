@@ -2167,14 +2167,29 @@ pub fn resolve_conversation(
         // answer by `CHAT_MATCH_SCAN`: a name matching 87 chats keeps the newest
         // 50, and where 84 of those are rooms the person is in, their own older
         // thread falls outside and the reader answered with half a conversation.
-        // `one_to_one_chats` already returns exactly the threads §3 is asking
-        // for, so the intersection was never adding anything but the bound.
+        // For a name the intersection restricted nothing else — every thread
+        // of theirs renders as the name — so `one_to_one_chats` already
+        // returns exactly the threads §3 is asking for.
         //
         // Named rather than scanned, for the reason `chats_by_id` exists.
         let theirs = one_to_one_chats(db, &person)?;
         if !theirs.is_empty() {
-            let mine = chats_by_id(db, &theirs, contacts)?;
+            let mut mine = chats_by_id(db, &theirs, contacts)?;
             if !mine.is_empty() {
+                // For an address the intersection did one more thing: it kept
+                // the typed thread first. An address typed in full still
+                // leads with its own thread here — reading merges either way,
+                // but the leading thread is where a send goes, and a send
+                // addressed to a number must not drift to whichever thread
+                // spoke last (conversation-merging.md §7).
+                if let Some(wanted) = crate::contacts::handle_key(spec) {
+                    mine.sort_by_key(|chat| {
+                        chat.handles
+                            .as_deref()
+                            .and_then(crate::contacts::handle_key)
+                            != Some(wanted.clone())
+                    });
+                }
                 return Ok(one_bucket(mine, unknown));
             }
         }
@@ -3276,6 +3291,44 @@ mod tests {
         let threads = resolve_conversation(&db, "Robin", &contacts, false).unwrap();
         let rowids: Vec<i64> = threads.iter().map(|chat| chat.rowid).collect();
         assert_eq!(rowids, [email, phone], "both threads, however many rooms");
+    }
+
+    /// An address typed in full keeps its thread at the head of the answer.
+    ///
+    /// Reading merges either way. But `resolve_chat` takes the first element,
+    /// and `send` resolves through it, so the leading thread is where a
+    /// message goes — and a send addressed to a number must not drift to
+    /// whichever thread spoke last. The routes are not interchangeable: one
+    /// of them may be an SMS fallback, and naming an address is how you say
+    /// which. The room carries both handles so the spec matches two rows and
+    /// the merge runs rather than the single-match return.
+    #[test]
+    fn an_address_keeps_the_send_target_when_threads_merge() {
+        let db = fixture();
+        let phone = one_to_one(&db, 4, "+16175550147");
+        let email = one_to_one(&db, 5, "robin@example.com");
+        message_in(&db, phone, 10, 5);
+        message_in(&db, email, 11, 90);
+        room(&db, 20, &[4, 5]);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ]);
+
+        // The email thread is the newer, so this is the direction that
+        // drifts: activity order would put the email thread first.
+        let by_phone = resolve_conversation(&db, "+16175550147", &contacts, false).unwrap();
+        let rowids: Vec<i64> = by_phone.iter().map(|chat| chat.rowid).collect();
+        assert_eq!(rowids, [phone, email], "the typed address leads");
+
+        // And the quiet direction holds too, rather than being order luck.
+        let by_email = resolve_conversation(&db, "robin@example.com", &contacts, false).unwrap();
+        let rowids: Vec<i64> = by_email.iter().map(|chat| chat.rowid).collect();
+        assert_eq!(
+            rowids,
+            [email, phone],
+            "either address, its own thread first"
+        );
     }
 
     /// Unknown Senders content does not arrive inside a known conversation.
