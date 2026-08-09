@@ -1,10 +1,12 @@
 # Plan: Put a reaction on the message it reacted to
 
 **Status:** Designed, not started. Committed to in [next](../next.md). The type
-numbering in §2 is measured against the real database; the two open questions in
-§9 are not, and the first of them decides how §4 gets built.
+numbering in §2 is measured against the real database, and the two questions §9
+opened are now measured too (2026-08-09): the emoji lives in its own column,
+and the guid is part-prefixed 96% of the time. §4's symbols reversed the same
+day, from shorthand to the Messages emoji, by request.
 
-**Goal:** Render tapbacks as `[😂🙏♥♥]` after the message they react to, instead
+**Goal:** Render tapbacks as `[😂🙏❤️❤️]` after the message they react to, instead
 of as separate rows that either interleave into the transcript or are hidden
 entirely.
 
@@ -59,12 +61,11 @@ out of the body works until someone in the thread switches locale. **The type
 number is the only reliable key**, which is what makes §4 a table in code rather
 than a parser.
 
-**The classic six dominate, so the shorthand is the main path and not a
+**The classic six dominate, so §4's table is the main path and not a
 fallback.** Of 619 reactions added, 575 — 93% — are one of the classic six, which
-carry no emoji anywhere. Only 44 are an arbitrary emoji. The bracket this feature
-prints will usually read `[+1+1♥]`, and `[😂🙏]` is the uncommon case. Worth
-saying plainly, because the request was phrased around emoji and the output
-mostly will not be.
+carry no emoji anywhere. Only 44 are an arbitrary emoji. The bracket this
+feature prints will usually come straight from the table, and an emoji read
+off the row is the uncommon case.
 
 **Removals are real, rare, and will show wrong data if ignored.** Three of 622.
 Messages does not delete the reaction row; it inserts a second row in the 3000
@@ -73,28 +74,32 @@ back. Rare enough to be invisible in testing and permanent once wrong.
 
 ## 4 The symbol table
 
-The classic six get shorthand rather than emoji **(DECIDED — requested)**:
+The classic six get their Messages emoji **(DECIDED — requested 2026-08-09,
+reversing the shorthand this section first chose)**:
 
 | Type | Reaction | Symbol |
 | --- | --- | --- |
-| 2000 | loved | `♥` |
-| 2001 | liked | `+1` |
-| 2002 | disliked | `-1` |
-| 2003 | laughed | `LOL` |
-| 2004 | emphasized | `!!` |
-| 2005 | questioned | `?` |
-| 2006 | emoji | the emoji itself |
+| 2000 | loved | `❤️` |
+| 2001 | liked | `👍` |
+| 2002 | disliked | `👎` |
+| 2003 | laughed | `😂` |
+| 2004 | emphasized | `‼️` |
+| 2005 | questioned | `❓` |
+| 2006 | emoji | the emoji itself, from the column §9 measured |
 
-*Rejected:* rendering the six as their Messages glyphs, `❤️👍👎😂‼️❓`. It would
-look like the app and would make every reaction one column wide, but it was not
-what was asked for, and an emoji-only bracket loses the distinction below.
+*Rejected:* the shorthand this section originally decided on the same grounds —
+requested — `♥` `+1` `-1` `LOL` `!!` `?`. What reversed it was seeing it
+rendered: the non-emoji glyphs read badly, `♥` a hairline text-presentation
+symbol next to everything else in a terminal that renders emoji at full width.
 
-Two wrinkles to accept knowingly. `♥` (U+2665) is a symbol where the other five
-are ASCII, so the row is not uniform — `<3` would be, and reads worse. And `♥`
-for *loved* will sit in the same bracket as a literal `❤️` from a type 2006
-reaction, two glyphs that look alike and mean different things: one is the
-built-in Love tapback, the other is someone choosing the heart emoji. That is a
-real distinction faithfully rendered, not a collision to design away.
+The reversal knowingly gives up the distinction the shorthand preserved: `❤️`
+for the built-in Love tapback is now the same glyph as a literal `❤️` someone
+chose as a type 2006 reaction. The two mean different things and render
+identically — in the bracket. The JSON keeps them apart, because §7 publishes
+the raw `associatedMessageType` beside the symbol for exactly this kind of
+consumer, so the cost is confined to the glance and not the data. The shorthand
+kept them apart on screen and was judged not worth its rendering; if the
+distinction ever earns its way back, this is where it went.
 
 ## 5 Where it attaches
 
@@ -124,13 +129,19 @@ messages", which stays useful for timestamps and for debugging, and it
 documented flag to save inventing one.
 
 **Names are off by default, behind a flag. (DECIDED — requested)** Default
-`[😂♥♥]`; with the flag, `[😂 dana, ♥ sam, ♥ kit]`. Naming the flag is left to
-the slice.
+`[😂❤️❤️]`; with the flag, `[😂 dana, ❤️ sam, ❤️ kit]`. Naming the flag is left
+to the slice.
 
-**Duplicates are kept and ordered by reaction time. (DECIDED)** `[♥♥]` is two
-people, and collapsing it to `[♥×2]` or `[♥]` throws away the count, which is the
-main thing a bracket communicates at a glance. Chronological rather than grouped
-by type, so the bracket reads as what happened.
+**Duplicates are kept and ordered by reaction time. (DECIDED)** `[❤️❤️]` is two
+people, and collapsing it to `[❤️×2]` or `[❤️]` throws away the count, which is
+the main thing a bracket communicates at a glance. Chronological rather than
+grouped by type, so the bracket reads as what happened. This was first argued
+against the shorthand's narrow glyphs, and §4's reversal changes the picture it
+defends: five loves are now five double-width emoji rather than five hairline
+symbols, which makes the collapsed form more tempting, not less. The decision
+stands anyway — a count is still not a list, and a bracket long enough for the
+width to matter is the uncommon case — but it stands re-argued, not carried
+over.
 
 **A removal cancels its add. (DECIDED)** Match a 3000-range row to the reaction
 it retracts by sender, target guid, and type family, and drop both. §9 records
@@ -153,15 +164,12 @@ the symbol deliberately: a consumer that wants Messages' own glyphs, or wants to
 count Love separately from a heart emoji, should not have to re-derive it from a
 string this program chose.
 
-The protocol version bumps. **[search-context](search-context.md) also bumps
-it** — whichever lands second takes the next number, and neither should assume
-7.
-
-The link points that way round on purpose. That plan is the base this one is
-stacked on, so it merges first and its file is always already there; a link from
-it to this one would resolve to nothing for the whole interval between the two
-merges. A forward reference from a base to its child is the one direction
-ordering cannot make safe.
+The protocol version bumps. When this paragraph was written it shared the next
+number with [search-context](search-context.md), still unmerged then, and told
+both not to assume 7; search-context landed long ago (9), the constant has
+moved six more times since, and the instruction survives only in its general
+form — take whatever `PROTOCOL_VERSION` says next, not a number this plan
+remembers.
 
 ## 8 Slices
 
@@ -171,49 +179,41 @@ ordering cannot make safe.
 2. **Names behind a flag.** Small, and separable because the sender is already
    carried on each entry by slice 1 — only the rendering is missing.
 
-## 9 Open, and the first one blocks §4
+## 9 Open when written, measured 2026-08-09
 
-**How is the emoji stored for type 2006?** Unresolved, and it decides whether
-this feature can render its headline case. `associated_message_emoji` is the
-column to look for. If it exists and is populated, use it and stop reading.
+Both questions were measured whole-database through the daemon — hard-coded
+aggregate queries in a local spike, no message content leaving the process.
 
-If it does not, the emoji is only in the body, wrapped in a localized sentence —
-three shapes were observed for those 44 rows: `Reacted <emoji> to “…”`, the
-Spanish `Se ha reaccionado con <emoji> a “…”`, and one form carrying no verb at
-all, just the emoji fenced by zero-width spaces before ` to “…”`. Parsing the
-verb is out for the reason §3 gives, but extracting *the emoji-class characters
-before the opening curly quote* is locale-independent and matched all three
-shapes in the sample. That is the fallback, and it needs the zero-width
-characters stripped.
+**How is the emoji stored for type 2006? (MEASURED: its own column.)**
+`associated_message_emoji` exists and is populated for every emoji reaction
+this database holds — 758 of 758 type 2006 rows, and the 7 type 3006 removals
+besides. So the rule this section wrote in advance applies: use the column and
+stop reading. The fallback that would otherwise have been needed — extracting
+emoji-class characters before the opening curly quote, since the three observed
+body shapes (`Reacted <emoji> to “…”`, `Se ha reaccionado con <emoji> a “…”`,
+and a verbless form fenced in zero-width characters) share only that much — is
+recorded here and deliberately not built.
 
-**Is `associated_message_guid` a bare guid?** Assume not until checked. The
-plausible stored form is part-prefixed — `p:0/<guid>` — and a join written as
-`= message.guid` would then match nothing while looking correct, silently
-shipping a feature that renders no brackets on a machine whose data is fine.
-The evidence available is weaker than a direct measurement, and worth stating as
-what it is. `threading.md §2` never compared `associated_message_guid` against
-`message.guid`; it compared it against `reply_to_guid`, to establish something
-else. What can be inferred from there: `reply_to_guid` resolves to a real
-message 117,452 times out of 117,577, so it is in `message.guid`'s form, and
-`associated_message_guid` equals it in 71 rows — so in at least those 71 rows
-`associated_message_guid` is bare too.
+**Is `associated_message_guid` a bare guid? (MEASURED: 96% part-prefixed.)**
+32,092 rows carry the guid — the denominator this section said nothing had
+measured. 30,800 of them are part-prefixed `p:N/<guid>`, and 30,766 of those
+join to `message.guid` once the prefix is stripped. The other 1,292 are bare:
+404 join directly, and 888 resolve to no surviving message — reactions whose
+target is gone, which render nowhere and must not error. So the join §4's
+builder writes strips the prefix *and* accepts the bare form; written
+`= message.guid` it would have matched 404 rows of 32,092, the working-sometimes
+failure this section predicted, delivered at scale. The earlier inference from
+`threading.md §2` — 71 bare rows attested, prefix form unknown — pointed the
+right way and undercounted both forms.
 
-That attests the bare form and says nothing about whether the part-prefixed form
-also occurs. Those 71 rows are a whole-database count, and there is no
-denominator to put them over: what would make them a fraction is the number of
-rows database-wide with `associated_message_guid` set, which nothing has
-measured. Scaling this plan's own sample is only an order of magnitude — 757,842
-messages against the 8,165 sampled is a factor of about 93, so roughly 58,000
-tapbacks if the rate holds — and the sample is the 25 most recent conversations,
-so it is uncertain in size and in direction. Nothing here turns on which way it
-errs.
+Scale, while the queries were open: the whole database holds roughly 31,900
+tapbacks against the ~58,000 the sample scaling guessed — same order of
+magnitude, the guess high by half. The removal ranges hold 76 rows, and the
+guid also appears on types outside the ranges §2 sampled: 84 rows of type 1000,
+24 of type 2007, and a handful of types 2 and 3.
 
-So 71 attested rows against an unmeasured but far larger number is thin. Thin
-enough that a join working on some rows and not others is the expected outcome
-rather than the unlucky one — and working sometimes is the worst way for this to
-fail, because it looks like working software.
-
-**What is type 1000?** Four rows, no quoted target, excluded by the `!= 0` test
-today and so already invisible. Most likely a sticker placed on a message rather
-than a reaction. Out of scope; identify it before assuming the 2000/3000 ranges
-are the whole story.
+**What is type 1000?** Whole-database, 84 rows, not the sample's four. Still
+excluded by the `!= 0` test today and so already invisible. Most likely a
+sticker placed on a message rather than a reaction. Out of scope; identify it —
+and type 2007, which the measurement surfaced with 24 rows — before assuming
+the 2000/3000 ranges are the whole story.
