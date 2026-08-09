@@ -89,10 +89,15 @@ use crate::db::{Chat, Message};
 /// a daemon that does not know them ignores them and answers with bare hits, so
 /// `-C 3` would silently produce exactly what the flag was asked to change.
 ///
-/// 12 renames the `read` command to `chat`, following the CLI. A daemon that
-/// knows only `read` reports the new name as an unknown command, which is the
-/// loud failure — and the version check is what turns it into "reinstall the
-/// daemon" rather than a client and a daemon disagreeing about a word.
+/// 12 renames the `read` command to `chat`, following the CLI. This one buys
+/// the *better* loud failure rather than the only one, which is worth being
+/// exact about: a renamed command is an unknown command, and that branch
+/// already names the remedy, so skew is loud either way. What the bump changes
+/// is which message you get. `serve` compares `v` before it looks at `cmd`, so
+/// with it, both directions answer with the two protocol numbers, and the
+/// numbers are the part that says which side is stale. Without it you would get
+/// "does not understand `read`" instead — equally loud, and it leaves you to
+/// work out who is behind.
 ///
 /// Kept in step deliberately, rather than letting the two vocabularies drift.
 /// The cost is one reinstall on each machine; the alternative is a protocol

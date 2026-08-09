@@ -249,9 +249,9 @@ fn filters_by_name() {
     assert_eq!(rowids, [2]);
 }
 
-// ----------------------------------------------------------------- read
+// ----------------------------------------------------------------- chat
 
-fn read(chat: &str, tapbacks: bool) -> serde_json::Value {
+fn chat(chat: &str, tapbacks: bool) -> serde_json::Value {
     ask(&Request::Chat(ChatRequest {
         chat: vec![chat.into()],
         names: Some(false),
@@ -263,7 +263,7 @@ fn read(chat: &str, tapbacks: bool) -> serde_json::Value {
 
 #[test]
 fn returns_a_conversation_oldest_first_without_tapbacks() {
-    let value = read("1", false);
+    let value = chat("1", false);
     assert_eq!(value["chat"]["rowid"], serde_json::json!(1));
     let bodies: Vec<&str> = value["messages"]
         .as_array()
@@ -277,14 +277,14 @@ fn returns_a_conversation_oldest_first_without_tapbacks() {
 
 #[test]
 fn includes_tapbacks_when_asked() {
-    let value = read("1", true);
+    let value = chat("1", true);
     assert_eq!(value["messages"].as_array().unwrap().len(), 3);
     assert_eq!(value["messages"][2]["isTapback"], serde_json::json!(true));
 }
 
 #[test]
 fn reaches_a_filtered_conversation_when_it_is_named_outright() {
-    let value = read("3", false);
+    let value = chat("3", false);
     assert_eq!(value["messages"].as_array().unwrap().len(), 1);
 }
 
@@ -292,7 +292,7 @@ fn reaches_a_filtered_conversation_when_it_is_named_outright() {
 /// That shape is the contract the TypeScript client still reads (§4).
 #[test]
 fn dates_cross_the_wire_as_iso_strings() {
-    let value = read("1", false);
+    let value = chat("1", false);
     let date = value["messages"][0]["date"].as_str().unwrap();
     assert_eq!(date, "2026-01-15T17:30:00.000Z");
 }
@@ -717,9 +717,12 @@ fn reports_a_malformed_known_request_as_such() {
 /// The old wire name is unknown now, and says so in the words that tell you
 /// what to do about it.
 ///
-/// This is the failure the bump to 12 exists for: a client speaking `chat` to a
-/// daemon that knows only `read` gets a command it cannot place, and the
-/// version check is what turns that into a reinstall rather than a puzzle.
+/// The frame is deliberately one no build sends: `read` at the current version
+/// is an old name paired with a new number, and a client saying `read` speaks
+/// 11. Real skew never reaches here, because `serve` compares `v` first and
+/// answers with the two protocol numbers instead. What this pins is the branch
+/// `server.rs` keeps for the forgotten bump — a wire change that ships without
+/// moving the constant lands exactly here, and this is the message it gets.
 #[test]
 fn the_old_command_name_is_reported_as_unknown() {
     let frame = raw(&format!("{{\"cmd\":\"read\",\"v\":{PROTOCOL_VERSION}}}\n"));
