@@ -35,13 +35,19 @@ are the answer, and how many rooms they are in cannot change it.
 
 The second slice (#37) makes that order the entry itself. `resolve_conversation`
 resolves the person before any chat row is matched, so the window cannot even
-decide *who* a spec means. An address typed in full names the person too — the
-whole conversation, led by the typed address's own thread so the send target
-stays where it was aimed — and a name two contacts share errors naming the
-people, an address alongside each. Chat rows are matched as text only for what
-no contact claims: a room's own name, a group identifier, an address fragment.
-A room named exactly what a person answers to is still the ambiguity it always
-was, now checked against the whole table instead of the window.
+decide *who* a spec means. An address names the person too, whole or as a
+fragment — the whole conversation, led by the address's own thread so the send
+target stays where it was aimed; a whole address leads on its key and a
+fragment by the substring rule every other fragment uses. A name two contacts
+share errors naming the people, an address alongside each — unless a room's own
+label is exactly the string typed, which is the one claim that outranks that
+error. Chat rows are matched as text only for what no contact claims: a room's
+own name, a group identifier, an address fragment. A room named exactly what
+*one* person answers to is still the tie it always was, now checked against the
+whole table instead of the window; named exactly what *two* people answer to,
+the room wins outright, because its claim is whole where theirs are fragments —
+first written the other way here, corrected when review showed the people error
+speaking over the label.
 
 ## 3 What remains, and why it can wait
 
