@@ -303,10 +303,12 @@ fn contains_ignoring_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
 /// takes a slice of these same bytes and reads it as UTF-8, so any needle that
 /// survives into the decoded body is present in the blob — this is a superset of
 /// what the decoded filter accepts, which is exactly what a prefilter must be.
-/// It over-matches when the needle also appears in an archived class name, and
-/// the decode-and-check afterwards is what narrows that. Both run
-/// `contains_ignoring_case`, so the two cannot disagree about what a match is;
-/// they differ only in what they are looking at.
+/// It over-matches when the needle also appears in an archived class name, or
+/// when the occurrence does not start a word: the decoded filter runs
+/// `matching::begins_a_word`, and that rule cannot run here, because the
+/// framing puts an arbitrary byte before the text and a boundary test on raw
+/// bytes rejects real matches (search-boundaries.md §3). The decode-and-check
+/// afterwards is what narrows both.
 fn register_body_match(db: &Connection) -> rusqlite::Result<()> {
     use rusqlite::functions::FunctionFlags;
 
@@ -1218,6 +1220,9 @@ pub fn fetch_messages(
     // false positives roughly doubles the query. Over-fetching once instead
     // keeps almost every search to a single pass.
     let wanted = usize::try_from(options.limit).unwrap_or(usize::MAX);
+    // Folded once here because `begins_a_word` expects both sides lowercased,
+    // and one query is matched against every candidate in every round.
+    let needle = options.query.map(str::to_lowercase);
     let mut asking = if options.query.is_some() {
         options.limit.saturating_mul(4).saturating_add(64)
     } else {
@@ -1245,15 +1250,18 @@ pub fn fetch_messages(
         let exhausted = i64::try_from(candidates.len()).unwrap_or(i64::MAX) < asking;
 
         messages = candidates;
-        if let Some(query) = options.query {
-            // Deliberately the same predicate the SQL prefilter ran, so the two
-            // agree on what a match is by construction rather than by matching
-            // rules written twice.
+        if let Some(needle) = &needle {
+            // Deliberately *narrower* than the SQL prefilter, which stays a
+            // plain substring test: a hit has to start where a word starts,
+            // and that rule can only run here. The blob's framing puts an
+            // arbitrary byte — often a letter — immediately before the text,
+            // so a boundary test on the raw bytes rejects real matches, and
+            // the preceding "character" is not even guaranteed to be one
+            // (search-boundaries.md §3).
             messages.retain(|message| {
-                message
-                    .body
-                    .as_ref()
-                    .is_some_and(|body| contains_ignoring_case(body.as_bytes(), query))
+                message.body.as_ref().is_some_and(|body| {
+                    crate::matching::begins_a_word(&body.to_lowercase(), needle)
+                })
             });
         }
 

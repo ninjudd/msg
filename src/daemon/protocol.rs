@@ -89,6 +89,13 @@ use crate::db::{Chat, Message};
 /// a daemon that does not know them ignores them and answers with bare hits, so
 /// `-C 3` would silently produce exactly what the flag was asked to change.
 ///
+/// 15 makes a search hit start where a word starts, so `art` stops finding
+/// `apartment` while `start` still finds `starting`. Same command, same
+/// fields, changed answers — the case 8 and 13 were. Nothing errors against a
+/// stale daemon: it keeps answering substring matches, so a short needle goes
+/// back to returning noise, which is the exact defect the change removes,
+/// with nothing to say the daemon is why.
+///
 /// 14 resolves the person before matching chat rows, so `chat` answers a name
 /// or an address from the contact outward: the record, then every address it
 /// holds, then their threads — however quiet. An address now reads as the
@@ -136,7 +143,7 @@ use crate::db::{Chat, Message};
 /// saying so, which looks exactly like a person who only has one. The reply is
 /// not wrong in a way anything can see — it is simply missing half the
 /// conversation, which is the failure this number exists to make loud.
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";

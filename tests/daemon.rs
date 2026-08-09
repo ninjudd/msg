@@ -541,9 +541,10 @@ fn skips_filtered_conversations_unless_asked() {
 fn searches_one_person_across_conversations() {
     let person = |with: Option<&str>, from: Option<&str>| {
         ask(&Request::Search(SearchRequest {
-            // Every fixture body contains a vowel; the point here is the
-            // person filter, not the text match.
-            query: "e".into(),
+            // `a` begins a word on both sides of the fixture conversation —
+            // `are`, `around`, `after` — and a hit has to begin one now; the
+            // point here is the person filter, not the text match.
+            query: "a".into(),
             with: with.map(str::to_string),
             from: from.map(str::to_string),
             names: Some(false),
