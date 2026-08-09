@@ -1353,13 +1353,19 @@ pub fn fetch_conversation(
         return Ok(merged);
     }
 
-    // By date, and by rowid only to break a tie. It has to be the order each
-    // thread was fetched in: `fetch_messages` takes the newest `limit` with
-    // `ORDER BY message.date DESC`, so trimming by anything else would drop a
-    // message the threads did return and keep one they did not offer. Ordering
-    // the transcript this way also means a person's second conversation does
-    // not change where a late-arriving message appears, which sorting by
-    // arrival would.
+    // By date, and by rowid only to break a tie.
+    //
+    // Date because that is what `read` has always meant: `oldest_first` and
+    // `before_rowid` are what select rowid ordering in `fetch_messages`, and
+    // reading sets neither, so a single-thread transcript is in clock order.
+    // Sorting a merge by arrival would print a late-arriving message last where
+    // an unmerged read prints it first, so the same messages would read in one
+    // order for somebody with one conversation and another for somebody with
+    // two.
+    //
+    // And because the fetch and the trim have to agree. Each thread is selected
+    // with `ORDER BY message.date DESC`, so trimming the union by anything else
+    // drops a message a thread returned and keeps one it never offered.
     merged.sort_by_key(|message| (message.date, message.rowid));
     // A message joined to two of these threads arrives from both fetches, the
     // same one rowid and two rows that `attachments_for` and the reply lookup

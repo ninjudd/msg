@@ -68,17 +68,39 @@ can have, and it is already ruled out by construction.
 
 ## 4 One order across two threads, fetched one thread at a time
 
-The number that orders a merged transcript is `message.rowid`.
-`chat_message_join.message_id` *is* that rowid — the join is on equality — so
-the value ordering messages inside one chat is the same value ordering them
-across all of them. Nothing has to be invented to interleave two threads, and
-arrival order survives the merge.
+Two threads are one transcript because `chat_message_join.message_id` *is*
+`message.rowid` — the join is on equality — so a message has one identity in
+whichever thread it is reached through. That is what makes interleaving
+coherent, and what lets the merge recognise a message that arrives from both
+fetches as one message rather than two.
 
-**Arrival order, not date order.** Same argument the watcher and the context
-windows already make: rowid is arrival, date is what the sender's clock said,
-and the two disagree for messages that arrive out of order. Merging by date
-would reorder a conversation against itself for exactly the messages most
-likely to be interesting.
+**Ordered by date, which is what `read` already meant. (CORRECTED)** This
+section first said the merge should order by arrival, on the grounds that the
+watcher and the context windows do. They do — and they do it by setting
+`oldest_first` or `before_rowid`, which is what selects rowid ordering in
+`fetch_messages`. `read` sets neither, so it has always taken
+`ORDER BY message.date DESC` and shown a transcript in clock order. Generalising
+from the two callers that order by arrival to the one that does not was the
+error.
+
+It matters because the merge cannot quietly mean something different from the
+command it is part of. Against a one-chat fixture where the newest arrival
+carries the oldest clock time, `msg read` prints it first:
+
+```
+Jan 13, 4:26 AM  +13105551234: LATE ARRIVAL, clock says first
+Jan 13, 4:27 AM  +13105551234: clock says second
+Jan 13, 4:28 AM  +13105551234: clock says third
+```
+
+Sorting the merge by arrival would print that message last, so the same messages
+would read in one order for somebody with a single conversation and in another
+for somebody with two. Date, with rowid only to break a tie.
+
+There is a second reason, which is a correctness one rather than a consistency
+one: each thread is *selected* with `ORDER BY message.date DESC`, so trimming
+the union by anything else can drop a message a thread returned and keep one it
+never offered. The fetch and the trim have to agree, and the fetch is date.
 
 **But the query stays one chat at a time. (CORRECTED)** This section first said
 the merge was `chat_id IN (…)` in place of `chat_id = ?`, with the ordering and
