@@ -2183,17 +2183,20 @@ pub fn resolve_conversation(
     // of them has a contact, in which case it was a fragment of an address,
     // and fragments of addresses are text to search below like anything else
     // no contact claims.
+    // A room named exactly this falls through to the text match instead of
+    // being beaten — or being *spoken over*: a room's own name is a label
+    // somebody chose, so typing the whole of it claims the room as definitely
+    // as a name claims the person (§4). One person and the room is the tie
+    // reported below; several people and the room is still the room's claim
+    // to be part of, not an ambiguity among people to report as if no room
+    // existed. A room that merely matched by membership never competes —
+    // being in a room is not being the person (§3).
     let mut people = people_matching(db, spec, contacts)?;
-    if people.len() > 1 && people.keys().any(|key| key.starts_with("contact:")) {
+    let named_room = !people.is_empty() && exactly_names_a_room(db, spec)?;
+    if people.len() > 1 && !named_room && people.keys().any(|key| key.starts_with("contact:")) {
         return Err(several_people(spec, &people));
     }
-    if people.len() == 1 && !exactly_names_a_room(db, spec)? {
-        // A room named exactly this falls through instead of being beaten: a
-        // room's own name is a label somebody chose, so typing the whole of
-        // it claims the room as definitely as a name claims the person (§4),
-        // and two exact claims on one string are the ambiguity reported
-        // below. A room that merely matched by membership never competes —
-        // being in a room is not being the person (§3).
+    if people.len() == 1 && !named_room {
         let person = people
             .pop_first()
             .map(|(_, person)| person)
@@ -3954,6 +3957,43 @@ mod tests {
         // wins — which is the whole point of §3.
         let chat = resolve_chat(&db, "robin", &contacts).unwrap();
         assert_eq!(chat.rowid, alone);
+    }
+
+    /// A room named outright is still reached when the name is also two
+    /// people's.
+    ///
+    /// The ambiguity between the people is real, but the room's claim is the
+    /// stronger one — its label is the whole string, theirs is a fragment —
+    /// and answering "2 people match" as if no room existed would take away
+    /// the one unambiguous meaning along with the two ambiguous ones (§4).
+    #[test]
+    fn a_room_named_outright_beats_an_ambiguity_between_people() {
+        let db = fixture();
+        let one = one_to_one(&db, 4, "+16175550147");
+        let two = one_to_one(&db, 5, "+16175550148");
+        message_in(&db, one, 10, 5);
+        message_in(&db, two, 11, 6);
+        db.execute("UPDATE chat SET display_name = 'Robin' WHERE rowid = 2", [])
+            .unwrap();
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("+16175550148", "source:9", "Robin Chen"),
+        ]);
+
+        let chat = resolve_chat(&db, "Robin", &contacts).unwrap();
+        assert_eq!((chat.rowid, chat.is_group), (2, true), "the label wins");
+
+        // Take the label away and the same spec is the ambiguity it should
+        // be — the room was the reason it was not.
+        db.execute(
+            "UPDATE chat SET display_name = 'Ship Room' WHERE rowid = 2",
+            [],
+        )
+        .unwrap();
+        let error = resolve_chat(&db, "Robin", &contacts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 people match"), "{error}");
     }
 
     /// The room is still reachable, by naming the room rather than a member.
