@@ -30,7 +30,8 @@ fn build(path: &Path) {
           display_name TEXT, is_filtered INTEGER DEFAULT 0);
         CREATE TABLE message (rowid INTEGER PRIMARY KEY, guid TEXT, text TEXT,
           attributedBody BLOB, is_from_me INTEGER DEFAULT 0, handle_id INTEGER,
-          associated_message_type INTEGER DEFAULT 0, date INTEGER, service TEXT,
+          associated_message_type INTEGER DEFAULT 0, associated_message_guid TEXT,
+          associated_message_emoji TEXT, date INTEGER, service TEXT,
         thread_originator_guid TEXT, thread_originator_part TEXT);
         CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER,
           message_date INTEGER DEFAULT 0);
@@ -57,13 +58,20 @@ fn build(path: &Path) {
                  (4, 'm4', 'we started at six, is that art deco', 0, 2, 790000180000000000, 'iMessage'),
                  (5, 'm5', 'the apartment above ours', 0, 2, 790000240000000000, 'iMessage'),
                  (6, 'm6', 'the İart gallery downtown', 0, 2, 790000300000000000, 'iMessage');
+        INSERT INTO message (rowid, guid, text, is_from_me, handle_id, associated_message_type,
+                             associated_message_guid, associated_message_emoji, date, service)
+          VALUES (7, 't7', 'Loved \"we started at six, is that art deco\"', 0, 2, 2000,
+                  'p:0/m4', NULL, 790000360000000000, 'iMessage'),
+                 (8, 't8', NULL, 1, 1, 2006, 'm4', '🙏', 790000420000000000, 'iMessage');
         INSERT INTO chat_message_join (chat_id, message_id, message_date)
           VALUES (1, 1, 790000000000000000),
                  (1, 2, 790000060000000000),
                  (1, 3, 790000120000000000),
                  (3, 4, 790000180000000000),
                  (3, 5, 790000240000000000),
-                 (3, 6, 790000300000000000);
+                 (3, 6, 790000300000000000),
+                 (3, 7, 790000360000000000),
+                 (3, 8, 790000420000000000);
         ",
     )
     .unwrap();
@@ -271,6 +279,44 @@ fn a_search_hit_starts_where_a_word_starts() {
     let output = msg(&["--no-names", "search", "start"]);
     assert_eq!(code(&output), 0);
     assert!(stdout(&output).contains("we started at six"));
+}
+
+/// The bracket rides the message it reacts to — both stored guid forms reach
+/// it, a type 2006 reads the column — and `--tapbacks` trades the brackets
+/// for the rows, so the same information is never printed twice.
+#[test]
+fn reactions_ride_the_message_and_the_flag_trades_them_for_rows() {
+    let output = msg(&["--no-names", "chat", "3"]);
+    assert_eq!(code(&output), 0);
+    let text = stdout(&output);
+    assert!(text.contains("art deco [❤️🙏]"), "{text}");
+
+    let output = msg(&["--no-names", "chat", "3", "--tapbacks"]);
+    assert_eq!(code(&output), 0);
+    let text = stdout(&output);
+    assert!(!text.contains("[❤️🙏]"), "{text}");
+    assert!(text.contains("Loved"), "{text}");
+
+    let output = msg(&["--no-names", "chat", "3", "--json"]);
+    assert_eq!(code(&output), 0);
+    let value: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let messages = value["messages"].as_array().unwrap();
+    let reacted = messages
+        .iter()
+        .find(|message| message["guid"] == "m4")
+        .unwrap();
+    let tapbacks = reacted["tapbacks"].as_array().unwrap();
+    assert_eq!(tapbacks.len(), 2, "{tapbacks:?}");
+    assert_eq!(tapbacks[0]["associatedMessageType"], 2000);
+    assert_eq!(tapbacks[0]["symbol"], "❤️");
+    assert_eq!(tapbacks[1]["symbol"], "🙏");
+    assert_eq!(tapbacks[1]["isFromMe"], true);
+    // Unreacted messages omit the key entirely rather than writing [].
+    let bare = messages
+        .iter()
+        .find(|message| message["guid"] == "m5")
+        .unwrap();
+    assert!(bare.get("tapbacks").is_none(), "{bare}");
 }
 
 #[test]

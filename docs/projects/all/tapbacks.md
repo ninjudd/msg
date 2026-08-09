@@ -1,10 +1,17 @@
 # Plan: Put a reaction on the message it reacted to
 
-**Status:** Designed, not started. Committed to in [next](../next.md). The type
-numbering in §2 is measured against the real database, and the two questions §9
-opened are now measured too (2026-08-09): the emoji lives in its own column,
-and the guid is part-prefixed 96% of the time. §4's symbols reversed the same
-day, from shorthand to the Messages emoji, by request.
+**Status:** Slice 1 built, open as #43 at protocol 16 — the bracket, the
+table, removals cancelled, the JSON field. Slice 2 (names behind a flag) stays
+in [next](../next.md). The type numbering in §2 is measured against the real
+database, and the two questions §9 opened are measured too (2026-08-09): the
+emoji lives in its own column, and the guid is part-prefixed 96% of the time.
+§4's symbols reversed the same day, from shorthand to the Messages emoji, by
+request. Building it added two facts to the record: the reaction lookup rides
+`message_idx_associated_message2`, a partial index over non-null
+`associated_message_guid`, so the query says `IS NOT NULL` outright — measured
+at 0.95s a page without that clause and 0.2s with it — and 51 reactions live
+in a different chat than their target, so the lookup must not be scoped to the
+conversation being read.
 
 **Goal:** Render tapbacks as `[😂🙏❤️❤️]` after the message they react to, instead
 of as separate rows that either interleave into the transcript or are hidden
@@ -159,7 +166,10 @@ level. If the data turns out to nest, the bracket goes on the tapback row that
 have none and would otherwise carry `[]`.
 
 Each entry holds the raw `associatedMessageType`, the rendered `symbol`, the
-`date`, and the sender's `handle` and `contactName`. The type is published beside
+`date`, `isFromMe`, and the sender's `handle` and `contactName`. `isFromMe` was
+not in this list as designed and earned its place in the build: my own reaction
+rows carry no handle, so without it the sender of mine would not survive into
+the JSON at all. The type is published beside
 the symbol deliberately: a consumer that wants Messages' own glyphs, or wants to
 count Love separately from a heart emoji, should not have to re-derive it from a
 string this program chose.
