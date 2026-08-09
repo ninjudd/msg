@@ -734,6 +734,7 @@ fn deliver(shared: &Arc<Shared>, watcher: &mut Watcher, latest: i64) -> Result<(
                     after_rowid: Some(watcher.watermark),
                     limit: WATCH_BATCH,
                     include_tapbacks: watcher.request.tapbacks == Some(true),
+                    attach_tapbacks: false,
                     include_filtered: watcher.request.unknown == Some(true),
                     oldest_first: true,
                     ..Default::default()

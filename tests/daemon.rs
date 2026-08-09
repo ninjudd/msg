@@ -840,6 +840,58 @@ fn streams_a_message_that_arrives_after_the_client_subscribed() {
     assert_eq!(received[0]["rowid"], serde_json::json!(rowid));
 }
 
+/// A stream never carries `tapbacks`, even when the reaction landed in the
+/// same burst as its target — the case where it *could* have. Attached
+/// brackets on a stream were a race, not a contract: whether one appeared
+/// depended on whether the reaction beat the delivery, and a bracket whose
+/// absence means nothing teaches a reader that it does (tapbacks.md §10).
+#[test]
+fn a_stream_carries_no_tapbacks_even_when_the_reaction_beat_delivery() {
+    let rowids = next_rowids(2);
+    let (target, reaction) = (rowids.start, rowids.start + 1);
+    let received = watch_collect(
+        1,
+        move |seen| seen == target,
+        move || {
+            let writer = Connection::open(&harness().database).unwrap();
+            insert(
+                &writer,
+                target,
+                &format!("g{target}"),
+                "see you at 8",
+                0,
+                1,
+                0,
+                at(600),
+                1,
+            );
+            writer
+                .execute(
+                    "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
+                         associated_message_type, associated_message_guid, date, service)
+                     VALUES (?, ?, NULL, 1, 1, 2001, ?, ?, 'iMessage')",
+                    rusqlite::params![
+                        reaction,
+                        format!("g{reaction}"),
+                        format!("p:0/g{target}"),
+                        at(601)
+                    ],
+                )
+                .unwrap();
+            writer
+                .execute(
+                    "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+                     VALUES (1, ?, ?)",
+                    rusqlite::params![reaction, at(601)],
+                )
+                .unwrap();
+        },
+    );
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0]["body"], serde_json::json!("see you at 8"));
+    assert!(received[0].get("tapbacks").is_none(), "{}", received[0]);
+}
+
 #[test]
 fn drains_a_burst_larger_than_one_batch_oldest_first() {
     let target = 250usize;

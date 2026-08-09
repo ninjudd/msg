@@ -319,11 +319,9 @@ msg watch --json               # JSON lines, one object per message
 With [the daemon](#the-daemon) running, new messages arrive as they land. Without
 it, `watch` polls every 3 seconds; change that with `--interval`.
 
-A default watch shows a reaction exactly when it was already there to ride
-its target in: it arrives attached, a bracket on the message being printed.
-One that lands after its target printed cannot retroactively gain its bracket
-in a stream, so to follow reactions live, pass `--tapbacks`, which prints
-each as its own line as it lands.
+A default watch shows messages only — a stream cannot revise a line it
+already printed, so brackets stay out of it entirely. To follow reactions
+live, pass `--tapbacks`, which prints each one as its own line as it lands.
 
 ### Sending
 

@@ -472,6 +472,7 @@ impl Source {
                     after_rowid: Some(watermark),
                     limit: WATCH_BATCH,
                     include_tapbacks: tapbacks,
+                    attach_tapbacks: false,
                     include_filtered: unknown,
                     oldest_first: true,
                     ..Default::default()

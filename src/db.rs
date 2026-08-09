@@ -1189,6 +1189,13 @@ pub struct FetchMessages<'a> {
     pub person: Option<PersonFilter<'a>>,
     pub limit: i64,
     pub include_tapbacks: bool,
+    /// Whether reactions ride the returned messages as `tapbacks`. Watch turns
+    /// this off: a stream that attached them would show a bracket exactly when
+    /// the reaction happened to land before its target was emitted — a race,
+    /// not a contract — and a bracket whose absence means nothing teaches a
+    /// reader that it does (tapbacks.md §10). Snapshots attach; streams show
+    /// reactions as events, behind `--tapbacks`.
+    pub attach_tapbacks: bool,
     pub include_filtered: bool,
     /// Take the oldest matches rather than the newest.
     ///
@@ -1210,6 +1217,7 @@ impl Default for FetchMessages<'_> {
             person: None,
             limit: 50,
             include_tapbacks: false,
+            attach_tapbacks: true,
             include_filtered: false,
             oldest_first: false,
         }
@@ -1452,11 +1460,15 @@ pub fn fetch_messages(
 
     // Reactions land on the messages they react to, so only non-tapback rows
     // are targets — a reaction to a reaction renders nowhere (tapbacks.md §6).
-    let targets: Vec<(i64, String)> = messages
-        .iter()
-        .filter(|message| !message.is_tapback)
-        .map(|message| (message.rowid, message.guid.clone()))
-        .collect();
+    let targets: Vec<(i64, String)> = if options.attach_tapbacks {
+        messages
+            .iter()
+            .filter(|message| !message.is_tapback)
+            .map(|message| (message.rowid, message.guid.clone()))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let tapbacks = tapbacks_for(db, &targets, contacts)?;
 
     for message in &mut messages {

@@ -240,13 +240,11 @@ A reaction that arrives after its target was already streamed is invisible to
 a default `msg watch`: the new row crosses the watermark but is filtered as a
 tapback, and the target — which now carries the reaction in its bracket — is
 not re-emitted, because nothing re-emits an already-streamed message. Caught
-by review on slice 1, and narrower than it first reads: before slice 1 a
-default watch showed no reactions at all, and since slice 1 it shows exactly
-those already there to ride their target in — on the CLI's poll and the
-daemon's delivery alike — and the invisible one is the reaction that lands
-after its target printed.
-`--tapbacks` still streams them as rows, which remains the way to follow
-reactions live.
+by review on slice 1, which first shipped the half-behaviour: a bracket
+appeared exactly when the reaction happened to land before its target was
+emitted — on the CLI's poll and the daemon's delivery alike — and nothing
+appeared otherwise. `--tapbacks` still streams reactions as rows, which
+remains the way to follow them live.
 
 Deliberately not fixed in slice 1, because the fix is a design decision and
 not a patch. Re-emitting the target with its updated bracket is an *update
@@ -255,10 +253,16 @@ that keys by rowid would do the right thing, and nothing in the protocol says
 which a consumer is.
 
 **Decided 2026-08-09: `--tapbacks` is watch's answer, and that is the whole
-answer.** A stream that revises already-printed lines is a terminal UI's job,
-and this program is not growing one; short of that, re-emission is a
-half-measure with the consumer ambiguity above built in. So a default watch
-shows messages — with a bracket exactly when the reaction was already there to
-ride its target in — a `--tapbacks` watch shows reactions as they land, and
-the README says so. *Rejected:* re-emitting the target as an update event, for
-the reason above; a TUI, as a different program.
+answer — so a default watch attaches no `tapbacks` at all, at protocol 17.**
+A stream that revises already-printed lines is a terminal UI's job, and this
+program is not growing one; short of that, re-emission is a half-measure with
+the consumer ambiguity above built in. The racy half-behaviour came out with
+the decision rather than surviving beside it: a bracket that appears exactly
+when the reaction beat the delivery is a race, not a contract, and a bracket
+whose absence means nothing teaches a reader that it does. Snapshots attach
+reactions; streams show them as events, behind the flag. So "a default watch
+shows messages only" — the sentence every summary of this section kept
+reaching for, twice corrected for overclaiming — is now true by construction.
+*Rejected:* re-emitting the target as an update event, for the reason above;
+a TUI, as a different program; keeping the beat-the-delivery bracket, as the
+unreliable half of a feature.
