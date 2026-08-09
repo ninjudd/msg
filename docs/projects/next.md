@@ -7,3 +7,6 @@ Committed to, not started. One line each, same rules as [now](now.md). See
   the body, instead of rows that interleave or are hidden.
 - [Stop matching in the middle of a word](all/search-boundaries.md) — a short
   needle finds itself inside longer words, so `art` returns `apartment`.
+- [Merge the conversation listing too](all/conversation-merging.md) — §10 slice
+  two. `msg chats` still shows one row per thread, so its count disagrees with
+  what `msg read` now does.

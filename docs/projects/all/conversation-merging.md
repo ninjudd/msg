@@ -1,12 +1,17 @@
 # Plan: One person, one conversation
 
-**Status:** Slice one in progress. The identity half already shipped —
-`resolve_chat` collapses several conversations with one person down to one
-answer — but it answers with the most recently active and the rest stay
-invisible. §9's index question is answered and §4 is corrected as a result: the
-merge fetches one thread at a time rather than widening the query, because
-`chat_id IN (…)` sorts the whole conversation. The duplicate-rowid question is
-still open and is a measurement, not a blocker.
+**Status:** Slice one shipped in #30. `msg read <name>` merges every
+conversation with a person, `msg read <rowid>` reads one thread, and
+`ReadReply` carries `merged` at protocol 10. Slice two — merging the `msg chats`
+listing — is not started, and is all that remains.
+
+Two of §4's claims were wrong and are corrected in place, both about
+performance rather than behaviour: `chat_id IN (…)` keeps the index and loses
+the ordering, so the merge fetches one thread at a time; and the transcript is
+ordered by date rather than by arrival, because that is what `read` already
+meant. §9's index question is answered. The duplicate-rowid question is still
+open and remains a measurement rather than a blocker — the merge dedupes on
+rowid either way, which the tree already had to do three times elsewhere.
 
 **Goal:** When someone is reachable at more than one address, show their
 messages as a single conversation, the way Messages does, instead of picking
