@@ -753,8 +753,6 @@ mod tests {
         let out = render_messages(&[first.clone(), second.clone()], options);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 4, "{out}");
-        // Two headers, one per day, each a bare date with no year — the same
-        // no-year choice DATE_TIME has always made.
         // The header text itself is day_header's, pinned exhaustively in its
         // own test — here the contract is that the renderer emits exactly
         // that, once per day, wherever in the calendar the suite runs.
