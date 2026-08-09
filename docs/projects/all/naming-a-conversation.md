@@ -80,13 +80,15 @@ gives one answer or none.
 *Rejected:* preferring the smallest superset, which silently answers with a
 different room than the one asked for as soon as the exact one does not exist.
 
-**Falling back to a unique superset is worth considering and is not decided.**
-If no group has exactly those members but exactly one contains all of them, that
-is arguably what was meant, and it is the difference between naming two people
-out of a room of six and having to type all six. The counter is that it makes
-`msg chat` answer with a conversation containing people nobody named. Leave it
-out of the first slice; the failure without it is a clear "no conversation with
-exactly those people", which is a good error to have.
+**No fallback to a unique superset. (DECIDED)** If no group has exactly those
+members, the answer is that there is no such conversation, even when exactly one
+room contains all of them. The tempting argument is convenience — naming two
+people out of a room of six beats typing all six — and it loses to the same
+principle the rest of this plan turns on: a command may not answer with a
+conversation containing people nobody named. "No conversation with exactly those
+people" is a good error, and it is one the user can act on by naming the rest.
+*Rejected:* the unique-superset fallback, which is silent when it is wrong and
+indistinguishable from a hit when it is right.
 
 **A named group is still reachable by its name.** `msg chat "Ship Room"` does
 not change. Membership naming is for the unnamed rooms, which is most of them.
@@ -117,6 +119,11 @@ resolve N person specs to a chat by membership, which `chat_handle_join` answers
 directly — the same table `one_to_one_chats` already asks about, with the count
 clause turned into an exact-set comparison.
 
+Slice one is where §8's unification belongs, because it is the slice that makes
+`resolve_conversation` ask about a person rather than about chat rows. Doing it
+then costs nothing extra; doing it later means writing the person-preference
+rule twice and deleting one of them.
+
 The rename in `next.md` — `msg read` becoming `msg chat` — is independent of
 both and can land in any order. This plan writes `msg chat` throughout on the
 assumption it lands first; if it does not, the same behaviour belongs on
@@ -127,6 +134,63 @@ assumption it lands first; if it does not, the same behaviour belongs on
 - **Not a change to merging.** A person's direct conversation is still all of
   their threads merged, per `conversation-merging.md`. §3 decides which
   conversation is meant, not what it contains.
-- **Not a search feature.** `--with` and `--from` already take a person and
-  already span their addresses. This is about naming the conversation to read.
+- **Not a change to what `--with` and `--from` select.** They are in scope only
+  as callers of §8's primitive, so that a name resolves identically whether it
+  is being read or searched. Which messages each of them then returns is
+  unchanged, and the open question at the end of §8 is deliberately left open.
 - **Not fuzzy matching.** A misspelt name finds nothing, as now.
+
+## 8 One primitive for finding a person
+
+Everything above needs the same operation — a spec in, one person out — and so
+does `--with`, `--from`, `msg contacts`, and sending. There must be one
+implementation of it, because two that disagree about who somebody is would be
+the subtle bug `conversation-merging.md §3` already argues against for identity.
+
+**`resolve_person` is that primitive and most of it already exists.** It takes a
+spec and answers with one `Person`, spanning every address a Contacts record
+holds. An address typed in full matches on `handle_key`, so its written shape
+does not matter, and only when no address matches outright is the spec read as a
+name. It already honours nicknames in both directions: `answers_to` matches the
+displayed nickname and the filed name it displaced, and an exact match on either
+breaks a tie, because typing the whole of one is as definite as typing the whole
+of the other.
+
+**What is wrong today is that it is not the only one.** `resolve_conversation`
+does not call it. It matches chat rows independently — `displayName`,
+`chatIdentifier`, `handles`, plus `any_named` against the contact index — so
+reading and searching resolve a name by two different routes that can disagree.
+§3's rule is the occasion to collapse them: find the person first, then find
+their conversation, rather than asking the chat table to answer a question about
+people.
+
+**It errors rather than guessing. (DECIDED)** A spec that resolves to nobody,
+or to more than one person, is an error and stops the command. `--with dana`
+where Dana cannot be found must not quietly search every conversation, which is
+the failure mode that makes a filter worse than no filter: the results look like
+an answer. `resolve_person` already fails this way — "no one matching" — and the
+requirement is that every caller keeps it rather than falling back.
+
+**The word-start rule from §2 lives here**, in the one place, which is what
+makes "shared primitive" worth more than a tidiness argument: the boundary rule
+gets written once and every caller gets it.
+
+### What `--from` and `--with` currently mean, which is worth stating before it changes
+
+They differ by more than scope today, and the difference is deliberate:
+
+| | Their messages | My messages |
+| --- | --- | --- |
+| `--from` | every conversation they appear in | never |
+| `--with` | every conversation they appear in | only in a one-to-one with them |
+
+`Sender::BothWays` excludes my messages in a group on purpose — they were
+addressed to the room, not to that person, so counting them would return most of
+my own history from any busy group.
+
+**Whether `--from` should also narrow to the direct conversation is open.**
+"Search my conversation with them" and "search what they said, wherever they
+said it" are both reasonable readings of `--from`, and they differ for anyone
+sharing a group with the person. Nothing here changes it; the shared primitive
+is about resolving *who*, and this is a question about *where*, which should be
+settled on its own rather than as a side effect.
