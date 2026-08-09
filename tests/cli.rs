@@ -93,14 +93,14 @@ fn it_lists_conversations() {
 
 #[test]
 fn it_reads_a_conversation() {
-    let output = msg(&["--no-names", "read", "1"]);
+    let output = msg(&["--no-names", "chat", "1"]);
     assert_eq!(code(&output), 0);
     assert!(stdout(&output).contains("are you around later"));
 }
 
 #[test]
 fn it_emits_json_when_asked() {
-    let output = msg(&["--no-names", "read", "1", "--json"]);
+    let output = msg(&["--no-names", "chat", "1", "--json"]);
     assert_eq!(code(&output), 0);
     let value: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
     assert_eq!(value["chat"]["rowid"], serde_json::json!(1));
@@ -154,7 +154,7 @@ fn a_database_it_cannot_read_exits_two_with_the_explanation() {
 
 #[test]
 fn an_ordinary_failure_exits_one() {
-    let output = msg(&["--no-names", "read", "nothing-matches-this"]);
+    let output = msg(&["--no-names", "chat", "nothing-matches-this"]);
     assert_eq!(code(&output), 1);
     assert!(String::from_utf8_lossy(&output.stderr).contains("no chat matching"));
 }
@@ -164,11 +164,11 @@ fn an_ordinary_failure_exits_one() {
 #[test]
 fn a_usage_error_exits_one_rather_than_claiming_the_permission_status() {
     for args in [
-        vec!["read", "1", "-n", "0"],
-        vec!["read", "1", "-n", "-4"],
-        vec!["read", "1", "-n", "many"],
+        vec!["chat", "1", "-n", "0"],
+        vec!["chat", "1", "-n", "-4"],
+        vec!["chat", "1", "-n", "many"],
         vec!["nosuchcommand"],
-        vec!["read"],
+        vec!["chat"],
         vec!["watch", "--interval", "0"],
     ] {
         let output = msg(&args);
@@ -346,11 +346,11 @@ fn it_saves_an_attachment_by_the_id_it_printed() {
     drop(db);
 
     // The id has to be discoverable from the output, or it cannot be used.
-    let read = msg_in(&database, &["read", "1", "--no-names"]);
+    let chat = msg_in(&database, &["chat", "1", "--no-names"]);
     assert!(
-        stdout(&read).contains("[#77 holiday.bin,"),
+        stdout(&chat).contains("[#77 holiday.bin,"),
         "{}",
-        stdout(&read)
+        stdout(&chat)
     );
 
     let into = directory.join("out");

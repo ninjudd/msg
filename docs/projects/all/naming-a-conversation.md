@@ -4,9 +4,15 @@
 answers with that person's own conversation; the word-start rule ships with it,
 for names, because §2 turned out to be a prerequisite rather than an overlap.
 Slice two — several names naming a room by its membership — is implemented on
-top of it: `read` takes a list, each element resolves through the same
+top of it: `chat` takes a list, each element resolves through the same
 primitive, and membership is compared on identities so one person reachable two
 ways is one member.
+
+Both slices shipped under the old command name, `msg read` — slice one in #32
+and slice two in #33 — and #35 renamed it. §6 assumed that rename would land
+first, and it did not: what happened is the contingency the same paragraph
+describes. The body below is left as written, including the `next.md` line §6
+points at, which #35 deletes.
 
 `search-boundaries.md §7` is corrected as part of this: the case it was waiting
 for has been observed, and the shared predicate it asked for now exists as

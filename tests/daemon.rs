@@ -15,7 +15,7 @@ use base64::Engine as _;
 use msg::apple::to_apple_date;
 use msg::daemon::client::{connect_daemon, connect_daemon_within, request};
 use msg::daemon::protocol::{
-    ChatsRequest, ContactsRequest, Empty, PROTOCOL_VERSION, ReadRequest, Request, ResolveRequest,
+    ChatRequest, ChatsRequest, ContactsRequest, Empty, PROTOCOL_VERSION, Request, ResolveRequest,
     SavePart, SaveRequest, SearchRequest, SendRequest, WatchRequest, envelope,
 };
 use msg::daemon::server::{Daemon, DaemonOptions};
@@ -249,10 +249,10 @@ fn filters_by_name() {
     assert_eq!(rowids, [2]);
 }
 
-// ----------------------------------------------------------------- read
+// ----------------------------------------------------------------- chat
 
-fn read(chat: &str, tapbacks: bool) -> serde_json::Value {
-    ask(&Request::Read(ReadRequest {
+fn chat(chat: &str, tapbacks: bool) -> serde_json::Value {
+    ask(&Request::Chat(ChatRequest {
         chat: vec![chat.into()],
         names: Some(false),
         tapbacks: tapbacks.then_some(true),
@@ -263,7 +263,7 @@ fn read(chat: &str, tapbacks: bool) -> serde_json::Value {
 
 #[test]
 fn returns_a_conversation_oldest_first_without_tapbacks() {
-    let value = read("1", false);
+    let value = chat("1", false);
     assert_eq!(value["chat"]["rowid"], serde_json::json!(1));
     let bodies: Vec<&str> = value["messages"]
         .as_array()
@@ -277,14 +277,14 @@ fn returns_a_conversation_oldest_first_without_tapbacks() {
 
 #[test]
 fn includes_tapbacks_when_asked() {
-    let value = read("1", true);
+    let value = chat("1", true);
     assert_eq!(value["messages"].as_array().unwrap().len(), 3);
     assert_eq!(value["messages"][2]["isTapback"], serde_json::json!(true));
 }
 
 #[test]
 fn reaches_a_filtered_conversation_when_it_is_named_outright() {
-    let value = read("3", false);
+    let value = chat("3", false);
     assert_eq!(value["messages"].as_array().unwrap().len(), 1);
 }
 
@@ -292,7 +292,7 @@ fn reaches_a_filtered_conversation_when_it_is_named_outright() {
 /// That shape is the contract the TypeScript client still reads (§4).
 #[test]
 fn dates_cross_the_wire_as_iso_strings() {
-    let value = read("1", false);
+    let value = chat("1", false);
     let date = value["messages"][0]["date"].as_str().unwrap();
     assert_eq!(date, "2026-01-15T17:30:00.000Z");
 }
@@ -320,7 +320,7 @@ fn search(query: &str, unknown: bool) -> Vec<serde_json::Value> {
 /// than the names being joined with a separator that a name could contain.
 #[test]
 fn naming_a_room_by_its_people_survives_the_wire() {
-    let value = ask(&Request::Read(ReadRequest {
+    let value = ask(&Request::Chat(ChatRequest {
         chat: vec!["robin".into(), "kit".into()],
         names: Some(false),
         ..Default::default()
@@ -340,7 +340,7 @@ fn naming_a_room_by_its_people_survives_the_wire() {
     assert!(value.get("merged").is_none(), "{value}");
 
     // One of the two names alone is that person, not the room.
-    let alone = ask(&Request::Read(ReadRequest {
+    let alone = ask(&Request::Chat(ChatRequest {
         chat: vec!["kit".into()],
         names: Some(false),
         ..Default::default()
@@ -350,7 +350,7 @@ fn naming_a_room_by_its_people_survives_the_wire() {
 
     // And a pair with no room of its own says so rather than answering with
     // the room that merely contains them.
-    let error = ask(&Request::Read(ReadRequest {
+    let error = ask(&Request::Chat(ChatRequest {
         chat: vec!["robin".into(), "someone".into()],
         names: Some(false),
         ..Default::default()
@@ -369,7 +369,7 @@ fn naming_a_room_by_its_people_survives_the_wire() {
 /// because the omission happens on the other side of the socket.
 #[test]
 fn a_merged_conversation_survives_the_wire() {
-    let value = ask(&Request::Read(ReadRequest {
+    let value = ask(&Request::Chat(ChatRequest {
         chat: vec!["robin".into()],
         names: Some(false),
         ..Default::default()
@@ -399,7 +399,7 @@ fn a_merged_conversation_survives_the_wire() {
     assert_eq!(value["merged"], serde_json::json!([4]));
 
     // A rowid means the thread, so the escape hatch has to cross too.
-    let one = ask(&Request::Read(ReadRequest {
+    let one = ask(&Request::Chat(ChatRequest {
         chat: vec!["4".into()],
         names: Some(false),
         ..Default::default()
@@ -705,13 +705,31 @@ fn refuses_a_request_that_is_not_json() {
 /// unknown command, and saying so is what the TypeScript build could not.
 #[test]
 fn reports_a_malformed_known_request_as_such() {
-    let frame = raw(&format!("{{\"cmd\":\"read\",\"v\":{PROTOCOL_VERSION}}}\n"));
+    let frame = raw(&format!("{{\"cmd\":\"chat\",\"v\":{PROTOCOL_VERSION}}}\n"));
     assert_eq!(frame["type"], serde_json::json!("error"));
     let message = frame["message"].as_str().unwrap();
     assert!(
-        message.contains("could not read this `read` request"),
+        message.contains("could not read this `chat` request"),
         "{message}"
     );
+}
+
+/// The old wire name is unknown now, and says so in the words that tell you
+/// what to do about it.
+///
+/// The frame is deliberately one no build sends: `read` at the current version
+/// is an old name paired with a new number, and a client saying `read` speaks
+/// 11. Real skew never reaches here, because `serve` compares `v` first and
+/// answers with the two protocol numbers instead. What this pins is the branch
+/// `server.rs` keeps for the forgotten bump — a wire change that ships without
+/// moving the constant lands exactly here, and this is the message it gets.
+#[test]
+fn the_old_command_name_is_reported_as_unknown() {
+    let frame = raw(&format!("{{\"cmd\":\"read\",\"v\":{PROTOCOL_VERSION}}}\n"));
+    assert_eq!(frame["type"], serde_json::json!("error"));
+    let message = frame["message"].as_str().unwrap();
+    assert!(message.contains("does not understand `read`"), "{message}");
+    assert!(message.contains("msg daemon install"), "{message}");
 }
 
 /// The envelope this crate writes is the one the daemon reads, both ways.
