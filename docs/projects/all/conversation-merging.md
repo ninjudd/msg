@@ -119,12 +119,22 @@ of the merge unless `--unknown` is passed, which is what that flag already means
 everywhere else.
 
 **The merged conversation is named for the person, and the send target is named
-separately. (DECIDED)** `describe_target` prints `Name (address)` for a
-one-to-one, and a merged conversation has more than one address, so the header
-is the person's name alone. But `send --dry-run` must keep printing the single
-address it would actually send to — the whole safety value of that flag is that
-it names the real destination, and "would send to Dana" is exactly the sentence
-that hides a send to the wrong one of her two numbers.
+separately. (DECIDED, and already true)** Nothing needs building for this, which
+is worth recording so nobody builds it. `msg read` prints `reply.chat.name` —
+the contact's display name, already the person alone. The address is added only
+by `describe_target`, whose sole callers are the two send paths: the CLI's
+`--dry-run` line and the daemon's send confirmation, the latter commented "so
+the confirmation names which of a person's conversations this went to".
+
+So the header and the send description were never the same call, and the
+separation this decision asks for is a property of the code rather than a change
+to it. The thing to avoid is teaching `describe_target` about merged chats or
+giving it a parameter: that edits a function whose only callers are send paths
+in order to fix a header it does not produce, and `AGENTS.md` treats a send as a
+production write. `send --dry-run` must keep naming the single address it would
+actually reach — "would send to Dana" is exactly the sentence that hides a send
+to the wrong one of her two numbers — and it keeps doing so by being left
+alone.
 
 **Groups never merge. (DECIDED)** `sole_person` returns `None` for a group and
 that propagates. Two rooms with the same membership are two rooms.
@@ -159,10 +169,13 @@ next number.
 most recently active thread for a person. That is the right behaviour and
 matches Messages, which replies on the address the conversation last used.
 
-So this plan does not touch the send path at all. It is worth saying explicitly
-because "merge their conversations" sounds like it should also mean "and pick
-the address for me", and the existing answer to that is already the one we
-want — the merge changes what is *shown*, never where a message goes.
+So this plan does not touch the send path at all, and that holds exactly rather
+than approximately: §5 records that the transcript header and the send
+description were never the same call, so nothing in the display half reaches
+into `describe_target` or anything downstream of it. It is worth saying
+explicitly because "merge their conversations" sounds like it should also mean
+"and pick the address for me", and the existing answer to that is already the
+one we want — the merge changes what is *shown*, never where a message goes.
 
 ## 8 What the listing shows
 
@@ -179,14 +192,27 @@ behind it, and it will be obvious which reads better against real output.
 Both are the kind of assumption this repository has already been wrong about
 once.
 
-**Can one message belong to two chats?** `MESSAGE_FROM` joins
-`chat_message_join`, so if a message is joined to both merged chats it produces
-two rows and appears twice in the transcript. Within a single chat that cannot
-happen; across a merged set it depends on whether Messages ever writes a message
-into more than one conversation. Check it directly before deciding whether the
-query needs a `DISTINCT` or a dedupe by rowid — and if the answer is no, do not
-add one, since a guard against a case that does not occur is exactly what
-`AGENTS.md` says not to ship.
+**Does Messages join one message to two one-to-one chats of the same person?**
+Not whether a message can be in two chats at all — that is settled, and the tree
+already handles it three times. `MESSAGE_FROM` joins `chat_message_join`, so
+such a message comes back as two rows with one rowid;
+`a_message_in_two_chats_shows_its_attachment_in_both` constructs exactly that
+and asserts two copies, `attachments_for` dedupes for it, and the two `.cloned()`
+calls in `fetch_messages` exist because `remove` would hand the attachments and
+the reply quote to whichever row arrived first.
+
+So a dedupe here would be the fourth instance of handling a known case, not a
+guard against an imagined one. What is unmeasured is the narrower question
+above: the existing test joins two chats by hand, and nothing establishes that
+Messages does it for two conversations that resolve to one person.
+
+Worth knowing why the merge is where this first bites. Today `chat_id = ?`
+restricts to a single join row, so `read <person>` has never been able to
+produce a duplicate — only an unscoped fetch can, which is why the existing
+handling lives in the attachment and reply paths. `chat_id IN (a, b)` is exactly
+what opens the read path to it. If the merged query turns out not to need a
+dedupe, say so as a difference from those three cases rather than as an absence
+of the case.
 
 **Does `chat_id IN (…)` keep the index?** §4 argues it does. `EXPLAIN QUERY PLAN`
 answers it in one command, and a `-C 10` search across a merged conversation
