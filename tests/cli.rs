@@ -65,7 +65,9 @@ fn build(path: &Path) {
                  (8, 't8', NULL, 1, 1, 2006, 'm4', '🙏', 790000420000000000, 'iMessage'),
                  (9, 't9', NULL, 0, 2, 2001, 'bp:m6', NULL, 790000480000000000, 'iMessage');
         INSERT INTO message (rowid, guid, text, is_from_me, handle_id, date, service)
-          VALUES (10, 'm10', 'two days on', 1, 1, 790172800000000000, 'iMessage');
+          VALUES (10, 'm10', 'two days on', 1, 1, 790172800000000000, 'iMessage'),
+                 (11, 'm11', 'How are you doing?' || char(10) || char(10) || 'I''m fine.',
+                  0, 1, 790172860000000000, 'iMessage');
         INSERT INTO chat_message_join (chat_id, message_id, message_date)
           VALUES (1, 1, 790000000000000000),
                  (1, 2, 790000060000000000),
@@ -76,7 +78,8 @@ fn build(path: &Path) {
                  (3, 7, 790000360000000000),
                  (3, 8, 790000420000000000),
                  (3, 9, 790000480000000000),
-                 (1, 10, 790172800000000000);
+                 (1, 10, 790172800000000000),
+                 (1, 11, 790172860000000000);
         ",
     )
     .unwrap();
@@ -128,9 +131,11 @@ fn it_reads_a_conversation() {
             .any(|line| line.contains("January") && line.contains(":")),
         "a message line still carries a date: {text}"
     );
-    // Bold headers are for terminals; this output is piped, so it must carry
-    // no control codes at all — the one escape this program ever writes is
-    // gated on a tty.
+    // A multi-line body is one transcript line, its newlines folded to ↵.
+    assert!(text.contains("How are you doing?↵↵I'm fine."), "{text}");
+    // Styling is for terminals; this output is piped, so it must carry no
+    // control codes at all — every escape this program writes is gated on a
+    // tty, the ↵'s gray included.
     assert!(!text.contains('\x1b'), "{text:?}");
 }
 

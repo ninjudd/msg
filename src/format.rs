@@ -674,6 +674,30 @@ mod tests {
         assert_eq!(header(2025, 12, 31), "Wednesday, December 31, 2025");
     }
 
+    /// A body's newlines fold to a visible mark, so one message is one
+    /// transcript line however it was typed: `How are you doing?↵↵I'm fine.`
+    /// Gray wraps only the mark when styled, `\r\n` folds once, and a
+    /// trailing newline run is trimmed rather than drawn.
+    #[test]
+    fn a_newline_in_a_body_folds_to_a_visible_mark() {
+        assert_eq!(
+            one_line("How are you doing?\n\nI'm fine.", false),
+            "How are you doing?↵↵I'm fine."
+        );
+        assert_eq!(one_line("a\r\nb", false), "a↵b", "\\r\\n folds once");
+        assert_eq!(
+            one_line("ends here\n\n", false),
+            "ends here",
+            "trailing trimmed"
+        );
+        let styled = one_line("a\nb", true);
+        assert_eq!(styled, "a\x1b[90m↵\x1b[0mb");
+        assert!(
+            !styled.starts_with('\x1b') && !styled.ends_with('m'),
+            "{styled:?}"
+        );
+    }
+
     /// Someone looking is necessary and not sufficient: NO_COLOR set and
     /// non-empty refuses the bold, TERM=dumb refuses it the older way, and a
     /// pipe never gets it whatever the environment says.
