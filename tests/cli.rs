@@ -62,7 +62,8 @@ fn build(path: &Path) {
                              associated_message_guid, associated_message_emoji, date, service)
           VALUES (7, 't7', 'Loved \"we started at six, is that art deco\"', 0, 2, 2000,
                   'p:0/m4', NULL, 790000360000000000, 'iMessage'),
-                 (8, 't8', NULL, 1, 1, 2006, 'm4', '🙏', 790000420000000000, 'iMessage');
+                 (8, 't8', NULL, 1, 1, 2006, 'm4', '🙏', 790000420000000000, 'iMessage'),
+                 (9, 't9', NULL, 0, 2, 2001, 'bp:m6', NULL, 790000480000000000, 'iMessage');
         INSERT INTO chat_message_join (chat_id, message_id, message_date)
           VALUES (1, 1, 790000000000000000),
                  (1, 2, 790000060000000000),
@@ -71,7 +72,8 @@ fn build(path: &Path) {
                  (3, 5, 790000240000000000),
                  (3, 6, 790000300000000000),
                  (3, 7, 790000360000000000),
-                 (3, 8, 790000420000000000);
+                 (3, 8, 790000420000000000),
+                 (3, 9, 790000480000000000);
         ",
     )
     .unwrap();
@@ -290,6 +292,9 @@ fn reactions_ride_the_message_and_the_flag_trades_them_for_rows() {
     assert_eq!(code(&output), 0);
     let text = stdout(&output);
     assert!(text.contains("art deco [❤️🙏]"), "{text}");
+    // The third stored form, `bp:<guid>` with no part number — 867 rows on a
+    // real database, found hiding inside an implausible orphan count (§9).
+    assert!(text.contains("gallery downtown [👍]"), "{text}");
 
     let output = msg(&["--no-names", "chat", "3", "--tapbacks"]);
     assert_eq!(code(&output), 0);

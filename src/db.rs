@@ -584,25 +584,16 @@ pub fn unreadable(id: i64, error: &std::io::Error) -> Error {
 /// enough that a transcript does not contain itself twice over.
 const EXCERPT: usize = 60;
 
-/// What each of these messages is replying to, keyed by the reply's rowid.
-///
-/// A second query, like attachments, and for a sharper reason than shape: 19
-/// replies on a real database sit in a *different* conversation from the message
-/// they answer, so this cannot be scoped to the chat being read. `message.guid`
-/// is `UNIQUE NOT NULL`, so the lookup rides an index Messages already keeps.
-///
-/// Built on `thread_originator_guid` rather than `reply_to_guid`. The second is
-/// set on 15% of every message in the database and 115,304 of those rows have no
-/// thread at all — it is not the user's reply, and threading on it would connect
-/// a sixth of history at random. See threading.md §2.
 /// The reactions on these messages, keyed by message rowid, removals cancelled.
 ///
 /// A second query beside `attachments_for` and `replies_for`, keyed on the
-/// guids of the messages being returned (tapbacks.md §5). The stored target is
-/// part-prefixed `p:N/<guid>` 96% of the time and bare the rest — §9 measured
-/// both forms, and a join written `= message.guid` would have matched 1.3% of
-/// tapbacks while looking correct — so the join strips the prefix and accepts
-/// either. The 888 rows whose target no longer exists simply match nothing.
+/// guids of the messages being returned (tapbacks.md §5). The stored target
+/// takes three forms — part-prefixed `p:N/<guid>` 96% of the time, `bp:<guid>`
+/// for most of the rest, and bare — all measured in §9, where the second form
+/// first hid inside an implausible orphan count. A join written
+/// `= message.guid` would have matched 1.3% of tapbacks while looking correct,
+/// so the join strips both prefixes and accepts the bare form. The 56 rows
+/// whose target genuinely no longer exists simply match nothing.
 fn tapbacks_for(
     db: &Connection,
     wanted: &[(i64, String)],
@@ -636,6 +627,8 @@ fn tapbacks_for(
     type Reaction = (i64, Option<String>, Option<i64>, bool, Option<String>);
     let target = "CASE WHEN m.associated_message_guid LIKE 'p:%' \
                   THEN substr(m.associated_message_guid, instr(m.associated_message_guid, '/') + 1) \
+                  WHEN m.associated_message_guid LIKE 'bp:%' \
+                  THEN substr(m.associated_message_guid, 4) \
                   ELSE m.associated_message_guid END";
     let mut raw: BTreeMap<String, Vec<Reaction>> = BTreeMap::new();
     for batch in guids.chunks(ATTACHMENT_BATCH) {
@@ -717,6 +710,17 @@ fn tapbacks_for(
     Ok(found)
 }
 
+/// What each of these messages is replying to, keyed by the reply's rowid.
+///
+/// A second query, like attachments, and for a sharper reason than shape: 19
+/// replies on a real database sit in a *different* conversation from the message
+/// they answer, so this cannot be scoped to the chat being read. `message.guid`
+/// is `UNIQUE NOT NULL`, so the lookup rides an index Messages already keeps.
+///
+/// Built on `thread_originator_guid` rather than `reply_to_guid`. The second is
+/// set on 15% of every message in the database and 115,304 of those rows have no
+/// thread at all — it is not the user's reply, and threading on it would connect
+/// a sixth of history at random. See threading.md §2.
 fn replies_for(
     db: &Connection,
     wanted: &[(i64, String)],
@@ -986,9 +990,12 @@ struct Window {
 ///
 /// Nothing here narrows the window the way the search was narrowed. `--from`,
 /// `--since` and the body match all bound what counts as a hit; a window is a
-/// slice of the conversation around one, so it holds whatever was actually said
-/// — including tapbacks, which the search itself can never return and which are
-/// frequently the entire reply.
+/// slice of the conversation around one, so it holds whatever was actually
+/// said. Tapback rows are the one exception, since brackets: the reaction
+/// rides its target's bracket instead, and a window that also held the row
+/// showed the same reaction twice (tapbacks.md §6). What that trades away is
+/// the reaction whose target sits outside the window — it renders nowhere,
+/// where the row once stood in for the reply (search-context.md §3).
 pub fn with_context(
     db: &Connection,
     hits: Vec<Message>,

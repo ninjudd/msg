@@ -207,12 +207,18 @@ recorded here and deliberately not built.
 **Is `associated_message_guid` a bare guid? (MEASURED: 96% part-prefixed.)**
 32,092 rows carry the guid — the denominator this section said nothing had
 measured. 30,800 of them are part-prefixed `p:N/<guid>`, and 30,766 of those
-join to `message.guid` once the prefix is stripped. The other 1,292 are bare:
-404 join directly, and 888 resolve to no surviving message — reactions whose
-target is gone, which render nowhere and must not error. So the join §4's
-builder writes strips the prefix *and* accepts the bare form; written
-`= message.guid` it would have matched 404 rows of 32,092, the working-sometimes
-failure this section predicted, delivered at scale. The earlier inference from
+join to `message.guid` once the prefix is stripped. The other 1,292 first read
+as 404 bare rows that join plus 888 orphans — and that attribution was wrong,
+caught in review by its own numbers: an orphan rate of 68.7% in one bucket
+against 0.11% in the other, when both supposedly held the same thing. Measured
+again: 867 of the 888 carry a *third* form, `bp:<guid>` with no part number,
+and 866 of those join once `bp:` is stripped. The genuine orphans are 56
+database-wide — 34 prefixed, 21 bare, 1 `bp:` — which render nowhere and must
+not error. So the join §4's builder writes strips both prefixes *and* accepts
+the bare form; written `= message.guid` it would have matched 404 rows of
+32,092, the working-sometimes failure this section predicted, delivered at
+scale — and a join that knew `p:` but not `bp:` would have quietly dropped 867
+more. The earlier inference from
 `threading.md §2` — 71 bare rows attested, prefix form unknown — pointed the
 right way and undercounted both forms.
 

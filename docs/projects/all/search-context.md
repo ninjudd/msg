@@ -1,7 +1,8 @@
 # Plan: Show what was said around a search hit
 
 **Status:** Shipped, one slice, as designed. `-A`/`-B`/`-C` on `msg search`,
-windows merged into runs, the `> ` gutter and `--`, tapbacks in the window, and
+windows merged into runs, the `> ` gutter and `--`, tapbacks in the window —
+since reversed by tapbacks.md slice 1, see the §3 correction — and
 `matched`/`group` on the wire. §2's cost estimate was wrong until the query was
 reshaped; see the note there.
 
@@ -109,6 +110,17 @@ reaction will already be attached to the message it reacted to, so the window
 carries the bracket along with the message and this decision becomes "the window
 does not suppress them".
 
+**The prediction above was falsified when tapbacks slice 1 landed
+(2026-08-09), and the record of that is worth more than the sentence.** The
+build went the other way: the window *does* suppress reaction rows, because a
+row beside a bracket is the same reaction printed twice, and tapbacks.md §6 had
+already decided against printing the same information twice. What the reversal
+trades away is the case this section's argument was actually about — a reaction
+whose target sits outside the window now renders nowhere at all, where the row
+once stood in for the reply. Accepted knowingly: the common case is a reaction
+beside its target, where the bracket serves, and the distant-target case lost
+its only representation in windows while keeping `--tapbacks` everywhere else.
+
 **`-C` takes the collision with `-c`. (DECIDED)** `-c/--chat` is already taken,
 so `-c 3` and `-C 3` will differ only in case and mean entirely different things
 — "in the conversation matching 3" against "three messages either side". The
@@ -143,11 +155,11 @@ calls with two different `FetchMessages`.
 What the program does **not** do is link a tapback to the message it reacts to.
 `message.associated_message_guid` holds that pointer and is never read —
 `threading.md §2` mentions the column only in passing, ruling out a different
-one. So a tapback in a context window will render as its synthesized body,
-quoting its target's text, and will not be attached to the target the way a
-reply is. That is acceptable for context, where the quoted text is usually
-enough to see what was reacted to, and it is the obvious follow-on if it turns
-out not to be.
+one. So a tapback in a context window would render as its synthesized body,
+quoting its target's text, and would not be attached to the target the way a
+reply is. That was acceptable for context, and the follow-on happened: tapbacks
+slice 1 reads the pointer, attaches the reaction to its target, and took the
+rows out of the window — the §3 correction records the reversal.
 
 ## 5 JSON and the protocol
 
@@ -179,7 +191,8 @@ correctly: `filedAs` took 7 and the `contacts` lookup took 8 while this sat in
 
 ## 6 Slices
 
-One slice. The window, the merging, the gutter and `--`, tapbacks in the window,
+One slice. The window, the merging, the gutter and `--`, tapbacks in the
+window (since reversed — §3),
 the two JSON fields, and the protocol bump all ship together — the daemon is
 where search actually runs on a real machine, so a version that skips the
 protocol half would only work through `--db` against a fixture.

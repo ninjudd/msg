@@ -268,9 +268,9 @@ The window is a slice of the conversation, not a continuation of the search.
 `--from dana -A 2` means "what Dana said, plus what came next, whoever sent it";
 filtering the window by the same person would return Dana's next two messages,
 which is almost never the reply she got. `--since` bounds what counts as a hit
-too, so a window on a hit near that boundary reaches back past it. And a window
-holds reactions even though a search can never match one, because `Liked "see
-you at 8"` is frequently the entire reply.
+too, so a window on a hit near that boundary reaches back past it. Reactions
+are not rows in a window — each rides its target's bracket, so a reaction to a
+message in the window shows there, once.
 
 `-C` is shorthand for both sides and loses to either given outright, including
 zero — `-C 2 -B 0` is two messages after each hit and none before, as in grep.
