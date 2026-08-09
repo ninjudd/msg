@@ -154,8 +154,9 @@ msg chat dana --tapbacks       # reactions as their own rows, not trailing
 
 A transcript carries a bare date line whenever the day changes, and each
 message shows only its time — the same shape Messages uses. `watch` does the
-same across its stream; `search` keeps the full date on every line, since its
-results jump between days by construction.
+same across its stream. `search` keeps its stamps as they always were — a date
+on every line except today's, which shows only a time — since its results jump
+between days by construction.
 
 **A name reads the person; a rowid reads the thread.** Messages keeps a separate
 conversation for every address someone has, so a person you reach at a phone

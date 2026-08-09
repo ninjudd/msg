@@ -172,7 +172,8 @@ pub struct Render {
     /// stream: a stream headers a day change too, since the header goes in
     /// front of the new line and the last emitted day is all it takes —
     /// `Renderer` holds that day across calls for exactly this. Search keeps
-    /// full stamps, because its results jump between days by construction.
+    /// its stamps as they were — `format_timestamp`, a date except on
+    /// today's — because its results jump between days by construction.
     pub day_headers: bool,
 }
 
@@ -588,10 +589,14 @@ mod tests {
     /// one message per render, the header still lands exactly at the change.
     #[test]
     fn a_day_change_gets_a_header_and_messages_keep_only_a_time() {
+        // Mid-June of the current local year, so the dates sit in this year
+        // for any timezone and the no-year branch is the one under test — a
+        // fixed 2026 here would start failing on the next New Year's Day.
+        let year = Local::now().year();
         let mut first = message(1, "Dana Reyes", "late one");
-        first.date = at("2026-01-15T17:30:00Z");
+        first.date = at(&format!("{year}-06-15T17:30:00Z"));
         let mut second = message(2, "me", "early the next");
-        second.date = at("2026-01-16T17:30:00Z");
+        second.date = at(&format!("{year}-06-16T17:30:00Z"));
 
         let options = Render {
             show_chat: false,
@@ -603,9 +608,9 @@ mod tests {
         assert_eq!(lines.len(), 4, "{out}");
         // Two headers, one per day, each a bare date with no year — the same
         // no-year choice DATE_TIME has always made.
-        assert!(lines[0].starts_with("Jan 1"), "{out}");
-        assert!(!lines[0].contains("2026"), "{out}");
-        assert!(lines[2].starts_with("Jan 1"), "{out}");
+        assert!(lines[0].starts_with("Jun 1"), "{out}");
+        assert!(!lines[0].contains(&year.to_string()), "{out}");
+        assert!(lines[2].starts_with("Jun 1"), "{out}");
         assert_ne!(lines[0], lines[2], "{out}");
         // Message lines carry a time and never a date.
         assert!(
@@ -619,7 +624,7 @@ mod tests {
         let two = renderer.render(std::slice::from_ref(&second));
         assert_eq!(one.lines().count(), 2, "{one}");
         let mut third = message(3, "me", "still the sixteenth");
-        third.date = at("2026-01-16T18:00:00Z");
+        third.date = at(&format!("{year}-06-16T18:00:00Z"));
         let three = renderer.render(std::slice::from_ref(&third));
         assert_eq!(two.lines().count(), 2, "{two}");
         // Same day as the last emission: no header, the state remembered it.
