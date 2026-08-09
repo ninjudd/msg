@@ -36,7 +36,11 @@ The resolver still *enters* through the chat-row match: `fetch_chats` reads the
 newest `NAME_SEARCH_SCAN` (5,000) rows before matching, and a spec that matches
 nothing inside that window errors before the person lookup ever runs. Past
 5,000 chats, someone whose every thread and room has gone quiet falls out of
-reach. Demonstrated on a fixture, impossible on this database.
+reach. And only one thread has to be quiet for the failure to go silent: if the
+other still matches, the resolver returns it at its single-match early return,
+which sits above the person lookup — half a conversation again, §1's defect
+back with no error to say so. Demonstrated on a fixture, impossible on this
+database.
 
 The full fix is the order this plan is named for: resolve the person first, and
 use the chat-row match only for what is not a person — a rowid, a room named
