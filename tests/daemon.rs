@@ -141,8 +141,8 @@ fn build_fixture(path: &Path) {
             &db, rowid, guid, body, from_me, handle, associated, date, chat,
         );
     }
-    // The tapback names its target, so it lands as a bracket on m2 rather
-    // than interleaving as a row.
+    // The tapback names its target, so it trails m2 rather than
+    // interleaving as a row.
     db.execute_batch("UPDATE message SET associated_message_guid = 'p:0/m2' WHERE rowid = 5;")
         .unwrap();
 }
@@ -471,9 +471,9 @@ fn context_widths_survive_the_wire() {
         .iter()
         .map(|m| m["body"].as_str().unwrap())
         .collect();
-    // The reaction row used to cross into the window as context; now it rides
-    // the hit as a bracket instead, and the window holds only what was said —
-    // the same reaction twice was tapbacks.md §6's exact complaint.
+    // The reaction row used to cross into the window as context; now it
+    // rides the hit attached instead, and the window holds only what was
+    // said — the same reaction twice was tapbacks.md §6's exact complaint.
     assert_eq!(
         bodies,
         ["are you around later", "after 6, yeah"],
@@ -505,7 +505,7 @@ fn context_widths_survive_the_wire() {
     // Asymmetric, because equal widths cannot tell the two fields apart: a
     // daemon that swapped them would answer the case above correctly. The hit
     // is one with a real message after it — the tapback row that used to fill
-    // this role rides its target as a bracket now.
+    // this role rides its target now.
     let lopsided = ask(&Request::Search(SearchRequest {
         query: "sent".into(),
         names: Some(false),
@@ -842,9 +842,9 @@ fn streams_a_message_that_arrives_after_the_client_subscribed() {
 
 /// A stream never carries `tapbacks`, even when the reaction landed in the
 /// same burst as its target — the case where it *could* have. Attached
-/// brackets on a stream were a race, not a contract: whether one appeared
-/// depended on whether the reaction beat the delivery, and a bracket whose
-/// absence means nothing teaches a reader that it does (tapbacks.md §10).
+/// reactions on a stream were a race, not a contract: whether one appeared
+/// depended on whether it beat the delivery, and a marker whose absence
+/// means nothing teaches a reader that it does (tapbacks.md §10).
 #[test]
 fn a_stream_carries_no_tapbacks_even_when_the_reaction_beat_delivery() {
     let rowids = next_rowids(2);

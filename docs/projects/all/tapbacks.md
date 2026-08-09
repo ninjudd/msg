@@ -127,7 +127,7 @@ surviving more rowids than SQLite will bind.
 ## 6 Decisions
 
 **Attached rendering is always on; `--tapbacks` keeps its current meaning.
-(DECIDED)** Brackets appear by default, and are skipped entirely when a message
+(DECIDED)** The trail appears by default, and is skipped entirely when a message
 has no reactions — the `attachments`/`reply_to` habit, so ordinary output is
 unchanged. `--tapbacks` continues to mean "show reaction rows as their own
 messages", which stays useful for timestamps and for debugging, and it
