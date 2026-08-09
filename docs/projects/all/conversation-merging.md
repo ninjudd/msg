@@ -1,9 +1,21 @@
 # Plan: One person, one conversation
 
-**Status:** Slice one shipped in #30. `msg chat <name>` merges every
+**Status:** Shipped. Slice one in #30 — `msg chat <name>` merges every
 conversation with a person, `msg chat <rowid>` reads one thread, and the reply
-carries `merged`. Slice two — merging the `msg chats` listing — is not started,
-and is all that remains.
+carries `merged`. Slice two collapses the `msg chats` listing on the same rule:
+measured on a real database, 648 one-to-one threads became 602 conversations,
+and the 517 groups were untouched.
+
+Two things slice two settled that this plan did not ask about. The limit counts
+conversations, so it can no longer be given to SQL — which costs nothing,
+because the aggregate `CHATS_SQL` joins against was never correlated and always
+ran in full. And the query is matched after the merge rather than before, so a
+search still reaches someone by an address their newest thread does not use.
+
+One thing it surfaced and did not settle: the listing no longer shows the rowid
+of a thread that is not the leading one, and §5 promised the listing as where
+rowids come from. They are reachable in `merged` from `msg chat <name> --json`.
+Whether the listing should carry them too is open.
 
 The command was `msg read` when this was written and `ReadReply` was the reply's
 name; #35 renamed both, and protocol 10 became 12 along the way. The body below

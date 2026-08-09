@@ -22,8 +22,8 @@ use crate::daemon::protocol::{
 };
 use crate::daemon::send::attachment_name;
 use crate::db::{
-    Chat, FetchMessages, Message, PersonFilter, attachment_path, fetch_chats, fetch_conversation,
-    fetch_messages, latest_rowid, open_database, person_filter, resolve_chat,
+    Chat, FetchMessages, Message, PersonFilter, attachment_path, fetch_conversation,
+    fetch_conversations, fetch_messages, latest_rowid, open_database, person_filter, resolve_chat,
     resolve_conversations, unreadable, with_context,
 };
 use crate::{Error, Result};
@@ -188,7 +188,7 @@ impl Source {
         let limit = query.limit;
         let text = query.query.clone();
         let (db, contacts) = self.parts(query.names)?;
-        fetch_chats(db, text.as_deref(), limit, contacts, unknown)
+        fetch_conversations(db, text.as_deref(), limit, contacts, unknown)
     }
 
     pub fn chat(&mut self, query: &ChatQuery) -> Result<ChatReply> {

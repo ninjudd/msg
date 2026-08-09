@@ -75,11 +75,15 @@ checkout.
 ### Conversations
 
 ```sh
-msg chats                      # by most recent activity
+msg chats                      # by most recent activity, one row per person
 msg chats dana                 # filter by contact name, handle, or identifier
 msg chats -n 100               # more of them
 msg chats --unknown            # include the ones Messages filters away
 ```
+
+Someone you reach at two addresses is one row, not two — the same merge
+[reading](#reading) describes, so the count here agrees with what `msg chat`
+prints. `-n` counts conversations, so it means the same thing on both.
 
 Conversations that Messages filters as unknown senders are hidden, matching
 what your phone shows. On one real database that removed 1,395 of 2,559
@@ -157,10 +161,16 @@ msg chat dana                  # everything Dana said, at any of her addresses
 msg chat 42                    # only the conversation with rowid 42
 ```
 
-The rowid is the way out when that is not what you want, and `msg chats` is
-where the rowids are. A conversation Messages files under Unknown Senders is
-left out of the merge unless `--unknown` is passed, so filtered content never
-arrives inside a conversation you think of as known. Groups never merge.
+The rowid is the way out when that is not what you want. `msg chats` merges on
+the same rule, so it lists one row per person rather than one per thread, and
+that row carries their total message count and the rowid a send would go to —
+the newest of their threads. The older ones are not in the listing; `msg chat
+<name> --json` names them in `merged`, which is where to look for the rowid of a
+thread the listing no longer shows.
+
+A conversation Messages files under Unknown Senders is left out of the merge
+unless `--unknown` is passed, so filtered content never arrives inside a
+conversation you think of as known. Groups never merge.
 
 `--json` names the thread a reply would go to in `chat`, as it always has, and
 lists any others in `merged`. A person with one conversation is unchanged in

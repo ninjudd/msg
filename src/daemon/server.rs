@@ -25,8 +25,8 @@ use crate::daemon::protocol::{
 use crate::daemon::send::{check_automation, send_attachment, send_message};
 use crate::db::{
     Chat, Context, FetchMessages, Message, PersonFilter, database_path, describe_target,
-    fetch_chats, fetch_conversation, fetch_messages, latest_rowid, open_database, person_filter,
-    resolve_chat, resolve_conversations, unreadable, with_context,
+    fetch_conversation, fetch_conversations, fetch_messages, latest_rowid, open_database,
+    person_filter, resolve_chat, resolve_conversations, unreadable, with_context,
 };
 use crate::{Error, Result, VERSION};
 
@@ -370,7 +370,7 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
         Request::Chats(ask) => {
             let contacts = shared.contacts(ask.names != Some(false));
             let chats: Vec<Chat> = shared.with_db(|db| {
-                fetch_chats(
+                fetch_conversations(
                     db,
                     ask.query.as_deref(),
                     ask.limit.unwrap_or(30),

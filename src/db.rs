@@ -1382,8 +1382,13 @@ pub fn fetch_conversation(
     Ok(merged)
 }
 
-/// How many chats to consider when a query has to be matched against names.
-const NAME_SEARCH_SCAN: i64 = 5_000;
+/// How many chats to consider before merging and filtering in Rust.
+///
+/// Both of those happen above SQL, so neither can be given to `LIMIT`. That
+/// costs less than it looks: the aggregate `CHATS_SQL` joins against is
+/// uncorrelated, so it is computed in full whatever the limit says, and asking
+/// for every chat on a decade-old database measured the same as asking for five.
+const CHATS_SCAN: i64 = 5_000;
 
 /// The chat list, with the last-activity date and message count coming from one
 /// grouped pass rather than a subquery per conversation.
@@ -1511,14 +1516,7 @@ pub fn fetch_chats(
     } else {
         format!("WHERE {}", conditions.join(" AND "))
     };
-    params.push(
-        if filter_by_name {
-            NAME_SEARCH_SCAN
-        } else {
-            limit
-        }
-        .into(),
-    );
+    params.push(if filter_by_name { CHATS_SCAN } else { limit }.into());
 
     let sql = format!("{CHATS_SQL} {where_clause} ORDER BY lastDate DESC LIMIT ?");
     let mut statement = db.prepare(&sql)?;
@@ -1532,6 +1530,17 @@ pub fn fetch_chats(
     let Some(query) = query.filter(|_| filter_by_name) else {
         return Ok(chats);
     };
+    retain_matching(&mut chats, query, contacts);
+    chats.truncate(want(limit));
+    Ok(chats)
+}
+
+/// Keep the chats a query names, matched against contact names as well as rows.
+///
+/// Separate from the SQL because contact names live in the Contacts database,
+/// and separate from [`fetch_chats`] because the listing has to apply it after
+/// merging rather than before (see [`fetch_conversations`]).
+fn retain_matching(chats: &mut Vec<Chat>, query: &str, contacts: &ContactIndex) {
     let needle = query.to_lowercase();
     // A name matches from the start of a word, an address matches anywhere.
     //
@@ -1558,8 +1567,100 @@ pub fn fetch_chats(
             || (chat.display_name.is_none()
                 && contacts.any_answers_to(chat.handles.as_deref(), &needle))
     });
-    chats.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+}
+
+/// The conversation listing: [`fetch_chats`], with each person's threads
+/// collapsed into the one conversation they are.
+///
+/// The pairing is the same one `fetch_messages` and [`fetch_conversation`]
+/// already have, and for the same reason: a thread is what the database stores
+/// and a conversation is what a person has. `msg chats` wants the second, and
+/// the resolver — which reaches [`fetch_chats`] directly — wants the first,
+/// because a merged row cannot be told apart from a thread once it exists.
+///
+/// Neither the query nor the limit can be pushed down. The limit counts
+/// conversations, and applying it to threads answers with fewer than were asked
+/// for; the query has to run after the merge, so it can reach a person by an
+/// address that is not the one their newest thread uses.
+pub fn fetch_conversations(
+    db: &Connection,
+    query: Option<&str>,
+    limit: i64,
+    contacts: &ContactIndex,
+    include_filtered: bool,
+) -> Result<Vec<Chat>> {
+    let threads = fetch_chats(db, None, CHATS_SCAN, contacts, include_filtered)?;
+    let mut chats = merge_listing(threads, contacts);
+    if let Some(query) = query {
+        retain_matching(&mut chats, query, contacts);
+    }
+    chats.truncate(want(limit));
     Ok(chats)
+}
+
+/// How many rows a caller asking for `limit` gets.
+///
+/// Clamped, because a negative limit does not convert to a small `usize` — it
+/// fails to convert at all, and the fallback behind it would hand back every row
+/// there is. `fetch_conversation` guards the same trap.
+fn want(limit: i64) -> usize {
+    usize::try_from(limit.max(0)).unwrap_or(usize::MAX)
+}
+
+/// Collapse each person's threads into the one conversation they are.
+///
+/// `msg chats` printing a row per thread contradicts `msg chat`, which merges,
+/// and the disagreement lands where it is worst: the listing is where rowids
+/// come from, so it is where someone goes to find the thread they mean to
+/// address (`conversation-merging.md §5`).
+///
+/// The leading thread is the conversation. It is the most recently active, so it
+/// is already both the send target §7 promises not to move and the date the
+/// conversation was last touched; only what is genuinely a sum of the parts is
+/// recomputed. Emitting it in place keeps the order the SQL established.
+///
+/// **The filtered rule needs nothing here**, which is worth saying because the
+/// merge in `chat` needs `one_bucket` for it. There, threads are gathered for a
+/// named person whatever their bucket, so a filtered one can turn up beside an
+/// unfiltered one. Here the same flag that would permit the merge is the one
+/// that put the rows in the query at all: without `--unknown` no filtered chat
+/// is in `chats` to merge, and with it every one of them is fair game. There is
+/// no mixed bucket for this function to keep apart.
+///
+/// Groups pass through untouched. `sole_person` answers `None` for one, and two
+/// rooms with the same membership are two rooms.
+fn merge_listing(chats: Vec<Chat>, contacts: &ContactIndex) -> Vec<Chat> {
+    let mut leader: BTreeMap<String, usize> = BTreeMap::new();
+    let mut merged: Vec<Chat> = Vec::with_capacity(chats.len());
+    for chat in chats {
+        let Some(person) = sole_person(&chat, contacts) else {
+            merged.push(chat);
+            continue;
+        };
+        match leader.get(&person) {
+            Some(&at) => fold_into(&mut merged[at], chat),
+            None => {
+                leader.insert(person, merged.len());
+                merged.push(chat);
+            }
+        }
+    }
+    merged
+}
+
+/// Add a later thread to the conversation its person's leading thread opened.
+fn fold_into(conversation: &mut Chat, thread: Chat) {
+    conversation.message_count += thread.message_count;
+    // Unioned so a search still reaches someone by an address that is not the
+    // one their newest thread uses. `named_handles` is deliberately not extended
+    // to match: every address here belongs to the same person, so naming them
+    // all would print that person's name once per address they own.
+    if let Some(handles) = thread.handles {
+        conversation.handles = Some(match conversation.handles.take() {
+            Some(mine) => format!("{mine},{handles}"),
+            None => handles,
+        });
+    }
 }
 
 /// Turn the two person flags into one resolved filter.
@@ -4749,6 +4850,97 @@ mod tests {
             sorted.sort_by(|a, b| b.cmp(a));
             assert_eq!(dates, sorted, "limit {limit} came back out of order");
         }
+    }
+
+    /// A person on two threads, for the listing tests below. The email thread is
+    /// the most recently active, so it is the one a send would continue.
+    fn split_across_two_threads(db: &Connection) -> (i64, i64, ContactIndex) {
+        let phone = one_to_one(db, 4, "+16175550147");
+        let email = one_to_one(db, 5, "robin@example.com");
+        message_in(db, phone, 10, 5);
+        message_in(db, phone, 11, 6);
+        message_in(db, email, 12, 90);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ]);
+        (phone, email, contacts)
+    }
+
+    /// The listing and `chat` have to agree about how many conversations there
+    /// are, which is the whole of `conversation-merging.md §5`.
+    #[test]
+    fn a_persons_threads_are_one_row_in_the_listing() {
+        let db = fixture();
+        let (_, email, contacts) = split_across_two_threads(&db);
+
+        let chats = fetch_conversations(&db, None, 30, &contacts, false).unwrap();
+        let theirs: Vec<&Chat> = chats
+            .iter()
+            .filter(|chat| chat.name == "Robin Adeyemi")
+            .collect();
+        assert_eq!(theirs.len(), 1, "two threads, one conversation");
+        assert_eq!(theirs[0].rowid, email, "the rowid a send would go to");
+        assert_eq!(theirs[0].message_count, 3, "counted across both threads");
+    }
+
+    /// The limit counts conversations, so it cannot be given to SQL any more.
+    ///
+    /// Both of this person's threads are newer than anything else in the
+    /// fixture, so a `LIMIT 2` applied before the merge fetches exactly those
+    /// two and collapses them to one — asking for two conversations and getting
+    /// one, which is the same off-by-a-merge the listing exists to remove.
+    #[test]
+    fn the_limit_counts_conversations_rather_than_threads() {
+        let db = fixture();
+        let (_, _, contacts) = split_across_two_threads(&db);
+
+        let chats = fetch_conversations(&db, None, 2, &contacts, false).unwrap();
+        assert_eq!(chats.len(), 2, "two conversations were asked for");
+    }
+
+    /// Merging must not hide an address behind the newest one.
+    ///
+    /// Their phone thread is the older of the two, so the merged row is built
+    /// from the email thread. Searching the phone number still has to reach
+    /// them: before merging it matched a row of its own, and a rename of the
+    /// conversation is no reason for an address to stop being findable.
+    #[test]
+    fn a_search_reaches_an_address_the_newest_thread_does_not_use() {
+        let db = fixture();
+        let (_, email, contacts) = split_across_two_threads(&db);
+
+        let chats = fetch_conversations(&db, Some("6175550147"), 30, &contacts, false).unwrap();
+        let rowids: Vec<i64> = chats.iter().map(|chat| chat.rowid).collect();
+        assert_eq!(
+            rowids,
+            [email],
+            "found by an address the row does not lead with"
+        );
+    }
+
+    /// Two rooms with the same membership are two rooms.
+    #[test]
+    fn groups_are_never_merged() {
+        let db = fixture();
+        db.execute(
+            "INSERT INTO chat (rowid, guid, chat_identifier, display_name, is_filtered)
+             VALUES (9, 'iMessage;+;chat10', 'chat10', '', 0)",
+            [],
+        )
+        .unwrap();
+        // The same two people as chat 2, which is the case a membership-based
+        // merge would collapse and this one must not.
+        db.execute(
+            "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (9, 1), (9, 2)",
+            [],
+        )
+        .unwrap();
+        message_in(&db, 9, 10, 7);
+
+        let chats = fetch_conversations(&db, None, 30, &ContactIndex::empty(), false).unwrap();
+        let rooms = chats.iter().filter(|chat| chat.is_group).count();
+        assert_eq!(rooms, 2, "same membership, still two rooms");
     }
 
     /// A conversation with no messages still appears, with no date and a count
