@@ -158,13 +158,15 @@ transcript, in the order the messages arrived:
 
 ```sh
 msg chat dana                  # everything Dana said, at any of her addresses
+msg chat dana@example.com      # the same conversation, since an address names her
 msg chat 42                    # only the conversation with rowid 42
 ```
 
-An address sits across the two: when a person's threads fold together, the
-address you typed keeps its own thread at the head of the answer — and the
-leading thread is where a send goes, so the address is how you choose the
-route.
+An address names the person too — what resolves is the Contacts record, however
+you point at it — so it reads the same whole conversation. What the address
+adds is aim: its own thread leads the answer, and the leading thread is where a
+send goes, so writing to `dana@example.com` cannot drift to her phone because
+the phone thread spoke last.
 
 The rowid is the way out when that is not what you want. `msg chats` merges on
 the same rule, so it lists one row per person rather than one per thread, and

@@ -1786,7 +1786,7 @@ fn sole_person(chat: &Chat, contacts: &ContactIndex) -> Option<String> {
     Some(person_identity(handle, contacts.contact(Some(handle))))
 }
 
-/// Find one person, and gather every address they use.
+/// Everyone a spec could name, keyed by identity, and every address they use.
 ///
 /// The `handle` table is a few thousand rows even on a decade-old database, so
 /// this reads it whole and matches in Rust rather than asking SQLite to. That
@@ -1806,7 +1806,17 @@ fn sole_person(chat: &Chat, contacts: &ContactIndex) -> Option<String> {
 /// phone. So the first pass decides *who* matched and the second gathers every
 /// address those people have, whether or not it looks anything like what was
 /// typed.
-pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> Result<Person> {
+///
+/// A tie among several is narrowed by an exact name before it is reported:
+/// either of someone's two names counts — whichever is shown, and the filed
+/// name a nickname displaced — since typing the whole of one is as definite as
+/// typing the whole of the other. Unless two records answer to it exactly,
+/// which is the tie this cannot silently pick from.
+fn people_matching(
+    db: &Connection,
+    spec: &str,
+    contacts: &ContactIndex,
+) -> Result<BTreeMap<String, Person>> {
     let trimmed = spec.trim();
     if trimmed.is_empty() {
         return Err(Error::other("no one to search for"));
@@ -1878,38 +1888,47 @@ pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> R
         person.handles.push(handle.clone());
     }
 
-    if people.is_empty() {
-        return Err(Error::other(format!("no one matching {spec}")));
-    }
-    if people.len() == 1 {
-        return Ok(people.into_values().next().expect("one match"));
-    }
-
-    // An exact name breaks a tie, the same way it does for a chat — unless two
-    // records answer to it, which is the case this cannot silently pick from.
-    // Either of someone's two names counts: whichever is shown, and the filed
-    // name a nickname displaced. Typing the whole of one is as definite as
-    // typing the whole of the other.
-    let exact: Vec<Person> = people
-        .values()
-        .filter(|person| {
+    if people.len() > 1 {
+        let exactly_named = |person: &Person| {
             person.name.to_lowercase() == lowered
                 || person
                     .filed_as
                     .as_ref()
                     .is_some_and(|filed| filed.to_lowercase() == lowered)
-        })
-        .cloned()
-        .collect();
-    if exact.len() == 1 {
-        return Ok(exact.into_iter().next().expect("one match"));
+        };
+        if people
+            .values()
+            .filter(|person| exactly_named(person))
+            .count()
+            == 1
+        {
+            people.retain(|_, person| exactly_named(person));
+        }
     }
+    Ok(people)
+}
 
-    Err(Error::other(format!(
+/// Find one person, and gather every address they use — [`people_matching`],
+/// required to name exactly one.
+pub fn resolve_person(db: &Connection, spec: &str, contacts: &ContactIndex) -> Result<Person> {
+    let mut people = people_matching(db, spec, contacts)?;
+    match people.len() {
+        0 => Err(Error::other(format!("no one matching {spec}"))),
+        1 => Ok(people
+            .pop_first()
+            .map(|(_, person)| person)
+            .expect("one match")),
+        _ => Err(several_people(spec, &people)),
+    }
+}
+
+/// The error for a spec that names more than one person, listing them.
+fn several_people(spec: &str, people: &BTreeMap<String, Person>) -> Error {
+    Error::other(format!(
         "{} people match {spec}: {}",
         people.len(),
         describe(people.values().take(6))
-    )))
+    ))
 }
 
 /// Label each person well enough to tell them apart, which their names alone may
@@ -2079,6 +2098,30 @@ pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Res
 /// that names nobody is an error rather than a fallback: with several people
 /// named there is no other reading of it, and guessing would answer with a room
 /// the caller did not describe.
+/// Whether any room's own name is exactly this spec.
+///
+/// Asked of the whole chat table rather than of a scan window: a label
+/// somebody chose does not expire by going quiet, and the person-first path
+/// must not win a tie it cannot see. Compared in Rust so the case folding is
+/// the one every other name comparison uses, not SQLite's ASCII-only NOCASE.
+fn exactly_names_a_room(db: &Connection, spec: &str) -> Result<bool> {
+    let lowered = spec.to_lowercase();
+    let mut statement = db.prepare(
+        "SELECT display_name FROM chat
+          WHERE display_name IS NOT NULL AND display_name != ''
+            AND (SELECT COUNT(*) FROM chat_handle_join
+                  WHERE chat_id = chat.rowid) > 1",
+    )?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(0)?;
+        if name.to_lowercase() == lowered {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub fn resolve_conversations(
     db: &Connection,
     specs: &[String],
@@ -2117,70 +2160,53 @@ pub fn resolve_conversation(
 ) -> Result<Vec<Chat>> {
     // Naming a chat outright reaches it even when Messages filters it.
     let is_rowid = !spec.is_empty() && spec.bytes().all(|byte| byte.is_ascii_digit());
-    let matches: Vec<Chat> = if is_rowid {
+    if is_rowid {
         let wanted: i64 = spec
             .parse()
             .map_err(|_| Error::other(format!("no chat matching {spec}")))?;
-        chats_by_id(db, &[wanted], contacts)?
-    } else {
-        fetch_chats(db, Some(spec), CHAT_MATCH_SCAN, contacts, true)?
-    };
-
-    if matches.is_empty() {
-        return Err(Error::other(format!("no chat matching {spec}")));
-    }
-    if matches.len() == 1 {
-        return Ok(matches);
+        let found = chats_by_id(db, &[wanted], contacts)?;
+        if found.is_empty() {
+            return Err(Error::other(format!("no chat matching {spec}")));
+        }
+        return Ok(found);
     }
 
-    // A name names a person, and a person's conversation is their own
-    // (naming-a-conversation.md §3). Rooms they are in do not compete with it:
-    // being in a room is not being the person, which is the distinction
-    // `sole_person` already draws.
+    // The person first, always. A spec that names somebody is resolved to the
+    // person and the person to their threads — the contact, then every address
+    // it holds, then the chats those addresses are in
+    // (naming-a-conversation.md §3, §8). Chat rows are never matched directly
+    // for a person: rows are matched inside a scan window, and whose
+    // conversation a name means must not depend on what else has been noisy
+    // lately (resolver-windows.md §3).
     //
-    // Resolved by the one primitive rather than by matching chat rows a second
-    // way (§8), so reading and searching cannot disagree about who somebody is.
-    // A spec that names no person at all — a room's own name — simply falls
-    // through, which is why the error is discarded rather than raised.
-    // Unless a room is called exactly this. A room's own name is a label
-    // somebody chose, so typing the whole of it is naming that room as
-    // definitely as a name ever names anything, and the preference below is
-    // about rooms that matched by *membership* rather than by their own name.
-    // Both then stay true: a person beats the rooms they are in
-    // (naming-a-conversation.md §3), and a named room is still reached by its
-    // name (§4). Two exact claims on one string is a real question, so it falls
-    // through to the ambiguity the collapse below reports.
-    let named_room = matches.iter().any(|chat| {
-        chat.is_group
-            && chat
-                .display_name
-                .as_ref()
-                .is_some_and(|name| name.to_lowercase() == spec.to_lowercase())
-    });
-    if !is_rowid
-        && !named_room
-        && let Ok(person) = resolve_person(db, spec, contacts)
-    {
-        // Their threads, not the ones that also happened to match the spec.
-        //
-        // This used to intersect with `matches`, which quietly bounded the
-        // answer by `CHAT_MATCH_SCAN`: a name matching 87 chats keeps the newest
-        // 50, and where 84 of those are rooms the person is in, their own older
-        // thread falls outside and the reader answered with half a conversation.
-        // For a name the intersection restricted nothing else — every thread
-        // of theirs renders as the name — so `one_to_one_chats` already
-        // returns exactly the threads §3 is asking for.
-        //
-        // Named rather than scanned, for the reason `chats_by_id` exists.
+    // A spec that names several people is an error, not a pick — unless none
+    // of them has a contact, in which case it was a fragment of an address,
+    // and fragments of addresses are text to search below like anything else
+    // no contact claims.
+    let mut people = people_matching(db, spec, contacts)?;
+    if people.len() > 1 && people.keys().any(|key| key.starts_with("contact:")) {
+        return Err(several_people(spec, &people));
+    }
+    if people.len() == 1 && !exactly_names_a_room(db, spec)? {
+        // A room named exactly this falls through instead of being beaten: a
+        // room's own name is a label somebody chose, so typing the whole of
+        // it claims the room as definitely as a name claims the person (§4),
+        // and two exact claims on one string are the ambiguity reported
+        // below. A room that merely matched by membership never competes —
+        // being in a room is not being the person (§3).
+        let person = people
+            .pop_first()
+            .map(|(_, person)| person)
+            .expect("one match");
         let theirs = one_to_one_chats(db, &person)?;
         if !theirs.is_empty() {
+            // Named rather than scanned, for the reason `chats_by_id` exists.
             let mut mine = chats_by_id(db, &theirs, contacts)?;
             if !mine.is_empty() {
-                // For an address the intersection did one more thing: it kept
-                // the typed thread first. An address still leads with its own
-                // thread here — reading merges either way, but the leading
-                // thread is where a send goes, and a send addressed to a
-                // number must not drift to whichever thread spoke last
+                // An address leads with its own thread. Reading still gets
+                // the whole conversation either way, but the leading thread
+                // is where a send goes, and a send addressed to a number must
+                // not drift to whichever thread spoke last
                 // (conversation-merging.md §7).
                 //
                 // A whole address leads on its key, and a fragment on the
@@ -2202,6 +2228,18 @@ pub fn resolve_conversation(
                 return Ok(one_bucket(mine, unknown));
             }
         }
+        // No conversation of their own: the rooms they are in are all there
+        // is, and those are found the way rooms are found, below.
+    }
+
+    // What is left is not a person: a room's own name, a membership fragment,
+    // a group identifier, an address fragment. Those are text over chat rows.
+    let matches = fetch_chats(db, Some(spec), CHAT_MATCH_SCAN, contacts, true)?;
+    if matches.is_empty() {
+        return Err(Error::other(format!("no chat matching {spec}")));
+    }
+    if matches.len() == 1 {
+        return Ok(matches);
     }
 
     let lowered = spec.to_lowercase();
@@ -2224,47 +2262,6 @@ pub fn resolve_conversation(
         .collect();
     if exact.len() == 1 {
         return Ok(vec![exact.remove(0)]);
-    }
-
-    // Several conversations with one person is not an ambiguity about who.
-    //
-    // Messages keeps a conversation per address, so someone reachable at a
-    // phone number and an email address has two, and naming them exactly hit
-    // both and asked which. But the addresses belong to one Contacts record, so
-    // the question it was asking was one nobody can answer from a name — it is
-    // the same person either way. Answer with all of them, most recently active
-    // first, since `fetch_chats` ordered them that way and the first is the
-    // conversation a reply would continue.
-    //
-    // Identity, never the rendered name: two records can carry one name and
-    // those are two people, so collapsing by what they print as would answer
-    // with a stranger's conversation.
-    //
-    // A fragment counts as naming them. Typing fewer letters does not make it
-    // two people, and a substring is a documented way to name a chat, so a
-    // first name or a surname is how this is actually typed. Falling back to
-    // `matches` only when nothing matched exactly keeps the precedence intact:
-    // an exact match still beats a fragment rather than being pooled with one.
-    //
-    // `sole_person` is what makes this safe to widen — it refuses to speak for
-    // a group, so a `None` anywhere propagates through the `Option` and leaves
-    // the ambiguity standing. Which is right: a person and a room that both
-    // matched are a real question about which was meant.
-    let narrowed = if exact.is_empty() { &matches } else { &exact };
-    if narrowed.len() > 1
-        && let Some(people) = narrowed
-            .iter()
-            .map(|chat| sole_person(chat, contacts))
-            .collect::<Option<BTreeSet<String>>>()
-        && people.len() == 1
-    {
-        // The first is kept whatever it is: naming a conversation reaches it
-        // even when Messages filters it, and that predates merging. What the
-        // merge may not do is mix the two buckets, in either direction — a
-        // filtered thread must not pull the known one in behind it any more
-        // than the reverse. So the rest join only if they are filtered the same
-        // way, unless `unknown` says the distinction is not wanted.
-        return Ok(one_bucket(narrowed.clone(), unknown));
     }
 
     // Say how many are not being shown, rather than printing six and reporting
@@ -3429,6 +3426,116 @@ mod tests {
         );
     }
 
+    /// A person is found however long their conversation has been quiet.
+    ///
+    /// The resolver used to enter through a scan of the newest
+    /// `NAME_SEARCH_SCAN` chat rows, so a thread past that window answered
+    /// "no chat matching" while the person sat in Contacts and their chat sat
+    /// in the table. Resolving the person first reads the handle table, which
+    /// has no window — whose conversation a name means cannot depend on what
+    /// else has been noisy lately.
+    #[test]
+    fn a_person_is_reached_past_the_resolvers_scan_window() {
+        let db = fixture();
+        let theirs = one_to_one(&db, 4, "+16175550147");
+        message_in(&db, theirs, 10, 5);
+        // Enough newer activity that the old entry scan never saw their chat.
+        many_chats(&db, NAME_SEARCH_SCAN + 200);
+        db.execute_batch("BEGIN").unwrap();
+        for i in 0..NAME_SEARCH_SCAN + 200 {
+            message_in(&db, 100 + i, 10_000 + i, 10 + i);
+        }
+        db.execute_batch("COMMIT").unwrap();
+        let contacts = ContactIndex::for_test([("+16175550147", "source:7", "Robin Adeyemi")]);
+
+        let threads = resolve_conversation(&db, "Robin", &contacts, false).unwrap();
+        let rowids: Vec<i64> = threads.iter().map(|chat| chat.rowid).collect();
+        assert_eq!(rowids, [theirs], "found past the entry scan");
+    }
+
+    /// An address typed in full names the person, and leads with its thread.
+    ///
+    /// Naming any one address reaches the whole conversation — the contact is
+    /// what was named, so reading must not stop at the one thread that
+    /// address carries. But the leading thread is where a send goes, and a
+    /// send addressed to a number must not drift to whichever thread spoke
+    /// last, so the typed address's own thread leads even when it is the
+    /// quiet one.
+    #[test]
+    fn an_address_reaches_every_thread_and_leads_with_its_own() {
+        let db = fixture();
+        let phone = one_to_one(&db, 4, "+16175550147");
+        let email = one_to_one(&db, 5, "robin@example.com");
+        message_in(&db, phone, 10, 5);
+        message_in(&db, email, 11, 90);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ]);
+
+        let by_phone = resolve_conversation(&db, "+16175550147", &contacts, false).unwrap();
+        let rowids: Vec<i64> = by_phone.iter().map(|chat| chat.rowid).collect();
+        assert_eq!(rowids, [phone, email], "the typed address leads");
+
+        let by_email = resolve_conversation(&db, "robin@example.com", &contacts, false).unwrap();
+        let rowids: Vec<i64> = by_email.iter().map(|chat| chat.rowid).collect();
+        assert_eq!(rowids, [email, phone], "either address, the whole answer");
+    }
+
+    /// A first name two contacts share is an error, not a pick.
+    ///
+    /// Nothing narrows it — neither record is named exactly what was typed —
+    /// so answering with either would be answering for the wrong person half
+    /// the time. The error says who it could have been.
+    #[test]
+    fn a_first_name_shared_by_two_contacts_errors() {
+        let db = fixture();
+        let older = one_to_one(&db, 4, "+16175550147");
+        let newer = one_to_one(&db, 5, "+16175550148");
+        message_in(&db, older, 10, 5);
+        message_in(&db, newer, 11, 90);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("+16175550148", "source:9", "Robin Chen"),
+        ]);
+
+        let error = resolve_chat(&db, "robin", &contacts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 people match"), "{error}");
+    }
+
+    /// An unknown number is its own person: the handle stands in for the
+    /// contact it does not have, so two service threads with it still merge.
+    #[test]
+    fn an_unknown_number_merges_its_own_threads() {
+        let db = fixture();
+        db.execute(
+            "INSERT INTO handle (rowid, id) VALUES (6, '+19995551212')",
+            [],
+        )
+        .unwrap();
+        for (chat, minutes) in [(30, 5_i64), (31, 90)] {
+            db.execute(
+                "INSERT INTO chat (rowid, guid, chat_identifier, display_name, is_filtered)
+                 VALUES (?, ?, '+19995551212', '', 0)",
+                rusqlite::params![chat, format!("chat{chat}")],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, 6)",
+                [chat],
+            )
+            .unwrap();
+            message_in(&db, chat, 40 + chat, minutes);
+        }
+
+        let threads =
+            resolve_conversation(&db, "+19995551212", &ContactIndex::empty(), false).unwrap();
+        let rowids: Vec<i64> = threads.iter().map(|chat| chat.rowid).collect();
+        assert_eq!(rowids, [31, 30], "one number, one conversation");
+    }
+
     /// A negative limit is nothing, not everything.
     ///
     /// `LIMIT ?` reads a negative as no limit at all, and the merge would then
@@ -3906,10 +4013,13 @@ mod tests {
             ("robin@example.com", "source:9", "Robin Adeyemi"),
         ]);
 
+        // Said as people, with the address that tells them apart — a list of
+        // chats would print one name twice and explain nothing.
         let error = resolve_chat(&db, "Robin Adeyemi", &contacts)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("2 chats match"), "{error}");
+        assert!(error.contains("2 people match"), "{error}");
+        assert!(error.contains("+16175550147"), "{error}");
     }
 
     /// An error that shows six of fifty has to say so, or the list reads as the

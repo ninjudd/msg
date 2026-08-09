@@ -89,6 +89,16 @@ use crate::db::{Chat, Message};
 /// a daemon that does not know them ignores them and answers with bare hits, so
 /// `-C 3` would silently produce exactly what the flag was asked to change.
 ///
+/// 14 resolves the person before matching chat rows, so `chat` answers a name
+/// or an address from the contact outward: the record, then every address it
+/// holds, then their threads — however quiet. An address now reads as the
+/// whole conversation while still leading with its own thread, and a name two
+/// contacts share errors naming the people instead of listing chat rows. Same
+/// commands, same fields, changed answers — the quiet kind of skew again: a
+/// stale daemon still resolves through its scan window, so a long-quiet
+/// thread silently misses the merge and an address answers with one thread
+/// instead of the conversation, with nothing to say the daemon is why.
+///
 /// 13 merges the `chats` listing, so a person with two threads is one row
 /// carrying the summed count and the rowid a send would go to. The reply shape
 /// is untouched — the same fields, one row fewer — which makes this the case 8
@@ -126,7 +136,7 @@ use crate::db::{Chat, Message};
 /// saying so, which looks exactly like a person who only has one. The reply is
 /// not wrong in a way anything can see — it is simply missing half the
 /// conversation, which is the failure this number exists to make loud.
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";
