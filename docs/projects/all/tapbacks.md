@@ -95,8 +95,11 @@ symbol next to everything else in a terminal that renders emoji at full width.
 The reversal knowingly gives up the distinction the shorthand preserved: `❤️`
 for the built-in Love tapback is now the same glyph as a literal `❤️` someone
 chose as a type 2006 reaction. The two mean different things and render
-identically. The shorthand kept them apart and was judged not worth its
-rendering; if the distinction ever earns its way back, this is where it went.
+identically — in the bracket. The JSON keeps them apart, because §7 publishes
+the raw `associatedMessageType` beside the symbol for exactly this kind of
+consumer, so the cost is confined to the glance and not the data. The shorthand
+kept them apart on screen and was judged not worth its rendering; if the
+distinction ever earns its way back, this is where it went.
 
 ## 5 Where it attaches
 
@@ -126,13 +129,19 @@ messages", which stays useful for timestamps and for debugging, and it
 documented flag to save inventing one.
 
 **Names are off by default, behind a flag. (DECIDED — requested)** Default
-`[😂♥♥]`; with the flag, `[😂 dana, ♥ sam, ♥ kit]`. Naming the flag is left to
-the slice.
+`[😂❤️❤️]`; with the flag, `[😂 dana, ❤️ sam, ❤️ kit]`. Naming the flag is left
+to the slice.
 
-**Duplicates are kept and ordered by reaction time. (DECIDED)** `[♥♥]` is two
-people, and collapsing it to `[♥×2]` or `[♥]` throws away the count, which is the
-main thing a bracket communicates at a glance. Chronological rather than grouped
-by type, so the bracket reads as what happened.
+**Duplicates are kept and ordered by reaction time. (DECIDED)** `[❤️❤️]` is two
+people, and collapsing it to `[❤️×2]` or `[❤️]` throws away the count, which is
+the main thing a bracket communicates at a glance. Chronological rather than
+grouped by type, so the bracket reads as what happened. This was first argued
+against the shorthand's narrow glyphs, and §4's reversal changes the picture it
+defends: five loves are now five double-width emoji rather than five hairline
+symbols, which makes the collapsed form more tempting, not less. The decision
+stands anyway — a count is still not a list, and a bracket long enough for the
+width to matter is the uncommon case — but it stands re-argued, not carried
+over.
 
 **A removal cancels its add. (DECIDED)** Match a 3000-range row to the reaction
 it retracts by sender, target guid, and type family, and drop both. §9 records
@@ -155,15 +164,12 @@ the symbol deliberately: a consumer that wants Messages' own glyphs, or wants to
 count Love separately from a heart emoji, should not have to re-derive it from a
 string this program chose.
 
-The protocol version bumps. **[search-context](search-context.md) also bumps
-it** — whichever lands second takes the next number, and neither should assume
-7.
-
-The link points that way round on purpose. That plan is the base this one is
-stacked on, so it merges first and its file is always already there; a link from
-it to this one would resolve to nothing for the whole interval between the two
-merges. A forward reference from a base to its child is the one direction
-ordering cannot make safe.
+The protocol version bumps. When this paragraph was written it shared the next
+number with [search-context](search-context.md), still unmerged then, and told
+both not to assume 7; search-context landed long ago (9), the constant has
+moved three more times since, and the instruction survives only in its general
+form — take whatever `PROTOCOL_VERSION` says next, not a number this plan
+remembers.
 
 ## 8 Slices
 
