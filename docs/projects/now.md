@@ -6,4 +6,6 @@ Delete the line when the work is genuinely over. Committed but not started lives
 in [next](next.md); uncommitted ideas in [later](later.md). See
 [README](README.md) for how these lists work.
 
-Nothing in flight.
+- [Stop matching in the middle of a word](all/search-boundaries.md) — the body
+  half, open as #40: the decoded filter takes `begins_a_word`, §5 decided as
+  the default with no flag, protocol 15.

@@ -1,13 +1,12 @@
 # Plan: Stop matching in the middle of a word
 
-**Status:** Half shipped. The rule and its predicate exist —
-`matching::begins_a_word`, taking `&str` as §3 asked — and *name* matching uses
-it, because `naming-a-conversation.md` turned out to need it first. Message
-bodies still do not: `msg_body_has` and the decoded filter are unchanged, so
-searching `art` still returns `apartment`.
-
-What remains is §3's placement question applied to bodies, and §5, which is
-still open and still has to be answered before the body half ships.
+**Status:** Built, open as #40, at protocol 15. The predicate
+shipped first for names; the body half now runs it in the decoded filter,
+placed as §3 asked, with §5 decided as the default and no flag. §6's cost is
+measured and real — the numbers are at the end of that section, along with the
+remedy that was tried, measured useless, and removed — and the slow tail plus
+the client-timeout interaction it exposes are recorded in
+[later](../later.md) rather than mitigated here.
 
 **Goal:** Make a search needle match at the start of a word, so a short one
 stops finding itself inside unrelated longer words.
@@ -169,7 +168,7 @@ for text the author does not send. Whether it needs a test with CJK fixture
 messages, or whether the range check is self-evident enough to go without, is a
 judgement call at implementation time — but the check itself is not optional.
 
-## 5 Should there be a way back to substring matching? (OPEN)
+## 5 Should there be a way back to substring matching? (DECIDED: no flag)
 
 An escape hatch — `--substring`, or grep's `-w` inverted — would restore today's
 behaviour for the cases that genuinely want an interior match: the last four
@@ -185,6 +184,10 @@ also settles whether §2's rule is the default or an opt-in. Shipping the rule a
 the default with no flag is the recommendation; shipping it behind a flag would
 leave the observed bug in place for everyone who does not know to type the flag,
 which is everyone.
+
+**Decided 2026-08-09: the default, with no flag**, on the recommendation above.
+`--substring` waits for the first observed search that wants an interior match,
+and arrives with that case attached.
 
 ## 6 It makes the widening loop work harder
 
@@ -210,6 +213,27 @@ known before the query runs and short needles are exactly the ones that pay.
 Note that it is the *same* expression, whose comment already argues for
 generosity on the first ask for this reason — a second widening stacked on top
 of one that went unnoticed is the easy mistake here.
+
+**Measured when the body half shipped, on 763k messages: it bites, and the
+remedy above does not help.** `e` went 1.7s to 2.8s and `start` sits at 3.3s —
+needles that begin words fill the limit fast and barely pay. `art` went 9.1s to
+12–23s depending on cache. `ing`, the predicted worst case, went from 3.4s of
+pure noise to 15–20s of correct answers warm — and cold it walks past the
+client's 30-second socket timeout, which surfaces as exit 1 and a raw `os
+error 35` with no results. That failure was unreachable before this rule, since
+nothing could hold the daemon past 30 seconds.
+
+The first-ask widening was implemented and measured: no effect outside noise,
+so it was removed rather than shipped as insurance. The rounds grow
+geometrically, so everything before the last is cheap and the first ask is not
+where the time goes — the cost is scan *depth*. A needle that rarely begins a
+word makes the loop decode most of the table's substring candidates to reject
+them, and no ask schedule changes how deep that walk has to go. What would:
+streaming the scan backwards (`query-performance.md §9`), a scan cap with an
+honest "stopped early" answer, or the index this repo has twice declined to
+build. Shipped as-is, on the judgment that these searches previously returned
+garbage instantly and now return the right thing slowly; the slow tail and the
+timeout's raw error are recorded in [later](../later.md).
 
 ## 7 Scope: message bodies only
 
