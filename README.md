@@ -145,6 +145,7 @@ msg chat dana sam              # two people: the room with exactly those two
 msg chat 42 -n 200             # by rowid, with more history
 msg chat dana --since 7d       # only the last week
 msg chat dana --since 2026-01-15
+msg chat dana --who            # name who reacted: ← ❤️ sam, 🙏 me
 msg chat dana --tapbacks       # reactions as their own rows, not trailing
 ```
 
@@ -505,6 +506,7 @@ authentication, and why the daemon is a single executable rather than a copy of
 | `--since <when>` | `chat`, `search` | duration or date lower bound |
 | `-c, --chat <chat>` | `search`, `watch` | restrict to one conversation |
 | `--tapbacks` | `chat`, `watch` | reactions as their own rows instead of trailing their message |
+| `--who` | `chat`, `search` | name who reacted in the trail |
 | `-A, --after <count>` | `search` | messages to show after each hit |
 | `-B, --before <count>` | `search` | messages to show before each hit |
 | `-C, --context <count>` | `search` | both, and note the clash with `-c` |
