@@ -291,7 +291,7 @@ fn reactions_ride_the_message_and_the_flag_trades_them_for_rows() {
     let output = msg(&["--no-names", "chat", "3"]);
     assert_eq!(code(&output), 0);
     let text = stdout(&output);
-    assert!(text.contains("art deco ← ❤️🙏"), "{text}");
+    assert!(text.contains("art deco ← ❤️ 🙏"), "{text}");
     // The third stored form, `bp:<guid>` with no part number — 867 rows on a
     // real database, found hiding inside an implausible orphan count (§9).
     assert!(text.contains("gallery downtown ← 👍"), "{text}");
@@ -299,7 +299,7 @@ fn reactions_ride_the_message_and_the_flag_trades_them_for_rows() {
     let output = msg(&["--no-names", "chat", "3", "--tapbacks"]);
     assert_eq!(code(&output), 0);
     let text = stdout(&output);
-    assert!(!text.contains("← ❤️🙏"), "{text}");
+    assert!(!text.contains("← ❤️ 🙏"), "{text}");
     assert!(text.contains("Loved"), "{text}");
 
     // A context window shows a reaction once, trailing its target — the rows
@@ -307,7 +307,7 @@ fn reactions_ride_the_message_and_the_flag_trades_them_for_rows() {
     let output = msg(&["--no-names", "search", "art deco", "-A", "4"]);
     assert_eq!(code(&output), 0);
     let text = stdout(&output);
-    assert!(text.contains("← ❤️🙏"), "{text}");
+    assert!(text.contains("← ❤️ 🙏"), "{text}");
     assert!(!text.contains("Loved"), "{text}");
 
     // `--who` names the sender beside each symbol — the handle here, since
@@ -316,7 +316,7 @@ fn reactions_ride_the_message_and_the_flag_trades_them_for_rows() {
     assert_eq!(code(&output), 0);
     let text = stdout(&output);
     assert!(
-        text.contains("art deco ← ❤️ dana@example.com, 🙏 me"),
+        text.contains("art deco ← ❤️  dana@example.com, 🙏 me"),
         "{text}"
     );
 
@@ -331,7 +331,7 @@ fn reactions_ride_the_message_and_the_flag_trades_them_for_rows() {
     assert_eq!(code(&output), 0);
     let text = stdout(&output);
     assert!(
-        text.contains("art deco ← ❤️ dana@example.com, 🙏 me"),
+        text.contains("art deco ← ❤️  dana@example.com, 🙏 me"),
         "{text}"
     );
 

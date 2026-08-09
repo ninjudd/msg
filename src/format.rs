@@ -136,6 +136,21 @@ pub enum Trail {
     Named,
 }
 
+/// The extra space a symbol needs when the terminal will draw over ours.
+///
+/// `❤️` and `‼️` are text-presentation characters promoted to emoji by VS16
+/// (U+FE0F). The wcwidth most terminals still follow allocates them one
+/// column while the glyph is drawn two wide, so the spill lands on whatever
+/// comes next — which was the space before a sender's name. Detected by the
+/// VS16 itself rather than by measuring: `unicode_width` 0.2 already counts
+/// these as two, siding with what terminals should do over what the observed
+/// ones did, so a width test reports the problem absent on exactly the
+/// symbols that have it. Emoji-presentation defaults carry no VS16 and get
+/// nothing.
+fn spill(symbol: &str) -> &'static str {
+    if symbol.contains('\u{fe0f}') { " " } else { "" }
+}
+
 pub fn render_messages(messages: &[Message], show_chat: bool, trail: Trail) -> String {
     if messages.is_empty() {
         return "no messages found\n".to_string();
@@ -205,7 +220,7 @@ pub fn render_messages(messages: &[Message], show_chat: bool, trail: Trail) -> S
                             .or(tapback.handle.as_deref())
                             .unwrap_or("unknown")
                     };
-                    format!("{} {sender}", tapback.symbol)
+                    format!("{}{} {sender}", tapback.symbol, spill(&tapback.symbol))
                 })
                 .collect();
             format!(" ← {}", named.join(", "))
@@ -213,9 +228,9 @@ pub fn render_messages(messages: &[Message], show_chat: bool, trail: Trail) -> S
             let symbols: String = message
                 .tapbacks
                 .iter()
-                .map(|tapback| tapback.symbol.as_str())
-                .collect();
-            format!(" ← {symbols}")
+                .map(|tapback| format!("{}{}", tapback.symbol, spill(&tapback.symbol)))
+                .collect::<String>();
+            format!(" ← {}", symbols.trim_end())
         };
         out.push_str(&format!(
             "{gutter}{stamp}  {where_}{}: {body}{reactions}\n",
@@ -502,9 +517,9 @@ mod tests {
             },
         ];
         let named = render_messages(std::slice::from_ref(&reacted), false, Trail::Named);
-        assert!(named.contains("green ← ❤️ Sam Oyelaran, 👍 me"), "{named}");
+        assert!(named.contains("green ← ❤️  Sam Oyelaran, 👍 me"), "{named}");
         let bare = render_messages(std::slice::from_ref(&reacted), false, Trail::Symbols);
-        assert!(bare.contains("green ← ❤️👍"), "{bare}");
+        assert!(bare.contains("green ← ❤️ 👍"), "{bare}");
         assert!(!bare.contains("Sam"), "{bare}");
     }
 

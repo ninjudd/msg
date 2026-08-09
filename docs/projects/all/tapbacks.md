@@ -100,6 +100,14 @@ requested — `♥` `+1` `-1` `LOL` `!!` `?`. What reversed it was seeing it
 rendered: the non-emoji glyphs read badly, `♥` a hairline text-presentation
 symbol next to everything else in a terminal that renders emoji at full width.
 
+Two of the six — `❤️` and `‼️` — are text-presentation characters promoted
+by VS16, which the wcwidth most terminals still follow allocates one column
+while drawing two: the glyph spills over whatever follows, first seen eating
+the space before `--who`'s names. The renderer pads one extra space after any
+VS16-carrying symbol, detected by the selector rather than by measuring,
+because `unicode_width` 0.2 sides with what terminals should do and reports
+the problem absent on exactly the symbols that have it.
+
 The reversal knowingly gives up the distinction the shorthand preserved: `❤️`
 for the built-in Love tapback is now the same glyph as a literal `❤️` someone
 chose as a type 2006 reaction. The two mean different things and render
