@@ -4,9 +4,10 @@
 shipped first for names; the body half now runs it in the decoded filter,
 placed as §3 asked, with §5 decided as the default and no flag. §6's cost is
 measured and real — the numbers are at the end of that section, along with the
-remedy that was tried, measured useless, and removed — and the slow tail plus
-the client-timeout interaction it exposes are recorded in
-[later](../later.md) rather than mitigated here.
+remedy that was tried, measured useless, and removed. The slow tail is
+recorded in [later](../later.md); the client timeout it can now reach answers
+with a sentence instead of a raw errno, on this branch, because the branch is
+what made that path reachable.
 
 **Goal:** Make a search needle match at the start of a word, so a short one
 stops finding itself inside unrelated longer words.
@@ -232,8 +233,11 @@ them, and no ask schedule changes how deep that walk has to go. What would:
 streaming the scan backwards (`query-performance.md §9`), a scan cap with an
 honest "stopped early" answer, or the index this repo has twice declined to
 build. Shipped as-is, on the judgment that these searches previously returned
-garbage instantly and now return the right thing slowly; the slow tail and the
-timeout's raw error are recorded in [later](../later.md).
+garbage instantly and now return the right thing slowly; the slow tail is
+recorded in [later](../later.md). The timeout itself answers with words now —
+which command, which deadline, that the daemon is working rather than crashed —
+because a path a branch makes reachable ships with its error message, the
+standard the snapshot fallback's raw `EPERM` set.
 
 ## 7 Scope: message bodies only
 
