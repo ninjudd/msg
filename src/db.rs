@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::apple::{from_apple_date, message_body};
 use crate::contacts::{Contact, ContactIndex, name_handles};
+use crate::matching::run_contains;
 use crate::{Error, Result};
 
 pub fn default_db() -> PathBuf {
@@ -242,33 +243,6 @@ fn contains_ignoring_case(haystack: &[u8], needle: &str) -> bool {
             }
         }
     }
-}
-
-fn run_contains(haystack: &str, needle: &str) -> bool {
-    let Some(first) = needle.chars().flat_map(char::to_lowercase).next() else {
-        return true;
-    };
-    // Almost every position fails on its first character, so that test is worth
-    // making cheap: comparing it before building the two folding iterators is
-    // most of the difference between this and a scan that folds everything.
-    haystack
-        .char_indices()
-        .any(|(at, ch)| folds_to(ch, first) && starts_with_ignoring_case(&haystack[at..], needle))
-}
-
-fn folds_to(ch: char, lowered: char) -> bool {
-    if ch.is_ascii() {
-        return ch.to_ascii_lowercase() == lowered;
-    }
-    ch.to_lowercase().next() == Some(lowered)
-}
-
-fn starts_with_ignoring_case(haystack: &str, needle: &str) -> bool {
-    let mut found = haystack.chars().flat_map(char::to_lowercase);
-    needle
-        .chars()
-        .flat_map(char::to_lowercase)
-        .all(|wanted| found.next() == Some(wanted))
 }
 
 fn contains_ignoring_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
@@ -1257,11 +1231,13 @@ pub fn fetch_messages(
             // arbitrary byte — often a letter — immediately before the text,
             // so a boundary test on the raw bytes rejects real matches, and
             // the preceding "character" is not even guaranteed to be one
-            // (search-boundaries.md §3).
+            // (search-boundaries.md §3). The body goes in unfolded — the
+            // predicate reads the boundary from the original characters.
             messages.retain(|message| {
-                message.body.as_ref().is_some_and(|body| {
-                    crate::matching::begins_a_word(&body.to_lowercase(), needle)
-                })
+                message
+                    .body
+                    .as_ref()
+                    .is_some_and(|body| crate::matching::begins_a_word(body, needle))
             });
         }
 
@@ -1585,7 +1561,7 @@ fn retain_matching(chats: &mut Vec<Chat>, query: &str, contacts: &ContactIndex) 
     // address it is part of, since the middle of a phone number is exactly how
     // anyone types a fragment of one (naming-a-conversation.md §2, §8).
     let named = |value: Option<&String>| {
-        value.is_some_and(|value| crate::matching::begins_a_word(&value.to_lowercase(), &needle))
+        value.is_some_and(|value| crate::matching::begins_a_word(value, &needle))
     };
     let addressed =
         |value: Option<&String>| value.is_some_and(|value| value.to_lowercase().contains(&needle));

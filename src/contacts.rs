@@ -59,21 +59,22 @@ impl Contact {
     /// every contact rather than the other way round.
     pub fn answers_to(&self, needle: &str) -> bool {
         self.names()
-            .any(|name| crate::matching::begins_a_word(&name, needle))
+            .any(|name| crate::matching::begins_a_word(name, needle))
     }
 
     /// Whether one of those names is exactly `needle`, for breaking a tie
     /// between the people a fragment matched.
     pub fn is_named(&self, needle: &str) -> bool {
-        self.names().any(|name| name == needle)
+        self.names().any(|name| name.to_lowercase() == needle)
     }
 
-    /// Every name this contact can be found by, lowercased for comparison.
-    fn names(&self) -> impl Iterator<Item = String> {
+    /// Every name this contact can be found by, in its stored case — the
+    /// predicate folds per character, and reads word boundaries from the
+    /// unfolded name.
+    fn names(&self) -> impl Iterator<Item = &String> {
         [Some(&self.name), self.filed_as.as_ref()]
             .into_iter()
             .flatten()
-            .map(|name| name.to_lowercase())
     }
 }
 

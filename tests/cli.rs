@@ -55,13 +55,15 @@ fn build(path: &Path) {
                  (2, 'm2', 'after 6, yeah', 1, 1, 790000060000000000, 'iMessage'),
                  (3, 'm3', 'works, see you then', 0, 1, 790000120000000000, 'iMessage'),
                  (4, 'm4', 'we started at six, is that art deco', 0, 2, 790000180000000000, 'iMessage'),
-                 (5, 'm5', 'the apartment above ours', 0, 2, 790000240000000000, 'iMessage');
+                 (5, 'm5', 'the apartment above ours', 0, 2, 790000240000000000, 'iMessage'),
+                 (6, 'm6', 'the İart gallery downtown', 0, 2, 790000300000000000, 'iMessage');
         INSERT INTO chat_message_join (chat_id, message_id, message_date)
           VALUES (1, 1, 790000000000000000),
                  (1, 2, 790000060000000000),
                  (1, 3, 790000120000000000),
                  (3, 4, 790000180000000000),
-                 (3, 5, 790000240000000000);
+                 (3, 5, 790000240000000000),
+                 (3, 6, 790000300000000000);
         ",
     )
     .unwrap();
@@ -259,6 +261,10 @@ fn a_search_hit_starts_where_a_word_starts() {
     let text = stdout(&output);
     assert!(text.contains("art deco"), "{text}");
     assert!(!text.contains("apartment"), "{text}");
+    // The boundary is read before the body is case-folded. Folding first
+    // would turn `İ` into `i` plus a combining dot and invent a word start
+    // in front of `art` that the message does not have.
+    assert!(!text.contains("İart"), "{text}");
 
     // Asymmetric on purpose: a prefix still matches, so `start` finds
     // `started` — whole-word matching would be the wrong trade.
