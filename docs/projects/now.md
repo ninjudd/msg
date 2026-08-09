@@ -7,5 +7,5 @@ in [next](next.md); uncommitted ideas in [later](later.md). See
 [README](README.md) for how these lists work.
 
 - [Put a reaction on the message it reacted to](all/tapbacks.md) — slice 1,
-  open as #43: the bracket after the body, removals cancelled, the JSON field,
+  open as #43: reactions trailing the body, removals cancelled, the JSON field,
   protocol 16.

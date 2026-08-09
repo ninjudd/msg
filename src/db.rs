@@ -995,8 +995,8 @@ struct Window {
 /// Nothing here narrows the window the way the search was narrowed. `--from`,
 /// `--since` and the body match all bound what counts as a hit; a window is a
 /// slice of the conversation around one, so it holds whatever was actually
-/// said. Tapback rows are the one exception, since brackets: the reaction
-/// rides its target's bracket instead, and a window that also held the row
+/// said. Tapback rows are the one exception, since attached reactions: the
+/// reaction trails its target instead, and a window that also held the row
 /// showed the same reaction twice (tapbacks.md §6). What that trades away is
 /// the reaction whose target sits outside the window — it renders nowhere,
 /// where the row once stood in for the reply (search-context.md §3).
@@ -1043,9 +1043,9 @@ pub fn with_context(
                     before_rowid: options.before_rowid,
                     oldest_first: options.oldest_first,
                     // Reactions used to cross into the window as rows, on "a
-                    // conversation is what was said in it" — until brackets
-                    // put them on the message they react to, and a window
-                    // showed the same reaction twice (tapbacks.md §6).
+                    // conversation is what was said in it" — until the
+                    // trail put them on the message they react to, and a
+                    // window showed the same reaction twice (tapbacks.md §6).
                     include_tapbacks: false,
                     include_filtered: true,
                     ..Default::default()
@@ -1190,10 +1190,10 @@ pub struct FetchMessages<'a> {
     pub limit: i64,
     pub include_tapbacks: bool,
     /// Whether reactions ride the returned messages as `tapbacks`. Watch turns
-    /// this off: a stream that attached them would show a bracket exactly when
-    /// the reaction happened to land before its target was emitted — a race,
-    /// not a contract — and a bracket whose absence means nothing teaches a
-    /// reader that it does (tapbacks.md §10). Snapshots attach; streams show
+    /// this off: a stream that attached them would show a reaction exactly
+    /// when it happened to land before its target was emitted — a race, not a
+    /// contract — and a marker whose absence means nothing teaches a reader
+    /// that it does (tapbacks.md §10). Snapshots attach; streams show
     /// reactions as events, behind `--tapbacks`.
     pub attach_tapbacks: bool,
     pub include_filtered: bool,
@@ -2840,10 +2840,10 @@ mod tests {
         assert!(out[0].matched && out[0].group.is_none());
     }
 
-    /// A reaction is never a hit, and since brackets it is not a row in the
-    /// window either: it rides its target, so a window cannot show the same
-    /// reaction twice. This test used to pin the row *crossing into* the
-    /// window — right when rows were the only way a reaction showed, and
+    /// A reaction is never a hit, and since attached rendering it is not a
+    /// row in the window either: it rides its target, so a window cannot show
+    /// the same reaction twice. This test used to pin the row *crossing into*
+    /// the window — right when rows were the only way a reaction showed, and
     /// tapbacks.md §6's exact complaint once they were not.
     #[test]
     fn a_window_shows_a_reaction_on_its_target_not_as_a_row() {

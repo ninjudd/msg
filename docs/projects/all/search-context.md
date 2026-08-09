@@ -107,18 +107,18 @@ Note that `msg search` has no `--tapbacks` flag at all today; only `read` and
 
 If the tapbacks plan lands first, this narrows rather than changes: a
 reaction will already be attached to the message it reacted to, so the window
-carries the bracket along with the message and this decision becomes "the window
+carries the reaction along with the message and this decision becomes "the window
 does not suppress them".
 
 **The prediction above was falsified when tapbacks slice 1 landed
 (2026-08-09), and the record of that is worth more than the sentence.** The
 build went the other way: the window *does* suppress reaction rows, because a
-row beside a bracket is the same reaction printed twice, and tapbacks.md §6 had
+row beside an attached reaction is the same one printed twice, and tapbacks.md §6 had
 already decided against printing the same information twice. What the reversal
 trades away is the case this section's argument was actually about — a reaction
 whose target sits outside the window now renders nowhere at all, where the row
 once stood in for the reply. Accepted knowingly: the common case is a reaction
-beside its target, where the bracket serves, and the distant-target case lost
+beside its target, where the attached rendering serves, and the distant-target case lost
 its only representation in windows while keeping `--tapbacks` everywhere else.
 
 **`-C` takes the collision with `-c`. (DECIDED)** `-c/--chat` is already taken,

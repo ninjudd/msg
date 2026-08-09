@@ -145,7 +145,7 @@ msg chat dana sam              # two people: the room with exactly those two
 msg chat 42 -n 200             # by rowid, with more history
 msg chat dana --since 7d       # only the last week
 msg chat dana --since 2026-01-15
-msg chat dana --tapbacks       # reactions as their own rows, not brackets
+msg chat dana --tapbacks       # reactions as their own rows, not trailing
 ```
 
 `--since` accepts a duration (`30m`, `2h`, `7d`, `4w`), an ISO date like
@@ -269,8 +269,8 @@ The window is a slice of the conversation, not a continuation of the search.
 filtering the window by the same person would return Dana's next two messages,
 which is almost never the reply she got. `--since` bounds what counts as a hit
 too, so a window on a hit near that boundary reaches back past it. Reactions
-are not rows in a window — each rides its target's bracket, so a reaction to a
-message in the window shows there, once.
+are not rows in a window — each trails its target, so a reaction to a message
+in the window shows there, once.
 
 `-C` is shorthand for both sides and loses to either given outright, including
 zero — `-C 2 -B 0` is two messages after each hit and none before, as in grep.
@@ -320,8 +320,8 @@ With [the daemon](#the-daemon) running, new messages arrive as they land. Withou
 it, `watch` polls every 3 seconds; change that with `--interval`.
 
 A default watch shows messages only — a stream cannot revise a line it
-already printed, so brackets stay out of it entirely. To follow reactions
-live, pass `--tapbacks`, which prints each one as its own line as it lands.
+already printed, so reactions stay off it entirely. To follow them live, pass
+`--tapbacks`, which prints each one as its own line as it lands.
 
 ### Sending
 
@@ -504,7 +504,7 @@ authentication, and why the daemon is a single executable rather than a copy of
 | `-n, --limit <count>` | `chats`, `chat`, `search` | how many results |
 | `--since <when>` | `chat`, `search` | duration or date lower bound |
 | `-c, --chat <chat>` | `search`, `watch` | restrict to one conversation |
-| `--tapbacks` | `chat`, `watch` | reactions as their own rows instead of brackets |
+| `--tapbacks` | `chat`, `watch` | reactions as their own rows instead of trailing their message |
 | `-A, --after <count>` | `search` | messages to show after each hit |
 | `-B, --before <count>` | `search` | messages to show before each hit |
 | `-C, --context <count>` | `search` | both, and note the clash with `-c` |
@@ -559,9 +559,9 @@ every one of those 19,524 blobs.
 **Tapbacks are messages.** A reaction is stored as an ordinary row with
 `associated_message_type != 0`, so a naive query mixes `Liked "see you then"`
 into the conversation. By default the rows are filtered out and each reaction
-renders instead as an emoji bracket after the message it reacted to —
-`works, see you then [❤️]` — with the raw type published beside the symbol in
-`--json`. `--tapbacks` trades the brackets for the rows, which keeps their
+trails the message it reacted to after an arrow —
+`works, see you then ← ❤️` — with the raw type published beside the symbol in
+`--json`. `--tapbacks` trades the trail for the rows, which keeps their
 timestamps visible.
 
 **Filtering is a category, not a flag.** `chat.is_filtered` is not a boolean.
