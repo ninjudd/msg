@@ -17,7 +17,7 @@ use msg::daemon::install::{
 use msg::daemon::protocol::{Attachment, socket_path};
 use msg::daemon::server::{Daemon, DaemonOptions};
 use msg::db::human_bytes;
-use msg::format::{Trail, render_chats, render_messages, to_json};
+use msg::format::{Render, Trail, render_chats, render_messages, to_json};
 use msg::source::{
     ChatQuery, ChatsQuery, SearchQuery, SendQuery, Source, WatchQuery, daemon_status,
     daemon_status_within, open_source,
@@ -308,11 +308,14 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                     reply.chat.name,
                     render_messages(
                         &reply.messages,
-                        false,
-                        match (*tapbacks, *who) {
-                            (true, _) => Trail::Off,
-                            (false, true) => Trail::Named,
-                            (false, false) => Trail::Symbols,
+                        Render {
+                            show_chat: false,
+                            trail: match (*tapbacks, *who) {
+                                (true, _) => Trail::Off,
+                                (false, true) => Trail::Named,
+                                (false, false) => Trail::Symbols,
+                            },
+                            day_headers: true,
                         },
                     )
                 )
@@ -356,8 +359,11 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
             } else {
                 render_messages(
                     &messages,
-                    true,
-                    if *who { Trail::Named } else { Trail::Symbols },
+                    Render {
+                        show_chat: true,
+                        trail: if *who { Trail::Named } else { Trail::Symbols },
+                        day_headers: false,
+                    },
                 )
             });
         }
@@ -384,11 +390,10 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                     } else {
                         render_messages(
                             std::slice::from_ref(message),
-                            show_chat,
-                            if *tapbacks {
-                                Trail::Off
-                            } else {
-                                Trail::Symbols
+                            Render {
+                                show_chat,
+                                trail: if *tapbacks { Trail::Off } else { Trail::Symbols },
+                                day_headers: false,
                             },
                         )
                     });
