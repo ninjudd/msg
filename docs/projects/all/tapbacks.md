@@ -227,3 +227,21 @@ excluded by the `!= 0` test today and so already invisible. Most likely a
 sticker placed on a message rather than a reaction. Out of scope; identify it —
 and type 2007, which the measurement surfaced with 24 rows — before assuming
 the 2000/3000 ranges are the whole story.
+
+## 10 Watch does not surface a late reaction, found in review
+
+A reaction that arrives after its target was already streamed is invisible to
+a default `msg watch`: the new row crosses the watermark but is filtered as a
+tapback, and the target — which now carries the reaction in its bracket — is
+not re-emitted, because nothing re-emits an already-streamed message. Caught
+by review on slice 1, and true before slice 1 too: default watch has never
+shown reactions in any form. `--tapbacks` still streams them as rows, which
+remains the way to follow reactions live.
+
+Deliberately not fixed in slice 1, because the fix is a design decision and
+not a patch. Re-emitting the target with its updated bracket is an *update
+event*: a JSON consumer that appends lines would show the message twice, one
+that keys by rowid would do the right thing, and nothing in the protocol says
+which a consumer is. Whether watch gains re-emission, a distinct event shape,
+or a documented "use --tapbacks to follow reactions" is a call to make with a
+consumer in hand, not ahead of one.

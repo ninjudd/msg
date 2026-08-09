@@ -27,5 +27,9 @@ See [README](README.md) for how these lists work.
   measured it and shipped anyway, since those searches previously returned
   noise instantly. The shape of a fix is
   [query-performance.md](all/query-performance.md) §9's backwards streaming.
+- A reaction arriving after its target streamed is invisible to a default
+  `msg watch` — [tapbacks.md](all/tapbacks.md) §10: the row is filtered, the
+  target is not re-emitted, and the fix is an update-event design decision.
+  `--tapbacks` follows reactions live meanwhile.
 - Export a conversation to a file, once there is a second consumer that wants
   more shape than `--json` piped through `jq`.

@@ -76,7 +76,7 @@ enum Command {
         /// only messages after a duration like 2h or a date
         #[arg(long)]
         since: Option<String>,
-        /// include reactions
+        /// show reactions as their own rows instead of brackets
         #[arg(long)]
         tapbacks: bool,
         #[arg(long)]
@@ -120,7 +120,7 @@ enum Command {
         /// how often to poll without a daemon
         #[arg(long, default_value_t = 3, value_parser = positive_seconds)]
         interval: u64,
-        /// include reactions
+        /// show reactions as their own rows instead of brackets
         #[arg(long)]
         tapbacks: bool,
         /// emit JSON lines

@@ -145,7 +145,7 @@ msg chat dana sam              # two people: the room with exactly those two
 msg chat 42 -n 200             # by rowid, with more history
 msg chat dana --since 7d       # only the last week
 msg chat dana --since 2026-01-15
-msg chat dana --tapbacks       # include reactions
+msg chat dana --tapbacks       # reactions as their own rows, not brackets
 ```
 
 `--since` accepts a duration (`30m`, `2h`, `7d`, `4w`), an ISO date like
@@ -500,7 +500,7 @@ authentication, and why the daemon is a single executable rather than a copy of
 | `-n, --limit <count>` | `chats`, `chat`, `search` | how many results |
 | `--since <when>` | `chat`, `search` | duration or date lower bound |
 | `-c, --chat <chat>` | `search`, `watch` | restrict to one conversation |
-| `--tapbacks` | `chat`, `watch` | include reactions |
+| `--tapbacks` | `chat`, `watch` | reactions as their own rows instead of brackets |
 | `-A, --after <count>` | `search` | messages to show after each hit |
 | `-B, --before <count>` | `search` | messages to show before each hit |
 | `-C, --context <count>` | `search` | both, and note the clash with `-c` |
@@ -554,7 +554,11 @@ every one of those 19,524 blobs.
 
 **Tapbacks are messages.** A reaction is stored as an ordinary row with
 `associated_message_type != 0`, so a naive query mixes `Liked "see you then"`
-into the conversation. They are filtered out unless `--tapbacks` is passed.
+into the conversation. By default the rows are filtered out and each reaction
+renders instead as an emoji bracket after the message it reacted to —
+`works, see you then [❤️]` — with the raw type published beside the symbol in
+`--json`. `--tapbacks` trades the brackets for the rows, which keeps their
+timestamps visible.
 
 **Filtering is a category, not a flag.** `chat.is_filtered` is not a boolean.
 It holds `0` for ordinary conversations and a nonzero category for the ones
