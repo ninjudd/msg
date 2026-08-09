@@ -10,3 +10,9 @@ Committed to, not started. One line each, same rules as [now](now.md). See
 - [Merge the conversation listing too](all/conversation-merging.md) — §10 slice
   two. `msg chats` still shows one row per thread, so its count disagrees with
   what `msg read` now does.
+- A date header when the day changes, and only a time on each message — what
+  Messages does, instead of repeating the date on every line.
+- Rename `msg read` to `msg chat` — `read` fits badly when almost every command
+  reads, and the new name lands one letter from `msg chats`.
+- [Name a conversation by who is in it](all/naming-a-conversation.md) — a first
+  name should reach that person, and `msg chat dana sam` the room with both.
