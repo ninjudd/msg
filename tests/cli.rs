@@ -64,6 +64,8 @@ fn build(path: &Path) {
                   'p:0/m4', NULL, 790000360000000000, 'iMessage'),
                  (8, 't8', NULL, 1, 1, 2006, 'm4', '🙏', 790000420000000000, 'iMessage'),
                  (9, 't9', NULL, 0, 2, 2001, 'bp:m6', NULL, 790000480000000000, 'iMessage');
+        INSERT INTO message (rowid, guid, text, is_from_me, handle_id, date, service)
+          VALUES (10, 'm10', 'two days on', 1, 1, 790172800000000000, 'iMessage');
         INSERT INTO chat_message_join (chat_id, message_id, message_date)
           VALUES (1, 1, 790000000000000000),
                  (1, 2, 790000060000000000),
@@ -73,7 +75,8 @@ fn build(path: &Path) {
                  (3, 6, 790000300000000000),
                  (3, 7, 790000360000000000),
                  (3, 8, 790000420000000000),
-                 (3, 9, 790000480000000000);
+                 (3, 9, 790000480000000000),
+                 (1, 10, 790172800000000000);
         ",
     )
     .unwrap();
@@ -112,7 +115,18 @@ fn it_lists_conversations() {
 fn it_reads_a_conversation() {
     let output = msg(&["--no-names", "chat", "1"]);
     assert_eq!(code(&output), 0);
-    assert!(stdout(&output).contains("are you around later"));
+    let text = stdout(&output);
+    assert!(text.contains("are you around later"));
+    // The transcript spans two days, so it carries two date headers — bare
+    // dates on their own lines — and every message line shows only a time.
+    let headers = text.lines().filter(|line| line.starts_with("Jan ")).count();
+    assert_eq!(headers, 2, "{text}");
+    assert!(
+        !text
+            .lines()
+            .any(|line| line.contains("Jan") && line.contains(":")),
+        "a message line still carries a date: {text}"
+    );
 }
 
 #[test]

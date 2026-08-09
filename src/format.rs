@@ -168,127 +168,147 @@ pub struct Render {
     pub show_chat: bool,
     pub trail: Trail,
     /// A bare date line when the local day changes, and only a time on each
-    /// message — what Messages does. Only the chat transcript: search keeps
-    /// full stamps because its results jump between days by construction, and
-    /// a stream cannot retro-insert a header above lines it already printed.
+    /// message — what Messages does. The chat transcript and the watch
+    /// stream: a stream headers a day change too, since the header goes in
+    /// front of the new line and the last emitted day is all it takes —
+    /// `Renderer` holds that day across calls for exactly this. Search keeps
+    /// full stamps, because its results jump between days by construction.
     pub day_headers: bool,
 }
 
+/// Rendering with the day held between calls, so a stream that prints one
+/// message at a time still headers a day change. A batch caller uses
+/// [`render_messages`]; a stream constructs one of these and keeps it.
+pub struct Renderer {
+    options: Render,
+    last_day: Option<(i32, u32, u32)>,
+}
+
 pub fn render_messages(messages: &[Message], options: Render) -> String {
-    let Render {
-        show_chat,
-        trail,
-        day_headers,
-    } = options;
-    if messages.is_empty() {
-        return "no messages found\n".to_string();
+    Renderer::new(options).render(messages)
+}
+
+impl Renderer {
+    pub fn new(options: Render) -> Self {
+        Self {
+            options,
+            last_day: None,
+        }
     }
-    // Context was asked for exactly when the messages carry a run to belong to.
-    // Without it nothing below changes a byte of what this printed before.
-    let in_context = messages.iter().any(|message| message.group.is_some());
-    let mut out = String::new();
-    let mut run: Option<i64> = None;
-    let mut last_day: Option<(i32, u32, u32)> = None;
-    for message in messages {
-        if in_context {
-            if let Some(group) = message.group
-                && run.is_some_and(|open| open != group)
-            {
-                // grep's separator, for grep's reason: a blank line would be
-                // ambiguous against a message whose body is empty.
-                out.push_str("--\n");
-            }
-            run = message.group;
+
+    pub fn render(&mut self, messages: &[Message]) -> String {
+        let Render {
+            show_chat,
+            trail,
+            day_headers,
+        } = self.options;
+        if messages.is_empty() {
+            return "no messages found\n".to_string();
         }
-        // Two columns before the timestamp rather than colour, so a hit is still
-        // marked after the output has been piped, pasted, or grepped again —
-        // and so this program still writes no terminal control codes.
-        let gutter = match (in_context, message.matched) {
-            (false, _) => "",
-            (true, true) => "> ",
-            (true, false) => "  ",
-        };
-        if day_headers
-            && let Some(date) = message.date.map(local)
-        {
-            let day = (date.year(), date.month(), date.day());
-            if last_day != Some(day) {
-                // The year only when it is not this year — the same choice
-                // DATE_TIME already makes by never printing one.
-                if date.year() == Local::now().year() {
-                    out.push_str(&format!("{}\n", date.format("%b %-d")));
-                } else {
-                    out.push_str(&format!("{}\n", date.format("%b %-d, %Y")));
+        // Context was asked for exactly when the messages carry a run to belong to.
+        // Without it nothing below changes a byte of what this printed before.
+        let in_context = messages.iter().any(|message| message.group.is_some());
+        let mut out = String::new();
+        let mut run: Option<i64> = None;
+        for message in messages {
+            if in_context {
+                if let Some(group) = message.group
+                    && run.is_some_and(|open| open != group)
+                {
+                    // grep's separator, for grep's reason: a blank line would be
+                    // ambiguous against a message whose body is empty.
+                    out.push_str("--\n");
                 }
-                last_day = Some(day);
+                run = message.group;
             }
-        }
-        let stamp = if day_headers {
-            message
-                .date
-                .map(|date| local(date).format(TIME).to_string())
-                .unwrap_or_default()
-        } else {
-            format_timestamp(message.date)
-        };
-        let where_ = match (show_chat, message.chat_name.as_deref()) {
-            (true, Some(name)) => format!("[{name}] "),
-            _ => String::new(),
-        };
-        let body = message.body.as_deref().unwrap_or("(no text)");
-        // What is being answered goes above the answer, indented to the width of
-        // a timestamp, so a reply reads as a reply without the transcript
-        // stopping being chronological.
-        if let Some(answering) = &message.reply_to {
-            let quoted = answering.excerpt.as_deref().unwrap_or("(no text)");
+            // Two columns before the timestamp rather than colour, so a hit is still
+            // marked after the output has been piped, pasted, or grepped again —
+            // and so this program still writes no terminal control codes.
+            let gutter = match (in_context, message.matched) {
+                (false, _) => "",
+                (true, true) => "> ",
+                (true, false) => "  ",
+            };
+            if day_headers && let Some(date) = message.date.map(local) {
+                let day = (date.year(), date.month(), date.day());
+                if self.last_day != Some(day) {
+                    // The year only when it is not this year — the same choice
+                    // DATE_TIME already makes by never printing one.
+                    if date.year() == Local::now().year() {
+                        out.push_str(&format!("{}\n", date.format("%b %-d")));
+                    } else {
+                        out.push_str(&format!("{}\n", date.format("%b %-d, %Y")));
+                    }
+                    self.last_day = Some(day);
+                }
+            }
+            let stamp = if day_headers {
+                message
+                    .date
+                    .map(|date| local(date).format(TIME).to_string())
+                    .unwrap_or_default()
+            } else {
+                format_timestamp(message.date)
+            };
+            let where_ = match (show_chat, message.chat_name.as_deref()) {
+                (true, Some(name)) => format!("[{name}] "),
+                _ => String::new(),
+            };
+            let body = message.body.as_deref().unwrap_or("(no text)");
+            // What is being answered goes above the answer, indented to the width of
+            // a timestamp, so a reply reads as a reply without the transcript
+            // stopping being chronological.
+            if let Some(answering) = &message.reply_to {
+                let quoted = answering.excerpt.as_deref().unwrap_or("(no text)");
+                out.push_str(&format!(
+                    "{gutter}{:width$}  ↳ replying to {}: {quoted}\n",
+                    "",
+                    answering.sender,
+                    width = stamp.chars().count()
+                ));
+            }
+            // Reactions trail the message they answer after an arrow, oldest
+            // first, skipped entirely when there are none — so ordinary output is
+            // unchanged. An arrow rather than brackets, because brackets collided
+            // with the emoji: a double-width glyph overdraws `[` and `]` in real
+            // terminals, and the arrow needs nothing on the far side. `--who`
+            // names each sender beside its symbol, "me" for my own, the same
+            // name-then-handle precedence every sender line already uses.
+            let reactions = if trail == Trail::Off || message.tapbacks.is_empty() {
+                String::new()
+            } else if trail == Trail::Named {
+                let named: Vec<String> = message
+                    .tapbacks
+                    .iter()
+                    .map(|tapback| {
+                        let sender = if tapback.is_from_me {
+                            "me"
+                        } else {
+                            tapback
+                                .contact_name
+                                .as_deref()
+                                .or(tapback.handle.as_deref())
+                                .unwrap_or("unknown")
+                        };
+                        format!("{}{} {sender}", tapback.symbol, spill(&tapback.symbol))
+                    })
+                    .collect();
+                format!(" ← {}", named.join(", "))
+            } else {
+                let symbols: String = message
+                    .tapbacks
+                    .iter()
+                    .map(|tapback| format!("{}{}", tapback.symbol, spill(&tapback.symbol)))
+                    .collect::<String>();
+                format!(" ← {}", symbols.trim_end())
+            };
             out.push_str(&format!(
-                "{gutter}{:width$}  ↳ replying to {}: {quoted}\n",
-                "",
-                answering.sender,
-                width = stamp.chars().count()
+                "{gutter}{stamp}  {where_}{}: {body}{reactions}\n",
+                message.sender
             ));
         }
-        // Reactions trail the message they answer after an arrow, oldest
-        // first, skipped entirely when there are none — so ordinary output is
-        // unchanged. An arrow rather than brackets, because brackets collided
-        // with the emoji: a double-width glyph overdraws `[` and `]` in real
-        // terminals, and the arrow needs nothing on the far side. `--who`
-        // names each sender beside its symbol, "me" for my own, the same
-        // name-then-handle precedence every sender line already uses.
-        let reactions = if trail == Trail::Off || message.tapbacks.is_empty() {
-            String::new()
-        } else if trail == Trail::Named {
-            let named: Vec<String> = message
-                .tapbacks
-                .iter()
-                .map(|tapback| {
-                    let sender = if tapback.is_from_me {
-                        "me"
-                    } else {
-                        tapback
-                            .contact_name
-                            .as_deref()
-                            .or(tapback.handle.as_deref())
-                            .unwrap_or("unknown")
-                    };
-                    format!("{}{} {sender}", tapback.symbol, spill(&tapback.symbol))
-                })
-                .collect();
-            format!(" ← {}", named.join(", "))
-        } else {
-            let symbols: String = message
-                .tapbacks
-                .iter()
-                .map(|tapback| format!("{}{}", tapback.symbol, spill(&tapback.symbol)))
-                .collect::<String>();
-            format!(" ← {}", symbols.trim_end())
-        };
-        out.push_str(&format!(
-            "{gutter}{stamp}  {where_}{}: {body}{reactions}\n",
-            message.sender
-        ));
+        out
     }
-    out
 }
 
 pub fn to_json<T: serde::Serialize>(value: &T) -> String {
@@ -441,7 +461,14 @@ mod tests {
     fn an_empty_result_says_so_rather_than_printing_nothing() {
         assert_eq!(render_chats(&[]), "no chats found\n");
         assert_eq!(
-            render_messages(&[], Render { show_chat: false, trail: Trail::Symbols, day_headers: false }),
+            render_messages(
+                &[],
+                Render {
+                    show_chat: false,
+                    trail: Trail::Symbols,
+                    day_headers: false
+                }
+            ),
             "no messages found\n"
         );
     }
@@ -494,7 +521,11 @@ mod tests {
                 context(3, 1, "elsewhere"),
                 hit(4, 1, "the needle again"),
             ],
-            Render { show_chat: false, trail: Trail::Symbols, day_headers: false },
+            Render {
+                show_chat: false,
+                trail: Trail::Symbols,
+                day_headers: false,
+            },
         );
 
         let lines: Vec<&str> = rendered.lines().collect();
@@ -511,7 +542,14 @@ mod tests {
     /// Every search that asks for no context prints exactly what it always did.
     #[test]
     fn without_context_nothing_gains_a_gutter() {
-        let rendered = render_messages(&[message(1, "Dana Reyes", "hello")], Render { show_chat: false, trail: Trail::Symbols, day_headers: false });
+        let rendered = render_messages(
+            &[message(1, "Dana Reyes", "hello")],
+            Render {
+                show_chat: false,
+                trail: Trail::Symbols,
+                day_headers: false,
+            },
+        );
         assert_eq!(rendered, "Jan 15, 9:30 AM  Dana Reyes: hello\n");
     }
 
@@ -527,7 +565,11 @@ mod tests {
         });
         let out = render_messages(
             &[message(1, "Dana Reyes", "are you around later"), reply],
-            Render { show_chat: false, trail: Trail::Symbols, day_headers: false },
+            Render {
+                show_chat: false,
+                trail: Trail::Symbols,
+                day_headers: false,
+            },
         );
 
         let lines: Vec<&str> = out.lines().collect();
@@ -539,6 +581,49 @@ mod tests {
         // Indented to where the sender starts, not to column zero.
         assert!(lines[1].starts_with("       "), "{out}");
         assert!(lines[2].contains("me: yes, that works"), "{out}");
+    }
+
+    /// A date header when the day changes and a bare time on every line —
+    /// and the day survives across calls, which is the stream's whole case:
+    /// one message per render, the header still lands exactly at the change.
+    #[test]
+    fn a_day_change_gets_a_header_and_messages_keep_only_a_time() {
+        let mut first = message(1, "Dana Reyes", "late one");
+        first.date = at("2026-01-15T17:30:00Z");
+        let mut second = message(2, "me", "early the next");
+        second.date = at("2026-01-16T17:30:00Z");
+
+        let options = Render {
+            show_chat: false,
+            trail: Trail::Symbols,
+            day_headers: true,
+        };
+        let out = render_messages(&[first.clone(), second.clone()], options);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 4, "{out}");
+        // Two headers, one per day, each a bare date with no year — the same
+        // no-year choice DATE_TIME has always made.
+        assert!(lines[0].starts_with("Jan 1"), "{out}");
+        assert!(!lines[0].contains("2026"), "{out}");
+        assert!(lines[2].starts_with("Jan 1"), "{out}");
+        assert_ne!(lines[0], lines[2], "{out}");
+        // Message lines carry a time and never a date.
+        assert!(
+            lines[1].contains("late one") && !lines[1].contains("Jan"),
+            "{out}"
+        );
+
+        // The stream case: one message per call, same day state throughout.
+        let mut renderer = Renderer::new(options);
+        let one = renderer.render(std::slice::from_ref(&first));
+        let two = renderer.render(std::slice::from_ref(&second));
+        assert_eq!(one.lines().count(), 2, "{one}");
+        let mut third = message(3, "me", "still the sixteenth");
+        third.date = at("2026-01-16T18:00:00Z");
+        let three = renderer.render(std::slice::from_ref(&third));
+        assert_eq!(two.lines().count(), 2, "{two}");
+        // Same day as the last emission: no header, the state remembered it.
+        assert_eq!(three.lines().count(), 1, "{three}");
     }
 
     /// `--who` names each reaction's sender beside its symbol — "me" for my
@@ -565,9 +650,23 @@ mod tests {
                 contact_name: None,
             },
         ];
-        let named = render_messages(std::slice::from_ref(&reacted), Render { show_chat: false, trail: Trail::Named, day_headers: false });
+        let named = render_messages(
+            std::slice::from_ref(&reacted),
+            Render {
+                show_chat: false,
+                trail: Trail::Named,
+                day_headers: false,
+            },
+        );
         assert!(named.contains("green ← ❤️  Sam Oyelaran, 👍 me"), "{named}");
-        let bare = render_messages(std::slice::from_ref(&reacted), Render { show_chat: false, trail: Trail::Symbols, day_headers: false });
+        let bare = render_messages(
+            std::slice::from_ref(&reacted),
+            Render {
+                show_chat: false,
+                trail: Trail::Symbols,
+                day_headers: false,
+            },
+        );
         assert!(bare.contains("green ← ❤️ 👍"), "{bare}");
         assert!(!bare.contains("Sam"), "{bare}");
     }
@@ -576,7 +675,14 @@ mod tests {
     /// exactly as it did.
     #[test]
     fn a_message_that_is_not_a_reply_is_unchanged() {
-        let out = render_messages(&[message(1, "Dana Reyes", "hello")], Render { show_chat: false, trail: Trail::Symbols, day_headers: false });
+        let out = render_messages(
+            &[message(1, "Dana Reyes", "hello")],
+            Render {
+                show_chat: false,
+                trail: Trail::Symbols,
+                day_headers: false,
+            },
+        );
         assert_eq!(out.lines().count(), 1, "{out}");
         assert!(!out.contains("↳"), "{out}");
     }
@@ -589,7 +695,14 @@ mod tests {
             sender: "Dana Reyes".into(),
             excerpt: None,
         });
-        let out = render_messages(&[reply], Render { show_chat: false, trail: Trail::Symbols, day_headers: false });
+        let out = render_messages(
+            &[reply],
+            Render {
+                show_chat: false,
+                trail: Trail::Symbols,
+                day_headers: false,
+            },
+        );
         assert!(out.contains("↳ replying to Dana Reyes: (no text)"), "{out}");
     }
 }

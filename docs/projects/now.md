@@ -6,4 +6,7 @@ Delete the line when the work is genuinely over. Committed but not started lives
 in [next](next.md); uncommitted ideas in [later](later.md). See
 [README](README.md) for how these lists work.
 
-Nothing in flight.
+- Date headers, open as #48: a bare date line when the local day changes and
+  only a time on each message, in the chat transcript and across a watch
+  stream's emissions; search keeps full stamps, since its results jump days
+  by construction.

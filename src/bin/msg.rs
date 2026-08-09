@@ -17,7 +17,7 @@ use msg::daemon::install::{
 use msg::daemon::protocol::{Attachment, socket_path};
 use msg::daemon::server::{Daemon, DaemonOptions};
 use msg::db::human_bytes;
-use msg::format::{Render, Trail, render_chats, render_messages, to_json};
+use msg::format::{Render, Renderer, Trail, render_chats, render_messages, to_json};
 use msg::source::{
     ChatQuery, ChatsQuery, SearchQuery, SendQuery, Source, WatchQuery, daemon_status,
     daemon_status_within, open_source,
@@ -376,6 +376,18 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
         } => {
             let show_chat = chat.is_none();
             let as_json = *json;
+            // One renderer for the whole stream, so a day change between
+            // emissions gets its header — the header goes in front of the new
+            // line, and the last emitted day is all it takes.
+            let mut renderer = Renderer::new(Render {
+                show_chat,
+                trail: if *tapbacks {
+                    Trail::Off
+                } else {
+                    Trail::Symbols
+                },
+                day_headers: true,
+            });
             source.watch(
                 &WatchQuery {
                     chat: chat.clone(),
@@ -388,14 +400,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                     print(&if as_json {
                         format!("{}\n", serde_json::to_string(message)?)
                     } else {
-                        render_messages(
-                            std::slice::from_ref(message),
-                            Render {
-                                show_chat,
-                                trail: if *tapbacks { Trail::Off } else { Trail::Symbols },
-                                day_headers: false,
-                            },
-                        )
+                        renderer.render(std::slice::from_ref(message))
                     });
                     Ok(())
                 },
