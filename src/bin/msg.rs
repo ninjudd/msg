@@ -19,7 +19,7 @@ use msg::daemon::server::{Daemon, DaemonOptions};
 use msg::db::human_bytes;
 use msg::format::{render_chats, render_messages, to_json};
 use msg::source::{
-    ChatsQuery, ReadQuery, SearchQuery, SendQuery, Source, WatchQuery, daemon_status,
+    ChatQuery, ChatsQuery, SearchQuery, SendQuery, Source, WatchQuery, daemon_status,
     daemon_status_within, open_source,
 };
 use msg::{Error, VERSION};
@@ -285,7 +285,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
             tapbacks,
             json,
         } => {
-            let reply = source.read(&ReadQuery {
+            let reply = source.read(&ChatQuery {
                 chat: chat.clone(),
                 limit: *limit,
                 since: since.clone(),

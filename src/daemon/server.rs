@@ -18,7 +18,7 @@ use crate::apple::since_to_apple_date;
 use crate::contacts::{ContactIndex, load_contacts};
 use crate::daemon::config::{config_path, disabled_message, read_config};
 use crate::daemon::protocol::{
-    AutomationReply, COMMANDS, ContactsReply, ErrorCode, Frame, PROTOCOL_VERSION, ReadReply,
+    AutomationReply, COMMANDS, ChatReply, ContactsReply, ErrorCode, Frame, PROTOCOL_VERSION,
     Request, ResolvedHandle, SavePart, SaveReply, SendReply, StatusReply, WatchRequest, encode,
     is_chat_guid, socket_path,
 };
@@ -380,7 +380,7 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
             })?;
             Ok(serde_json::to_value(chats)?)
         }
-        Request::Read(ask) => {
+        Request::Chat(ask) => {
             let contacts = shared.contacts(ask.names != Some(false));
             let after_date = ask.since.as_deref().map(since_to_apple_date).transpose()?;
             let reply = shared.with_db(|db| {
@@ -394,7 +394,7 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
                     ask.tapbacks == Some(true),
                     &contacts,
                 )?;
-                Ok(ReadReply::new(threads, messages))
+                Ok(ChatReply::new(threads, messages))
             })?;
             Ok(serde_json::to_value(reply)?)
         }

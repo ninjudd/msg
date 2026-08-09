@@ -16,7 +16,7 @@ use crate::apple::since_to_apple_date;
 use crate::contacts::{ContactIndex, load_contacts};
 use crate::daemon::client::{connect_daemon, connect_daemon_within, request, save, watch};
 use crate::daemon::protocol::{
-    AutomationReply, ChatsRequest, ContactsReply, ContactsRequest, Empty, ReadReply, ReadRequest,
+    AutomationReply, ChatReply, ChatRequest, ChatsRequest, ContactsReply, ContactsRequest, Empty,
     Request, ResolveRequest, ResolvedHandle, SavePart, SaveRequest, SearchRequest, SendReply,
     SendRequest, StatusReply, WatchRequest,
 };
@@ -41,7 +41,7 @@ pub struct ChatsQuery {
     pub names: bool,
 }
 
-pub struct ReadQuery {
+pub struct ChatQuery {
     pub chat: Vec<String>,
     pub limit: i64,
     pub since: Option<String>,
@@ -191,9 +191,9 @@ impl Source {
         fetch_chats(db, text.as_deref(), limit, contacts, unknown)
     }
 
-    pub fn read(&mut self, query: &ReadQuery) -> Result<ReadReply> {
+    pub fn read(&mut self, query: &ChatQuery) -> Result<ChatReply> {
         if self.kind == Kind::Daemon {
-            let value = call(&Request::Read(ReadRequest {
+            let value = call(&Request::Chat(ChatRequest {
                 chat: query.chat.clone(),
                 limit: Some(query.limit),
                 since: query.since.clone(),
@@ -213,7 +213,7 @@ impl Source {
         let (db, contacts) = self.parts(query.names)?;
         let threads = resolve_conversations(db, &specs, contacts, unknown)?;
         let messages = fetch_conversation(db, &threads, after_date, limit, tapbacks, contacts)?;
-        Ok(ReadReply::new(threads, messages))
+        Ok(ChatReply::new(threads, messages))
     }
 
     pub fn search(&mut self, query: &SearchQuery) -> Result<Vec<Message>> {

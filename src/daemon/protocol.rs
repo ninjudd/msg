@@ -89,7 +89,17 @@ use crate::db::{Chat, Message};
 /// a daemon that does not know them ignores them and answers with bare hits, so
 /// `-C 3` would silently produce exactly what the flag was asked to change.
 ///
-/// 11 makes `read`'s `chat` a list, so several names can name the room with
+/// 12 renames the `read` command to `chat`, following the CLI. A daemon that
+/// knows only `read` reports the new name as an unknown command, which is the
+/// loud failure — and the version check is what turns it into "reinstall the
+/// daemon" rather than a client and a daemon disagreeing about a word.
+///
+/// Kept in step deliberately, rather than letting the two vocabularies drift.
+/// The cost is one reinstall on each machine; the alternative is a protocol
+/// whose command names stop describing what the program does, which is how the
+/// old name got wrong in the first place.
+///
+/// 11 makes `chat`'s `chat` a list, so several names can name the room with
 /// exactly those people. A changed *field type*, which is the loud kind rather
 /// than the quiet one: an older daemon fails to deserialize the request instead
 /// of answering it wrongly. It is still a bump, because the version check is
@@ -102,7 +112,7 @@ use crate::db::{Chat, Message};
 /// saying so, which looks exactly like a person who only has one. The reply is
 /// not wrong in a way anything can see — it is simply missing half the
 /// conversation, which is the failure this number exists to make loud.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";
@@ -141,7 +151,7 @@ pub struct ChatsRequest {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ReadRequest {
+pub struct ChatRequest {
     /// One spec is a conversation; several are the people a room is made of
     /// (naming-a-conversation.md §4). A list rather than a joined string
     /// because a name may contain a space, so the argument boundaries are the
@@ -282,7 +292,7 @@ pub struct Empty {}
 #[serde(tag = "cmd", rename_all = "lowercase")]
 pub enum Request {
     Chats(ChatsRequest),
-    Read(ReadRequest),
+    Chat(ChatRequest),
     Search(SearchRequest),
     Watch(WatchRequest),
     Resolve(ResolveRequest),
@@ -297,15 +307,9 @@ pub enum Request {
 
 /// The command names this daemon knows, so an unknown one is reported as such
 /// rather than as a parse failure.
-///
-/// `read` keeps its name here after the CLI's became `chat`. These are two
-/// vocabularies and only one of them is typed: renaming the wire would cost a
-/// version bump and a reinstall on every machine, to change a string no user
-/// ever sees. The divergence is the cheaper of the two prices, and is a
-/// decision rather than an oversight.
 pub const COMMANDS: &[&str] = &[
     "chats",
-    "read",
+    "chat",
     "search",
     "watch",
     "resolve",
@@ -373,7 +377,7 @@ pub struct ContactsReply {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReadReply {
+pub struct ChatReply {
     /// The thread a reply would go to, which is the most recently active when a
     /// person has several. Unchanged in meaning from before merging existed, so
     /// a consumer reading it keeps reading what it always read.
@@ -386,7 +390,7 @@ pub struct ReadReply {
     pub merged: Vec<i64>,
 }
 
-impl ReadReply {
+impl ChatReply {
     /// Build a reply from the threads a conversation resolved to, most recently
     /// active first. Shared so the two read paths cannot disagree about which
     /// thread is `chat` and which are `merged`.
@@ -632,7 +636,7 @@ mod tests {
     fn round_trips_every_request_through_its_wire_form() {
         let requests = [
             Request::Chats(ChatsRequest::default()),
-            Request::Read(ReadRequest {
+            Request::Chat(ChatRequest {
                 chat: vec!["1".into()],
                 ..Default::default()
             }),

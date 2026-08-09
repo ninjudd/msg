@@ -3045,7 +3045,7 @@ mod tests {
 
         // And the reply says which thread a send would continue, and which were
         // folded in behind it.
-        let reply = crate::daemon::protocol::ReadReply::new(threads, messages);
+        let reply = crate::daemon::protocol::ChatReply::new(threads, messages);
         assert_eq!(reply.chat.rowid, email);
         assert_eq!(reply.merged, [phone]);
     }
