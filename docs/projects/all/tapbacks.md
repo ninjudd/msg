@@ -1,9 +1,9 @@
 # Plan: Put a reaction on the message it reacted to
 
 **Status:** Slice 1 shipped 2026-08-09 — #43 at protocol 17, its rendering
-settled by #44 — the trailing render, the
-table, removals cancelled, the JSON field. Slice 2 (names behind a flag) stays
-in [next](../next.md). The type numbering in §2 is measured against the real
+settled by #44 — the trailing render, the table, removals cancelled, the JSON
+field. Slice 2, names behind `--who`, is open as #46: rendering only, no
+protocol change. The type numbering in §2 is measured against the real
 database, and the two questions §9 opened are measured too (2026-08-09): the
 emoji lives in its own column, and the guid is part-prefixed 96% of the time.
 §4's symbols reversed the same day, from shorthand to the Messages emoji, by
@@ -137,8 +137,14 @@ messages", which stays useful for timestamps and for debugging, and it
 documented flag to save inventing one.
 
 **Names are off by default, behind a flag. (DECIDED — requested)** Default
-`← 😂❤️❤️`; with the flag, `← 😂 dana, ❤️ sam, ❤️ kit`. Naming the flag is
-left to the slice.
+`← 😂❤️❤️`; with the flag, `← 😂 dana, ❤️ sam, ❤️ kit`. The slice named the
+flag `--who` — the question the trail answers once symbols alone stop
+answering it — put it on `chat` and `search` (`watch` has no trail to name),
+and made it conflict with `--tapbacks` outright, since the rows already name
+their senders and one flag silently winning is worse than an error. "me" for
+my own reactions, then the contact-name-then-handle precedence every sender
+line already uses. Rendering only: the sender was on every JSON entry since
+slice 1, which is what made this slice small.
 
 **Reactions trail the message after `←`, not inside brackets. (DECIDED —
 requested 2026-08-09, reversing the bracket this plan was written around.)**
@@ -196,7 +202,8 @@ remembers.
    cancelled, default rendering, `--tapbacks` suppressing it, JSON field,
    protocol bump. Everything in §4 through §7 except names.
 2. **Names behind a flag.** Small, and separable because the sender is already
-   carried on each entry by slice 1 — only the rendering is missing.
+   carried on each entry by slice 1 — only the rendering is missing. Built as
+   `--who`; the details landed in §6's names decision.
 
 ## 9 Open when written, measured 2026-08-09
 

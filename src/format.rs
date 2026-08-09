@@ -124,10 +124,19 @@ pub fn render_chats(chats: &[Chat]) -> String {
     out
 }
 
-/// `trail` is false exactly when `--tapbacks` is showing reaction rows as
-/// their own messages — printing both is the same information twice
-/// (tapbacks.md §6).
-pub fn render_messages(messages: &[Message], show_chat: bool, trail: bool) -> String {
+/// How reactions render on the messages they trail.
+///
+/// `Off` exactly when `--tapbacks` is showing reaction rows as their own
+/// messages — printing both is the same information twice (tapbacks.md §6).
+/// `Named` is `--who`: the same trail, each reaction naming its sender.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trail {
+    Off,
+    Symbols,
+    Named,
+}
+
+pub fn render_messages(messages: &[Message], show_chat: bool, trail: Trail) -> String {
     if messages.is_empty() {
         return "no messages found\n".to_string();
     }
@@ -177,16 +186,36 @@ pub fn render_messages(messages: &[Message], show_chat: bool, trail: bool) -> St
         // first, skipped entirely when there are none — so ordinary output is
         // unchanged. An arrow rather than brackets, because brackets collided
         // with the emoji: a double-width glyph overdraws `[` and `]` in real
-        // terminals, and the arrow needs nothing on the far side.
-        let reactions = if trail && !message.tapbacks.is_empty() {
+        // terminals, and the arrow needs nothing on the far side. `--who`
+        // names each sender beside its symbol, "me" for my own, the same
+        // name-then-handle precedence every sender line already uses.
+        let reactions = if trail == Trail::Off || message.tapbacks.is_empty() {
+            String::new()
+        } else if trail == Trail::Named {
+            let named: Vec<String> = message
+                .tapbacks
+                .iter()
+                .map(|tapback| {
+                    let sender = if tapback.is_from_me {
+                        "me"
+                    } else {
+                        tapback
+                            .contact_name
+                            .as_deref()
+                            .or(tapback.handle.as_deref())
+                            .unwrap_or("unknown")
+                    };
+                    format!("{} {sender}", tapback.symbol)
+                })
+                .collect();
+            format!(" ← {}", named.join(", "))
+        } else {
             let symbols: String = message
                 .tapbacks
                 .iter()
                 .map(|tapback| tapback.symbol.as_str())
                 .collect();
             format!(" ← {symbols}")
-        } else {
-            String::new()
         };
         out.push_str(&format!(
             "{gutter}{stamp}  {where_}{}: {body}{reactions}\n",
@@ -206,7 +235,7 @@ pub fn to_json<T: serde::Serialize>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::ReplyTo;
+    use crate::db::{ReplyTo, Tapback};
 
     fn chat(name: &str) -> Chat {
         Chat {
@@ -345,7 +374,10 @@ mod tests {
     #[test]
     fn an_empty_result_says_so_rather_than_printing_nothing() {
         assert_eq!(render_chats(&[]), "no chats found\n");
-        assert_eq!(render_messages(&[], false, true), "no messages found\n");
+        assert_eq!(
+            render_messages(&[], false, Trail::Symbols),
+            "no messages found\n"
+        );
     }
 
     fn message(rowid: i64, sender: &str, body: &str) -> Message {
@@ -397,7 +429,7 @@ mod tests {
                 hit(4, 1, "the needle again"),
             ],
             false,
-            true,
+            Trail::Symbols,
         );
 
         let lines: Vec<&str> = rendered.lines().collect();
@@ -414,7 +446,7 @@ mod tests {
     /// Every search that asks for no context prints exactly what it always did.
     #[test]
     fn without_context_nothing_gains_a_gutter() {
-        let rendered = render_messages(&[message(1, "Dana Reyes", "hello")], false, true);
+        let rendered = render_messages(&[message(1, "Dana Reyes", "hello")], false, Trail::Symbols);
         assert_eq!(rendered, "Jan 15, 9:30 AM  Dana Reyes: hello\n");
     }
 
@@ -431,7 +463,7 @@ mod tests {
         let out = render_messages(
             &[message(1, "Dana Reyes", "are you around later"), reply],
             false,
-            true,
+            Trail::Symbols,
         );
 
         let lines: Vec<&str> = out.lines().collect();
@@ -447,9 +479,40 @@ mod tests {
 
     /// An ordinary message gains nothing, so a transcript without replies reads
     /// exactly as it did.
+    /// `--who` names each reaction's sender beside its symbol — "me" for my
+    /// own, then the same contact-name-then-handle precedence every sender
+    /// line uses — and without it the trail stays symbols alone.
+    #[test]
+    fn the_trail_names_who_reacted_only_when_asked() {
+        let mut reacted = message(1, "Dana Reyes", "deploy is green");
+        reacted.tapbacks = vec![
+            Tapback {
+                associated_message_type: 2000,
+                symbol: "❤️".into(),
+                date: at("2026-01-15T17:31:00Z"),
+                is_from_me: false,
+                handle: Some("+13105551234".into()),
+                contact_name: Some("Sam Oyelaran".into()),
+            },
+            Tapback {
+                associated_message_type: 2001,
+                symbol: "👍".into(),
+                date: at("2026-01-15T17:32:00Z"),
+                is_from_me: true,
+                handle: None,
+                contact_name: None,
+            },
+        ];
+        let named = render_messages(std::slice::from_ref(&reacted), false, Trail::Named);
+        assert!(named.contains("green ← ❤️ Sam Oyelaran, 👍 me"), "{named}");
+        let bare = render_messages(std::slice::from_ref(&reacted), false, Trail::Symbols);
+        assert!(bare.contains("green ← ❤️👍"), "{bare}");
+        assert!(!bare.contains("Sam"), "{bare}");
+    }
+
     #[test]
     fn a_message_that_is_not_a_reply_is_unchanged() {
-        let out = render_messages(&[message(1, "Dana Reyes", "hello")], false, true);
+        let out = render_messages(&[message(1, "Dana Reyes", "hello")], false, Trail::Symbols);
         assert_eq!(out.lines().count(), 1, "{out}");
         assert!(!out.contains("↳"), "{out}");
     }
@@ -462,7 +525,7 @@ mod tests {
             sender: "Dana Reyes".into(),
             excerpt: None,
         });
-        let out = render_messages(&[reply], false, true);
+        let out = render_messages(&[reply], false, Trail::Symbols);
         assert!(out.contains("↳ replying to Dana Reyes: (no text)"), "{out}");
     }
 }

@@ -17,7 +17,7 @@ use msg::daemon::install::{
 use msg::daemon::protocol::{Attachment, socket_path};
 use msg::daemon::server::{Daemon, DaemonOptions};
 use msg::db::human_bytes;
-use msg::format::{render_chats, render_messages, to_json};
+use msg::format::{Trail, render_chats, render_messages, to_json};
 use msg::source::{
     ChatQuery, ChatsQuery, SearchQuery, SendQuery, Source, WatchQuery, daemon_status,
     daemon_status_within, open_source,
@@ -79,6 +79,9 @@ enum Command {
         /// show reactions as their own rows instead of trailing their message
         #[arg(long)]
         tapbacks: bool,
+        /// name who reacted in the trail
+        #[arg(long, conflicts_with = "tapbacks")]
+        who: bool,
         #[arg(long)]
         json: bool,
     },
@@ -109,6 +112,9 @@ enum Command {
         /// show this many on both sides of each hit
         #[arg(short = 'C', long, value_parser = counted)]
         context: Option<i64>,
+        /// name who reacted in the trail
+        #[arg(long)]
+        who: bool,
         #[arg(long)]
         json: bool,
     },
@@ -283,6 +289,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
             limit,
             since,
             tapbacks,
+            who,
             json,
         } => {
             let reply = source.chat(&ChatQuery {
@@ -299,7 +306,15 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                 format!(
                     "{}\n\n{}",
                     reply.chat.name,
-                    render_messages(&reply.messages, false, !*tapbacks)
+                    render_messages(
+                        &reply.messages,
+                        false,
+                        match (*tapbacks, *who) {
+                            (true, _) => Trail::Off,
+                            (false, true) => Trail::Named,
+                            (false, false) => Trail::Symbols,
+                        },
+                    )
                 )
             });
         }
@@ -314,6 +329,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
             after,
             before,
             context,
+            who,
             json,
         } => {
             // `-C` is shorthand for both, and loses to either given outright —
@@ -338,7 +354,11 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
             print(&if *json {
                 to_json(&messages)
             } else {
-                render_messages(&messages, true, true)
+                render_messages(
+                    &messages,
+                    true,
+                    if *who { Trail::Named } else { Trail::Symbols },
+                )
             });
         }
 
@@ -362,7 +382,15 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                     print(&if as_json {
                         format!("{}\n", serde_json::to_string(message)?)
                     } else {
-                        render_messages(std::slice::from_ref(message), show_chat, !*tapbacks)
+                        render_messages(
+                            std::slice::from_ref(message),
+                            show_chat,
+                            if *tapbacks {
+                                Trail::Off
+                            } else {
+                                Trail::Symbols
+                            },
+                        )
                     });
                     Ok(())
                 },
