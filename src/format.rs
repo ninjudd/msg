@@ -175,6 +175,11 @@ pub struct Render {
     /// its stamps as they were — `format_timestamp`, a date except on
     /// today's — because its results jump between days by construction.
     pub day_headers: bool,
+    /// Wrap each date header in ANSI bold. Callers set this exactly when
+    /// stdout is a terminal, so a pipe still sees plain text and grep still
+    /// works — the only control codes this program writes, and only where a
+    /// human is looking.
+    pub bold_headers: bool,
 }
 
 /// Rendering with the day held between calls, so a stream that prints one
@@ -202,6 +207,7 @@ impl Renderer {
             show_chat,
             trail,
             day_headers,
+            bold_headers,
         } = self.options;
         if messages.is_empty() {
             return "no messages found\n".to_string();
@@ -222,9 +228,11 @@ impl Renderer {
                 }
                 run = message.group;
             }
-            // Two columns before the timestamp rather than colour, so a hit is still
-            // marked after the output has been piped, pasted, or grepped again —
-            // and so this program still writes no terminal control codes.
+            // Two columns before the timestamp rather than colour, so a hit
+            // is still marked after the output has been piped, pasted, or
+            // grepped again. The bold on a date header is the one exception
+            // this program makes, and only when stdout is a terminal — piped
+            // output still carries no control codes at all.
             let gutter = match (in_context, message.matched) {
                 (false, _) => "",
                 (true, true) => "> ",
@@ -235,10 +243,15 @@ impl Renderer {
                 if self.last_day != Some(day) {
                     // The year only when it is not this year — the same choice
                     // DATE_TIME already makes by never printing one.
-                    if date.year() == Local::now().year() {
-                        out.push_str(&format!("{}\n", date.format("%b %-d")));
+                    let header = if date.year() == Local::now().year() {
+                        date.format("%b %-d").to_string()
                     } else {
-                        out.push_str(&format!("{}\n", date.format("%b %-d, %Y")));
+                        date.format("%b %-d, %Y").to_string()
+                    };
+                    if bold_headers {
+                        out.push_str(&format!("\x1b[1m{header}\x1b[0m\n"));
+                    } else {
+                        out.push_str(&format!("{header}\n"));
                     }
                     self.last_day = Some(day);
                 }
@@ -467,7 +480,8 @@ mod tests {
                 Render {
                     show_chat: false,
                     trail: Trail::Symbols,
-                    day_headers: false
+                    day_headers: false,
+                    bold_headers: false
                 }
             ),
             "no messages found\n"
@@ -526,6 +540,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Symbols,
                 day_headers: false,
+                bold_headers: false,
             },
         );
 
@@ -549,6 +564,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Symbols,
                 day_headers: false,
+                bold_headers: false,
             },
         );
         assert_eq!(rendered, "Jan 15, 9:30 AM  Dana Reyes: hello\n");
@@ -570,6 +586,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Symbols,
                 day_headers: false,
+                bold_headers: false,
             },
         );
 
@@ -602,6 +619,7 @@ mod tests {
             show_chat: false,
             trail: Trail::Symbols,
             day_headers: true,
+            bold_headers: false,
         };
         let out = render_messages(&[first.clone(), second.clone()], options);
         let lines: Vec<&str> = out.lines().collect();
@@ -617,6 +635,24 @@ mod tests {
             lines[1].contains("late one") && !lines[1].contains("Jan"),
             "{out}"
         );
+
+        // Bold is opt-in and wraps exactly the header: the escapes never
+        // touch a message line, so a pipe that got bold by mistake would
+        // still grep its messages — but it must not get it by mistake, which
+        // the CLI test pins by asserting piped output is escape-free.
+        let bold = render_messages(
+            &[first.clone()],
+            Render {
+                bold_headers: true,
+                ..options
+            },
+        );
+        let bold_lines: Vec<&str> = bold.lines().collect();
+        assert!(
+            bold_lines[0].starts_with("\x1b[1m") && bold_lines[0].ends_with("\x1b[0m"),
+            "{bold:?}"
+        );
+        assert!(!bold_lines[1].contains('\x1b'), "{bold:?}");
 
         // The stream case: one message per call, same day state throughout.
         let mut renderer = Renderer::new(options);
@@ -661,6 +697,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Named,
                 day_headers: false,
+                bold_headers: false,
             },
         );
         assert!(named.contains("green ← ❤️  Sam Oyelaran, 👍 me"), "{named}");
@@ -670,6 +707,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Symbols,
                 day_headers: false,
+                bold_headers: false,
             },
         );
         assert!(bare.contains("green ← ❤️ 👍"), "{bare}");
@@ -686,6 +724,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Symbols,
                 day_headers: false,
+                bold_headers: false,
             },
         );
         assert_eq!(out.lines().count(), 1, "{out}");
@@ -706,6 +745,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Symbols,
                 day_headers: false,
+                bold_headers: false,
             },
         );
         assert!(out.contains("↳ replying to Dana Reyes: (no text)"), "{out}");

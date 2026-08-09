@@ -316,6 +316,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                                 (false, false) => Trail::Symbols,
                             },
                             day_headers: true,
+                            bold_headers: std::io::IsTerminal::is_terminal(&std::io::stdout(),),
                         },
                     )
                 )
@@ -363,6 +364,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                         show_chat: true,
                         trail: if *who { Trail::Named } else { Trail::Symbols },
                         day_headers: false,
+                        bold_headers: false,
                     },
                 )
             });
@@ -387,6 +389,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                     Trail::Symbols
                 },
                 day_headers: true,
+                bold_headers: std::io::IsTerminal::is_terminal(&std::io::stdout()),
             });
             source.watch(
                 &WatchQuery {

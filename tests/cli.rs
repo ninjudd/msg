@@ -127,6 +127,10 @@ fn it_reads_a_conversation() {
             .any(|line| line.contains("Jan") && line.contains(":")),
         "a message line still carries a date: {text}"
     );
+    // Bold headers are for terminals; this output is piped, so it must carry
+    // no control codes at all — the one escape this program ever writes is
+    // gated on a tty.
+    assert!(!text.contains('\x1b'), "{text:?}");
 }
 
 #[test]
