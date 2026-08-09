@@ -212,10 +212,19 @@ Chat and contact name matching is a separate substring test — `answers_to` on
 `Contact`, and the `displayName`/`chatIdentifier`/`handles` clause in
 `fetch_chats`. Those already have exact-match precedence in front of them,
 which is what settled the case that prompted the nickname work, and the noise
-this plan removes has not been observed there. Leave them alone until it is.
+this plan removes had not been observed there.
 
-If it ever does come up, the rule transfers unchanged and the two should share
-one predicate rather than growing a second definition of what a word start is.
+**It has been now, so this scope is wrong. (CORRECTED)** This section said to
+leave name matching alone until the noise showed up. Reading a conversation by
+a three-letter first name turned up two candidates that were entirely different
+people, matched inside their surnames the same way `art` matches `apartment` —
+the interior case, in the place a user is most certain they typed a whole word.
+`naming-a-conversation.md §2` records it.
+
+So name matching takes the rule as well, and the two share one predicate rather
+than growing a second definition of what a word start is. That is a further
+argument for §3's `&str` signature: a contact name is already one, so the same
+function serves both callers unchanged.
 
 ## 8 What this is not
 
