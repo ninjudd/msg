@@ -17,11 +17,10 @@ See [README](README.md) for how these lists work.
   transcript, which is deliberately not being built; showing every message in a
   thread given any message in it. Needs message ids to be visible first, which
   is the same problem attachments solved by printing theirs.
-- [Resolve the person before matching chat rows](all/resolver-windows.md) — §3.
-  The remaining latent half: the resolver enters through a scan of the newest
-  5,000 chat rows, so past 5,000 chats a long-quiet person is out of reach — or,
-  when one of their threads still matches, silently answered by half a
-  conversation. What makes it wait is the 5,000 threshold alone, not that it
-  complains when it bites; this database holds 1,165.
+- [Widen the text match past its 5,000-row window](all/resolver-windows.md) —
+  §3. What is left after #37: a long-quiet room stops being findable by its
+  name past 5,000 chats, and a contactless fragment stops reaching a
+  long-quiet thread. Loud, room-and-fragment only, impossible below 5,000;
+  this database holds 1,165.
 - Export a conversation to a file, once there is a second consumer that wants
   more shape than `--json` piped through `jq`.

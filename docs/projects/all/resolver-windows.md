@@ -1,8 +1,11 @@
 # Plan: Resolve the person before matching chat rows
 
-**Status:** The half that bit is fixed, on `merge-the-listing` (#36), pinned by
-`rooms_cannot_crowd_a_persons_own_thread_out_of_the_answer`. What remains is
-latent: it cannot bite below 5,000 chats, and this database holds 1,165.
+**Status:** Built, in two slices. The windowed intersection came off on
+`merge-the-listing` (#36), and the person-first order this plan is named for
+landed on `person-first-resolution` (#37, protocol 14). What §3 still records
+is the residue for what is *not* a person — a room's own name or an address
+fragment past the newest 5,000 chat rows — which is loud, cannot bite below
+5,000 chats, and this database holds 1,165.
 
 ## 1 The bug, by example
 
@@ -30,24 +33,40 @@ three; the defect was one intersection filtering their complete answer through
 the windowed name-match. It is deleted — once a person resolves, their threads
 are the answer, and how many rooms they are in cannot change it.
 
+The second slice (#37) makes that order the entry itself. `resolve_conversation`
+resolves the person before any chat row is matched, so the window cannot even
+decide *who* a spec means. An address names the person too, whole or as a
+fragment — the whole conversation, led by the address's own thread so the send
+target stays where it was aimed; a whole address leads on its key and a
+fragment by the substring rule every other fragment uses. A name two contacts
+share errors naming the people, an address alongside each — unless a room's own
+label is exactly the string typed, which is the one claim that outranks that
+error. Chat rows are matched as text only for what no contact claims: a room's
+own name, a group identifier, an address fragment. A room labelled exactly the
+string typed wins outright — unless somebody is *named* exactly it too, and
+then the two whole claims are the tie this reports. The axis is whether another
+claim on the string is whole, never how many people answer to part of it; the
+label check runs against the whole table instead of the window. This sentence
+has now been corrected twice — first hung on ambiguity, then on the count of
+people — and both times the rule underneath was the same one: whole beats
+fragment, and wholes tie.
+
 ## 3 What remains, and why it can wait
 
-The resolver still *enters* through the chat-row match: `fetch_chats` reads the
-newest `NAME_SEARCH_SCAN` (5,000) rows before matching, and a spec that matches
-nothing inside that window errors before the person lookup ever runs. Past
-5,000 chats, someone whose every thread and room has gone quiet falls out of
-reach. And only one thread has to be quiet for the failure to go silent: if the
-other still matches, the resolver returns it at its single-match early return,
-which sits above the person lookup — half a conversation again, §1's defect
-back with no error to say so. Demonstrated on a fixture, impossible on this
-database.
+Both halves this section used to record — the loud error before the person
+lookup ran, and the silent half-conversation when one thread still matched —
+died with #37, because for a person the chat-row match no longer runs at all.
 
-The full fix is the order this plan is named for: resolve the person first, and
-use the chat-row match only for what is not a person — a rowid, a room named
-outright, rooms found by membership, and the ambiguity error. The care it needs
-is precedence: a room named exactly the spec currently stands equal to a person
-of that name (`naming-a-conversation.md` §3 and §4 both hold), and reordering
-must not let the person path swallow that case.
+What is left is the window on what the text match still serves: `fetch_chats`
+reads the newest `NAME_SEARCH_SCAN` (5,000) rows, so past 5,000 chats a
+long-quiet *room* stops being findable by its name, and a contactless address
+fragment stops reaching a long-quiet thread. One member of the residue is a
+person after all: someone with no thread of their own — you only ever share
+rooms — resolves and then finds nothing, so they drop to the same text match
+by design, and past 5,000 chats their quiet rooms are out of reach by their
+name too. Loud in all three cases — "no chat matching", with the rowid still
+working — and rooms never merge, so the silent half-conversation mode has no
+equivalent here. Impossible below 5,000 chats.
 
 ## 4 Not this
 
