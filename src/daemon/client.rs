@@ -58,12 +58,35 @@ fn raise(code: ErrorCode, message: String) -> Error {
     }
 }
 
+/// The read deadline elapsing is the one io failure here a person can act on,
+/// so it gets a sentence instead of an errno. Without this, thirty seconds of
+/// silence ended as `Resource temporarily unavailable (os error 35)` — eleven
+/// words naming no command, no daemon, and no timeout, indistinguishable from
+/// a crash. Reachable since the word-boundary rule let a search outlive the
+/// deadline (search-boundaries.md §6).
+fn ran_out_of_time(request: &Request, error: std::io::Error) -> Error {
+    use std::io::ErrorKind;
+    if !matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
+        return error.into();
+    }
+    let command = serde_json::to_value(request)
+        .ok()
+        .and_then(|value| value["cmd"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "the request".to_string());
+    Error::other(format!(
+        "msgd took more than {} seconds to answer `{command}`, so msg stopped waiting. \
+         That is a timeout, not a crash — the daemon is likely still working through it. \
+         `msg daemon status` shows whether it is up; a narrower query answers sooner.",
+        RESPONSE_TIMEOUT.as_secs()
+    ))
+}
+
 /// Send one request and return its result, closing the connection after.
 pub fn request(mut stream: UnixStream, message: &Request) -> Result<serde_json::Value> {
     ask(&mut stream, message)?;
     let reader = BufReader::new(stream.try_clone()?);
     for line in reader.lines() {
-        let line = line?;
+        let line = line.map_err(|error| ran_out_of_time(message, error))?;
         if line.trim().is_empty() {
             continue;
         }
@@ -140,4 +163,32 @@ pub fn watch(
     Err(Error::other(
         "msgd stopped, so watch ended. Check `msg daemon status`.",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon::protocol::SearchRequest;
+
+    /// Thirty seconds of silence used to end as `Resource temporarily
+    /// unavailable (os error 35)` — nothing named the command, the daemon, or
+    /// the deadline, so a timeout read as a crash.
+    #[test]
+    fn a_timeout_answers_with_words_rather_than_an_errno() {
+        let request = Request::Search(SearchRequest {
+            query: "ing".into(),
+            ..Default::default()
+        });
+        let timeout = std::io::Error::from(std::io::ErrorKind::WouldBlock);
+        let words = ran_out_of_time(&request, timeout).to_string();
+        assert!(words.contains("`search`"), "{words}");
+        assert!(words.contains("timeout, not a crash"), "{words}");
+        assert!(words.contains("msg daemon status"), "{words}");
+
+        // Every other io failure keeps its own words — mapping them all to
+        // "timeout" would misname a genuinely dead daemon.
+        let other = std::io::Error::from(std::io::ErrorKind::BrokenPipe);
+        let words = ran_out_of_time(&request, other).to_string();
+        assert!(!words.contains("timeout"), "{words}");
+    }
 }

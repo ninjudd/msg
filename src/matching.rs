@@ -7,9 +7,14 @@
 
 /// Does `needle` begin a word somewhere in `haystack`?
 ///
-/// Both are expected to be lowercased already: one query is matched against
-/// many candidates, so folding the query once is cheaper than folding every
-/// candidate, and every caller here already had a lowercased needle.
+/// The needle is expected lowercased already — one query is matched against
+/// many candidates, so folding it once is cheaper than folding it per
+/// candidate. The haystack is taken as it is, and that is load-bearing rather
+/// than a convenience: folding it first can invent a boundary. `İ` lowercases
+/// to `i` plus a combining dot, the dot is not alphanumeric, and so a
+/// lowercased `İart` shows a word start before `art` that the original does
+/// not have. Case is folded per character during the scan instead, and the
+/// boundary is read from the unfolded text.
 ///
 /// The rule is asymmetric on purpose. A match has to *start* where a word
 /// starts, and nothing is asserted about where it ends, so `start` still finds
@@ -30,14 +35,45 @@ pub fn begins_a_word(haystack: &str, needle: &str) -> bool {
     // a letter is a perfectly good match, and `?!` never begins a word at all,
     // so the rule is skipped rather than applied and always failing.
     if !first.is_alphanumeric() || is_scriptio_continua(first) {
-        return haystack.contains(needle);
+        return run_contains(haystack, needle);
     }
+    haystack.char_indices().any(|(at, ch)| {
+        folds_to(ch, first)
+            && starts_with_ignoring_case(&haystack[at..], needle)
+            && match haystack[..at].chars().next_back() {
+                None => true,
+                Some(before) => !before.is_alphanumeric(),
+            }
+    })
+}
+
+/// Does `needle` occur in `haystack`, folding case per character?
+///
+/// Almost every position fails on its first character, so that test is worth
+/// making cheap: comparing it before building the two folding iterators is
+/// most of the difference between this and a scan that folds everything.
+pub(crate) fn run_contains(haystack: &str, needle: &str) -> bool {
+    let Some(first) = needle.chars().flat_map(char::to_lowercase).next() else {
+        return true;
+    };
     haystack
-        .match_indices(needle)
-        .any(|(at, _)| match haystack[..at].chars().next_back() {
-            None => true,
-            Some(before) => !before.is_alphanumeric(),
-        })
+        .char_indices()
+        .any(|(at, ch)| folds_to(ch, first) && starts_with_ignoring_case(&haystack[at..], needle))
+}
+
+fn folds_to(ch: char, lowered: char) -> bool {
+    if ch.is_ascii() {
+        return ch.to_ascii_lowercase() == lowered;
+    }
+    ch.to_lowercase().next() == Some(lowered)
+}
+
+fn starts_with_ignoring_case(haystack: &str, needle: &str) -> bool {
+    let mut found = haystack.chars().flat_map(char::to_lowercase);
+    needle
+        .chars()
+        .flat_map(char::to_lowercase)
+        .all(|wanted| found.next() == Some(wanted))
 }
 
 /// Is this character from a script written without spaces between words?
@@ -59,13 +95,22 @@ fn is_scriptio_continua(ch: char) -> bool {
         '\u{1100}'..='\u{11ff}'    // Hangul Jamo
         | '\u{3040}'..='\u{30ff}'  // Hiragana and Katakana
         | '\u{3130}'..='\u{318f}'  // Hangul Compatibility Jamo
+        | '\u{31f0}'..='\u{31ff}'  // Katakana Phonetic Extensions
         | '\u{3400}'..='\u{4dbf}'  // CJK Unified Ideographs Extension A
         | '\u{4e00}'..='\u{9fff}'  // CJK Unified Ideographs
+        | '\u{a960}'..='\u{a97f}'  // Hangul Jamo Extended-A
         | '\u{ac00}'..='\u{d7af}'  // Hangul syllables
+        | '\u{d7b0}'..='\u{d7ff}'  // Hangul Jamo Extended-B
         | '\u{f900}'..='\u{faff}'  // CJK Compatibility Ideographs
         | '\u{ff66}'..='\u{ff9f}'  // Halfwidth Katakana
-        | '\u{20000}'..='\u{2fa1f}' // CJK Extension B onwards, and the
-                                     // compatibility supplement
+        | '\u{1aff0}'..='\u{1b16f}' // Kana Extended-A and -B, the Kana
+                                     // Supplement, and Small Kana Extension
+        | '\u{20000}'..='\u{3ffff}' // The supplementary and tertiary
+                                     // ideographic planes, whole: every
+                                     // assignment there is an ideograph, and
+                                     // extensions keep landing in them — G and
+                                     // H already sit past the 2FA1F this
+                                     // stopped at when it only knew B
     )
 }
 
@@ -130,7 +175,7 @@ mod tests {
         assert!(begins_a_word("서울에서 만나요", "울에"));
     }
 
-    /// Every block the comment above the carve-out names, including the three
+    /// Every block the comment above the carve-out names, including the ones
     /// that sit away from the obvious ranges.
     #[test]
     fn the_carve_out_covers_the_blocks_it_claims() {
@@ -141,13 +186,27 @@ mod tests {
         assert!(begins_a_word("ㄱㄴㄷㄹ", "ㄴㄷ"));
         // Ideographs in the supplementary plane.
         assert!(begins_a_word("\u{20000}\u{20001}\u{20002}", "\u{20001}"));
+        // Extension G, past the 2FA1F the range used to stop at.
+        assert!(begins_a_word("\u{30000}\u{30001}\u{30002}", "\u{30001}"));
+        // Katakana phonetic extensions, past the main kana block.
+        assert!(begins_a_word("\u{31f0}\u{31f1}\u{31f2}", "\u{31f1}"));
     }
 
-    /// Case folding is the caller's job, and stays the caller's job.
+    /// The needle is the caller's to fold; the haystack must go in unfolded.
     #[test]
-    fn both_sides_are_expected_lowercased() {
-        assert!(begins_a_word("ana duarte", "ana"));
-        // Not folded here, which is why every caller lowercases first.
-        assert!(!begins_a_word("Ana Duarte", "ana"));
+    fn the_boundary_is_read_from_the_unfolded_text() {
+        // Case is folded per character during the scan.
+        assert!(begins_a_word("Ana Duarte", "ana"));
+        assert!(!begins_a_word("ana duarte", "Ana"), "the needle is not");
+        // Folding the haystack first would invent the boundary here: `İ`
+        // lowercases to `i` plus a combining dot, and the dot is not
+        // alphanumeric, so `İart` folded shows `art` starting a word. Unfolded,
+        // `İ` is a letter and the occurrence is interior.
+        assert!(!begins_a_word("is that İart deco", "art"));
+        assert!(
+            !begins_a_word("İart deco", "İart"),
+            "İ never survives a fold"
+        );
+        assert!(begins_a_word("İart deco", "i\u{307}art"), "its fold does");
     }
 }

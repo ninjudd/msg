@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::apple::{from_apple_date, message_body};
 use crate::contacts::{Contact, ContactIndex, name_handles};
+use crate::matching::run_contains;
 use crate::{Error, Result};
 
 pub fn default_db() -> PathBuf {
@@ -244,33 +245,6 @@ fn contains_ignoring_case(haystack: &[u8], needle: &str) -> bool {
     }
 }
 
-fn run_contains(haystack: &str, needle: &str) -> bool {
-    let Some(first) = needle.chars().flat_map(char::to_lowercase).next() else {
-        return true;
-    };
-    // Almost every position fails on its first character, so that test is worth
-    // making cheap: comparing it before building the two folding iterators is
-    // most of the difference between this and a scan that folds everything.
-    haystack
-        .char_indices()
-        .any(|(at, ch)| folds_to(ch, first) && starts_with_ignoring_case(&haystack[at..], needle))
-}
-
-fn folds_to(ch: char, lowered: char) -> bool {
-    if ch.is_ascii() {
-        return ch.to_ascii_lowercase() == lowered;
-    }
-    ch.to_lowercase().next() == Some(lowered)
-}
-
-fn starts_with_ignoring_case(haystack: &str, needle: &str) -> bool {
-    let mut found = haystack.chars().flat_map(char::to_lowercase);
-    needle
-        .chars()
-        .flat_map(char::to_lowercase)
-        .all(|wanted| found.next() == Some(wanted))
-}
-
 fn contains_ignoring_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
     let Some((first, rest)) = needle.split_first() else {
         return true;
@@ -303,10 +277,12 @@ fn contains_ignoring_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
 /// takes a slice of these same bytes and reads it as UTF-8, so any needle that
 /// survives into the decoded body is present in the blob — this is a superset of
 /// what the decoded filter accepts, which is exactly what a prefilter must be.
-/// It over-matches when the needle also appears in an archived class name, and
-/// the decode-and-check afterwards is what narrows that. Both run
-/// `contains_ignoring_case`, so the two cannot disagree about what a match is;
-/// they differ only in what they are looking at.
+/// It over-matches when the needle also appears in an archived class name, or
+/// when the occurrence does not start a word: the decoded filter runs
+/// `matching::begins_a_word`, and that rule cannot run here, because the
+/// framing puts an arbitrary byte before the text and a boundary test on raw
+/// bytes rejects real matches (search-boundaries.md §3). The decode-and-check
+/// afterwards is what narrows both.
 fn register_body_match(db: &Connection) -> rusqlite::Result<()> {
     use rusqlite::functions::FunctionFlags;
 
@@ -1218,6 +1194,9 @@ pub fn fetch_messages(
     // false positives roughly doubles the query. Over-fetching once instead
     // keeps almost every search to a single pass.
     let wanted = usize::try_from(options.limit).unwrap_or(usize::MAX);
+    // Folded once here because `begins_a_word` expects both sides lowercased,
+    // and one query is matched against every candidate in every round.
+    let needle = options.query.map(str::to_lowercase);
     let mut asking = if options.query.is_some() {
         options.limit.saturating_mul(4).saturating_add(64)
     } else {
@@ -1245,15 +1224,20 @@ pub fn fetch_messages(
         let exhausted = i64::try_from(candidates.len()).unwrap_or(i64::MAX) < asking;
 
         messages = candidates;
-        if let Some(query) = options.query {
-            // Deliberately the same predicate the SQL prefilter ran, so the two
-            // agree on what a match is by construction rather than by matching
-            // rules written twice.
+        if let Some(needle) = &needle {
+            // Deliberately *narrower* than the SQL prefilter, which stays a
+            // plain substring test: a hit has to start where a word starts,
+            // and that rule can only run here. The blob's framing puts an
+            // arbitrary byte — often a letter — immediately before the text,
+            // so a boundary test on the raw bytes rejects real matches, and
+            // the preceding "character" is not even guaranteed to be one
+            // (search-boundaries.md §3). The body goes in unfolded — the
+            // predicate reads the boundary from the original characters.
             messages.retain(|message| {
                 message
                     .body
                     .as_ref()
-                    .is_some_and(|body| contains_ignoring_case(body.as_bytes(), query))
+                    .is_some_and(|body| crate::matching::begins_a_word(body, needle))
             });
         }
 
@@ -1577,7 +1561,7 @@ fn retain_matching(chats: &mut Vec<Chat>, query: &str, contacts: &ContactIndex) 
     // address it is part of, since the middle of a phone number is exactly how
     // anyone types a fragment of one (naming-a-conversation.md §2, §8).
     let named = |value: Option<&String>| {
-        value.is_some_and(|value| crate::matching::begins_a_word(&value.to_lowercase(), &needle))
+        value.is_some_and(|value| crate::matching::begins_a_word(value, &needle))
     };
     let addressed =
         |value: Option<&String>| value.is_some_and(|value| value.to_lowercase().contains(&needle));

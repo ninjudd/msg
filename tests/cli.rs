@@ -44,19 +44,26 @@ fn build(path: &Path) {
     message_id INTEGER, attachment_id INTEGER
   );
   CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
-        INSERT INTO handle (rowid, id) VALUES (1, '+13105551234');
+        INSERT INTO handle (rowid, id) VALUES (1, '+13105551234'), (2, 'dana@example.com');
         INSERT INTO chat (rowid, guid, chat_identifier, display_name) VALUES
           (1, 'iMessage;-;+13105551234', '+13105551234', ''),
-          (2, 'iMessage;+;chat9', 'chat9', 'Ship Room');
-        INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1, 1), (2, 1);
+          (2, 'iMessage;+;chat9', 'chat9', 'Ship Room'),
+          (3, 'iMessage;-;dana@example.com', 'dana@example.com', '');
+        INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1, 1), (2, 1), (3, 2);
         INSERT INTO message (rowid, guid, text, is_from_me, handle_id, date, service)
           VALUES (1, 'm1', 'are you around later', 0, 1, 790000000000000000, 'iMessage'),
                  (2, 'm2', 'after 6, yeah', 1, 1, 790000060000000000, 'iMessage'),
-                 (3, 'm3', 'works, see you then', 0, 1, 790000120000000000, 'iMessage');
+                 (3, 'm3', 'works, see you then', 0, 1, 790000120000000000, 'iMessage'),
+                 (4, 'm4', 'we started at six, is that art deco', 0, 2, 790000180000000000, 'iMessage'),
+                 (5, 'm5', 'the apartment above ours', 0, 2, 790000240000000000, 'iMessage'),
+                 (6, 'm6', 'the İart gallery downtown', 0, 2, 790000300000000000, 'iMessage');
         INSERT INTO chat_message_join (chat_id, message_id, message_date)
           VALUES (1, 1, 790000000000000000),
                  (1, 2, 790000060000000000),
-                 (1, 3, 790000120000000000);
+                 (1, 3, 790000120000000000),
+                 (3, 4, 790000180000000000),
+                 (3, 5, 790000240000000000),
+                 (3, 6, 790000300000000000);
         ",
     )
     .unwrap();
@@ -240,6 +247,30 @@ fn context_flags_show_the_conversation_around_a_hit() {
         lines[0].starts_with("  ") && lines[2].starts_with("  "),
         "{text}"
     );
+}
+
+/// The rule `search-boundaries.md §2` asks for, through the whole search path:
+/// a hit starts where a word starts, and nothing is asserted about where it
+/// ends. The matching body is the plan's own fourth case — its first `art` is
+/// interior to `started` and only its second begins a word — so this also pins
+/// the any-occurrence quantifier, which a first-occurrence-only check fails.
+#[test]
+fn a_search_hit_starts_where_a_word_starts() {
+    let output = msg(&["--no-names", "search", "art"]);
+    assert_eq!(code(&output), 0);
+    let text = stdout(&output);
+    assert!(text.contains("art deco"), "{text}");
+    assert!(!text.contains("apartment"), "{text}");
+    // The boundary is read before the body is case-folded. Folding first
+    // would turn `İ` into `i` plus a combining dot and invent a word start
+    // in front of `art` that the message does not have.
+    assert!(!text.contains("İart"), "{text}");
+
+    // Asymmetric on purpose: a prefix still matches, so `start` finds
+    // `started` — whole-word matching would be the wrong trade.
+    let output = msg(&["--no-names", "search", "start"]);
+    assert_eq!(code(&output), 0);
+    assert!(stdout(&output).contains("we started at six"));
 }
 
 #[test]

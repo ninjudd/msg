@@ -22,5 +22,10 @@ See [README](README.md) for how these lists work.
   name past 5,000 chats, and a contactless fragment stops reaching a
   long-quiet thread. Loud, room-and-fragment only, impossible below 5,000;
   this database holds 1,165.
+- A short needle that rarely begins a word walks most of the table and can
+  take 15–30 seconds — [search-boundaries.md](all/search-boundaries.md) §6
+  measured it and shipped anyway, since those searches previously returned
+  noise instantly. The shape of a fix is
+  [query-performance.md](all/query-performance.md) §9's backwards streaming.
 - Export a conversation to a file, once there is a second consumer that wants
   more shape than `--json` piped through `jq`.
