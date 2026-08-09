@@ -4,8 +4,9 @@
 rendering settled by #44; slice 2, names behind `--who`, as #46 — rendering
 only, no protocol change. The type numbering in §2 is measured against the
 real database, and the two questions §9 opened are measured too: the emoji
-lives in its own column, the guid takes three stored forms, and the outliers —
-types 1000 and 2007 — stay unidentified and excluded.
+lives in its own column, and the guid takes three stored forms. The outliers —
+types 1000 and 2007 — are §9's separate residue, unidentified and excluded
+still.
 §4's symbols reversed the same day, from shorthand to the Messages emoji, by
 request. Building it added two facts to the record: the reaction lookup rides
 `message_idx_associated_message2`, a partial index over non-null
