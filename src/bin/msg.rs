@@ -66,8 +66,11 @@ enum Command {
     },
     /// print a conversation
     Read {
-        /// chat rowid, handle, or name substring
-        chat: String,
+        /// who to read: a chat rowid, a handle, or a name — several names mean
+        /// the room with exactly those people, so quote a name with a space in
+        /// it
+        #[arg(required = true, num_args = 1..)]
+        chat: Vec<String>,
         #[arg(short = 'n', long, default_value_t = 50, value_parser = positive)]
         limit: i64,
         /// only messages after a duration like 2h or a date

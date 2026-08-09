@@ -1426,6 +1426,60 @@ const CHATS_SQL: &str = "
 ";
 
 /// Fetch chats ordered by most recent activity.
+/// One row of [`CHATS_SQL`] as a [`Chat`].
+fn chat_from_row(row: &rusqlite::Row<'_>, contacts: &ContactIndex) -> Chat {
+    let display_name = text(row, "displayName");
+    let handles = text(row, "handles");
+    let identifier = text(row, "chatIdentifier").unwrap_or_default();
+    let member_count = number(row, "memberCount");
+    let named_handles = name_handles(contacts, handles.as_deref());
+    Chat {
+        rowid: number(row, "rowid"),
+        guid: text(row, "guid").unwrap_or_default(),
+        name: display_name
+            .clone()
+            .or_else(|| named_handles.clone())
+            .unwrap_or_else(|| identifier.clone()),
+        identifier,
+        display_name,
+        handles,
+        named_handles,
+        // Messages sorts filtered conversations into categories, so any nonzero
+        // value means the conversation is filtered.
+        is_filtered: number(row, "isFiltered") != 0,
+        member_count,
+        is_group: member_count > 1,
+        last_date: from_apple_date(row.get::<_, Option<i64>>("lastDate").ok().flatten()),
+        message_count: number(row, "messageCount"),
+    }
+}
+
+/// The chats with these rowids, most recently active first.
+///
+/// Named rather than scanned. Both callers used to take the 10,000 most recent
+/// chats and filter, which is a listing query to answer a question about
+/// specific rows — and worse than wasteful: a conversation outside that window
+/// simply was not found, so naming it by its own rowid, or reaching a room by
+/// its members, failed with the error for "no such conversation" while the row
+/// sat there. The window is generous enough that it does not bite on any
+/// database seen so far, which is exactly why it would have gone unnoticed.
+fn chats_by_id(db: &Connection, ids: &[i64], contacts: &ContactIndex) -> Result<Vec<Chat>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let slots = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!("{CHATS_SQL} WHERE rowid IN ({slots}) ORDER BY lastDate DESC");
+    let mut statement = db.prepare(&sql)?;
+    let mut rows = statement.query(params_from_iter(ids.iter().map(|id| Value::from(*id))))?;
+    let mut chats = Vec::new();
+    while let Some(row) = rows.next()? {
+        chats.push(chat_from_row(row, contacts));
+    }
+    Ok(chats)
+}
+
 pub fn fetch_chats(
     db: &Connection,
     query: Option<&str>,
@@ -1472,30 +1526,7 @@ pub fn fetch_chats(
 
     let mut chats = Vec::new();
     while let Some(row) = rows.next()? {
-        let display_name = text(row, "displayName");
-        let handles = text(row, "handles");
-        let identifier = text(row, "chatIdentifier").unwrap_or_default();
-        let member_count = number(row, "memberCount");
-        let named_handles = name_handles(contacts, handles.as_deref());
-        chats.push(Chat {
-            rowid: number(row, "rowid"),
-            guid: text(row, "guid").unwrap_or_default(),
-            name: display_name
-                .clone()
-                .or_else(|| named_handles.clone())
-                .unwrap_or_else(|| identifier.clone()),
-            identifier,
-            display_name,
-            handles,
-            named_handles,
-            // Messages sorts filtered conversations into categories, so any
-            // nonzero value means the conversation is filtered.
-            is_filtered: number(row, "isFiltered") != 0,
-            member_count,
-            is_group: member_count > 1,
-            last_date: from_apple_date(row.get::<_, Option<i64>>("lastDate").ok().flatten()),
-            message_count: number(row, "messageCount"),
-        });
+        chats.push(chat_from_row(row, contacts));
     }
 
     let Some(query) = query.filter(|_| filter_by_name) else {
@@ -1773,6 +1804,102 @@ fn describe<'a>(people: impl Iterator<Item = &'a Person> + Clone) -> String {
 /// "at least" instead of naming a number it cannot stand behind.
 const CHAT_MATCH_SCAN: i64 = 50;
 
+/// Find the room whose members are exactly these people, and me.
+///
+/// Each argument named a person, so the conversation asked for is the one whose
+/// membership is that set — `naming-a-conversation.md §4`. Exactly that set:
+/// there is no fallback to a room that merely contains them, because answering
+/// with a conversation holding people nobody named is the failure this rule
+/// exists to prevent, and "no conversation with exactly those people" is an
+/// error the caller can act on by naming the rest.
+///
+/// Compared on identities rather than on handle ids, for the reason everything
+/// else here compares on them: one person reachable at two addresses is one
+/// member, and a room holding both of their addresses is still a room with one
+/// of them in it.
+pub fn resolve_room(db: &Connection, people: &[Person], contacts: &ContactIndex) -> Result<Chat> {
+    let wanted: BTreeSet<String> = people
+        .iter()
+        .flat_map(|person| person.handles.iter())
+        .map(|handle| person_identity(handle, contacts.contact(Some(handle))))
+        .collect();
+
+    // Naming one person twice describes a room of one, which is a one-to-one
+    // and not a room. Counted on identities rather than on rendered names,
+    // because two records can carry one name and are two people — counting
+    // names refused their room as though one person had been named twice.
+    //
+    // Only that direction. Resolving the same person by two different specs
+    // yields the same rendered name from both, since `Person.name` comes from
+    // the resolved record rather than from what was typed, so a name count
+    // caught that case too. Identity is the right key regardless — it is what
+    // `wanted` is built from one line below, so the guard and the membership
+    // comparison read one set instead of two rules kept in step.
+    if wanted.len() < people.len() {
+        return Err(Error::other(
+            "the same person named twice; a room needs different people",
+        ));
+    }
+
+    // Every chat any of them is in, then their whole membership, so a room with
+    // an extra member can be told apart from an exact one. `chat_handle_join`
+    // holds the other participants only — I am never a row — so the set below
+    // is the set the caller named.
+    let ids: Vec<i64> = people
+        .iter()
+        .flat_map(|person| person.handle_ids.iter().copied())
+        .collect();
+    let slots = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT theirs.chat_id, handle.id
+           FROM chat_handle_join AS theirs
+           JOIN handle ON handle.rowid = theirs.handle_id
+          WHERE theirs.chat_id IN (
+                SELECT chat_id FROM chat_handle_join WHERE handle_id IN ({slots}))"
+    );
+    let mut statement = db.prepare(&sql)?;
+    let mut rows = statement.query(params_from_iter(ids.iter().map(|id| Value::from(*id))))?;
+    let mut membership: BTreeMap<i64, BTreeSet<String>> = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let chat_id: i64 = row.get(0)?;
+        let handle: String = row.get(1)?;
+        membership
+            .entry(chat_id)
+            .or_default()
+            .insert(person_identity(&handle, contacts.contact(Some(&handle))));
+    }
+
+    let exact: Vec<i64> = membership
+        .into_iter()
+        .filter(|(_, who)| *who == wanted)
+        .map(|(chat_id, _)| chat_id)
+        .collect();
+    let named = people
+        .iter()
+        .map(|person| person.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" and ");
+    if exact.is_empty() {
+        return Err(Error::other(format!(
+            "no conversation with exactly {named}"
+        )));
+    }
+
+    // Ordered by activity, so the most recent wins if Messages somehow holds
+    // two rooms with identical membership — which it does, for a room left and
+    // rejoined. Looked up by id rather than scanned, so a room that has been
+    // quiet for years is found as readily as one from this morning.
+    let mut found = chats_by_id(db, &exact, contacts)?;
+    if found.is_empty() {
+        return Err(Error::other(format!(
+            "no conversation with exactly {named}"
+        )));
+    }
+    Ok(found.remove(0))
+}
+
 /// Keep a merged conversation inside one filtered bucket.
 ///
 /// The leading thread is kept whatever it is: naming a conversation reaches it
@@ -1807,6 +1934,38 @@ pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Res
         .expect("a resolved conversation holds at least one chat"))
 }
 
+/// The conversation several specs name, each spec being one person.
+///
+/// One spec is the person's own conversation, which is
+/// [`resolve_conversation`]. Several are the room whose members are exactly
+/// those people (`naming-a-conversation.md §4`), which is one room and never
+/// merges — two rooms with the same membership are two rooms, and a room is not
+/// a person with several addresses.
+///
+/// Every spec resolves through `resolve_person`, the one primitive (§8), so a
+/// name means the same thing here as it does to `--with` and `--from`. A spec
+/// that names nobody is an error rather than a fallback: with several people
+/// named there is no other reading of it, and guessing would answer with a room
+/// the caller did not describe.
+pub fn resolve_conversations(
+    db: &Connection,
+    specs: &[String],
+    contacts: &ContactIndex,
+    unknown: bool,
+) -> Result<Vec<Chat>> {
+    match specs {
+        [] => Err(Error::other("no conversation named")),
+        [one] => resolve_conversation(db, one, contacts, unknown),
+        several => {
+            let people = several
+                .iter()
+                .map(|spec| resolve_person(db, spec, contacts))
+                .collect::<Result<Vec<Person>>>()?;
+            Ok(vec![resolve_room(db, &people, contacts)?])
+        }
+    }
+}
+
 /// Every conversation with the person a spec names, most recently active first.
 ///
 /// A name means the person and a rowid means the thread
@@ -1830,10 +1989,7 @@ pub fn resolve_conversation(
         let wanted: i64 = spec
             .parse()
             .map_err(|_| Error::other(format!("no chat matching {spec}")))?;
-        fetch_chats(db, None, 10_000, contacts, true)?
-            .into_iter()
-            .filter(|chat| chat.rowid == wanted)
-            .collect()
+        chats_by_id(db, &[wanted], contacts)?
     } else {
         fetch_chats(db, Some(spec), CHAT_MATCH_SCAN, contacts, true)?
     };
@@ -2725,6 +2881,27 @@ mod tests {
     ///
     /// The ordinary case, and the one that breaks a tie-break reaching into
     /// membership: someone you message directly and also share a group with.
+    /// A room with no name of its own, holding exactly these handles.
+    fn room(db: &Connection, rowid: i64, members: &[i64]) {
+        db.execute(
+            "INSERT INTO chat (rowid, guid, chat_identifier, display_name, is_filtered)
+             VALUES (?, ?, ?, '', 0)",
+            rusqlite::params![
+                rowid,
+                format!("iMessage;+;chat{rowid}"),
+                format!("chat{rowid}")
+            ],
+        )
+        .unwrap();
+        for member in members {
+            db.execute(
+                "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)",
+                rusqlite::params![rowid, member],
+            )
+            .unwrap();
+        }
+    }
+
     fn also_in_an_unnamed_group(db: &Connection, member: i64) {
         db.execute(
             "INSERT INTO handle (rowid, id) VALUES (9, '+16175550148')",
@@ -3137,6 +3314,247 @@ mod tests {
             let chat = resolve_chat(&db, spec, &contacts).unwrap();
             assert_eq!(chat.rowid, alone, "resolving {spec}");
         }
+    }
+
+    /// Two names reach the room with exactly those two people in it.
+    #[test]
+    fn several_names_reach_the_room_with_exactly_those_people() {
+        let db = fixture();
+        one_to_one(&db, 4, "+16175550147");
+        one_to_one(&db, 5, "+16175550148");
+        one_to_one(&db, 6, "+16175550149");
+        // A room of the first two, and a bigger one holding all three.
+        room(&db, 20, &[4, 5]);
+        room(&db, 21, &[4, 5, 6]);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:1", "Ana Duarte"),
+            ("+16175550148", "source:2", "Kit Alvarez"),
+            ("+16175550149", "source:3", "Sam Oyelaran"),
+        ]);
+
+        let pair = resolve_conversations(
+            &db,
+            &["ana".to_string(), "kit".to_string()],
+            &contacts,
+            false,
+        )
+        .unwrap();
+        assert_eq!(pair.len(), 1, "a room never merges");
+        assert_eq!(pair[0].rowid, 20);
+
+        // Order is a way of naming the same set, not a different question.
+        let other_way = resolve_conversations(
+            &db,
+            &["kit".to_string(), "ana".to_string()],
+            &contacts,
+            false,
+        )
+        .unwrap();
+        assert_eq!(other_way[0].rowid, 20);
+
+        // And all three reach the bigger one.
+        let trio = resolve_conversations(
+            &db,
+            &["ana".to_string(), "kit".to_string(), "sam".to_string()],
+            &contacts,
+            false,
+        )
+        .unwrap();
+        assert_eq!(trio[0].rowid, 21);
+    }
+
+    /// Exactly those people, with no fallback to a room that merely holds them.
+    ///
+    /// The decision in `naming-a-conversation.md §4`: answering with a
+    /// conversation containing somebody nobody named is worse than saying there
+    /// is no such conversation, because it is silent when it is wrong.
+    #[test]
+    fn a_room_that_merely_contains_them_is_not_the_room() {
+        let db = fixture();
+        one_to_one(&db, 4, "+16175550147");
+        one_to_one(&db, 5, "+16175550148");
+        one_to_one(&db, 6, "+16175550149");
+        // Only the room of all three exists; the pair has no room of its own.
+        room(&db, 21, &[4, 5, 6]);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:1", "Ana Duarte"),
+            ("+16175550148", "source:2", "Kit Alvarez"),
+            ("+16175550149", "source:3", "Sam Oyelaran"),
+        ]);
+
+        let error = resolve_conversations(
+            &db,
+            &["ana".to_string(), "kit".to_string()],
+            &contacts,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("no conversation with exactly"), "{error}");
+        assert!(error.contains("Ana Duarte"), "it says who: {error}");
+    }
+
+    /// One person reachable two ways is one member of a room, not two.
+    #[test]
+    fn a_room_counts_people_rather_than_addresses() {
+        let db = fixture();
+        one_to_one(&db, 4, "+16175550147");
+        one_to_one(&db, 5, "robin@example.com");
+        one_to_one(&db, 6, "+16175550149");
+        // Robin is in this room under both of his addresses.
+        room(&db, 20, &[4, 5, 6]);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+            ("+16175550149", "source:3", "Sam Oyelaran"),
+        ]);
+
+        let found = resolve_conversations(
+            &db,
+            &["robin".to_string(), "sam".to_string()],
+            &contacts,
+            false,
+        )
+        .unwrap();
+        assert_eq!(found[0].rowid, 20, "two addresses, one member");
+    }
+
+    /// A spec naming nobody stops the command rather than guessing.
+    #[test]
+    fn a_name_that_resolves_to_nobody_is_an_error_not_a_fallback() {
+        let db = fixture();
+        one_to_one(&db, 4, "+16175550147");
+        one_to_one(&db, 5, "+16175550148");
+        room(&db, 20, &[4, 5]);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:1", "Ana Duarte"),
+            ("+16175550148", "source:2", "Kit Alvarez"),
+        ]);
+
+        let error = resolve_conversations(
+            &db,
+            &["ana".to_string(), "nobody-by-that-name".to_string()],
+            &contacts,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("no one matching"), "{error}");
+
+        // And naming one person twice is not a room of one.
+        let twice = resolve_conversations(
+            &db,
+            &["ana".to_string(), "duarte".to_string()],
+            &contacts,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(twice.contains("same person named twice"), "{twice}");
+    }
+
+    /// Duplicate members are counted by identity, in both directions.
+    ///
+    /// Rendered names get this wrong twice over: two records can carry one
+    /// name and are two people, and one person named once by address and once
+    /// by name renders as two different strings. The second is the dangerous
+    /// one — it leaves a single identity wanted, so a two-argument question
+    /// would quietly be answered with a one-to-one.
+    #[test]
+    fn duplicate_members_are_counted_by_identity_not_by_name() {
+        let db = fixture();
+        one_to_one(&db, 4, "+16175550147");
+        one_to_one(&db, 5, "+16175550148");
+        room(&db, 20, &[4, 5]);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:1", "Ana Duarte"),
+            // A second record that happens to carry the same name. Two people.
+            ("+16175550148", "source:2", "Ana Duarte"),
+        ]);
+
+        // Two people who share a name are two people, so their room resolves.
+        let found = resolve_conversations(
+            &db,
+            &["+16175550147".to_string(), "+16175550148".to_string()],
+            &contacts,
+            false,
+        )
+        .unwrap();
+        assert_eq!(found[0].rowid, 20, "same name, different records");
+    }
+
+    /// One person named two ways is not a room.
+    ///
+    /// Nothing else asserts this, so it is worth pinning: naming somebody by
+    /// their number and again by their name describes a room of one, and a room
+    /// of one is a one-to-one. It does not distinguish counting identities from
+    /// counting names — `Person.name` renders the resolved record rather than
+    /// the spec, so both specs give one name and either rule refuses this. The
+    /// test that separates them is the one above.
+    #[test]
+    fn one_person_named_two_ways_is_not_a_room() {
+        let db = fixture();
+        let alone = one_to_one(&db, 4, "+16175550147");
+        one_to_one(&db, 5, "robin@example.com");
+        message_in(&db, alone, 10, 5);
+        // One record, two addresses.
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ]);
+
+        for pair in [
+            ["+16175550147", "adeyemi"],
+            // Both of his addresses, which is the same person twice over.
+            ["+16175550147", "robin@example.com"],
+        ] {
+            let error = resolve_conversations(
+                &db,
+                &[pair[0].to_string(), pair[1].to_string()],
+                &contacts,
+                false,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("same person named twice"),
+                "naming {pair:?}: {error}"
+            );
+        }
+    }
+
+    /// A conversation is looked up by its id, not taken from a listing.
+    ///
+    /// The scan this replaced was bounded by recent activity, so a quiet
+    /// conversation past the window could not be reached by its own rowid or by
+    /// its membership — and answered with the error for "no such conversation"
+    /// while the row sat there. The window is far larger than any fixture, so
+    /// this pins the mechanism rather than the scale: a room with no messages
+    /// at all sorts last by activity and is still found.
+    #[test]
+    fn a_conversation_with_no_activity_is_still_found_by_id() {
+        let db = fixture();
+        one_to_one(&db, 4, "+16175550147");
+        one_to_one(&db, 5, "+16175550148");
+        room(&db, 20, &[4, 5]);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:1", "Ana Duarte"),
+            ("+16175550148", "source:2", "Kit Alvarez"),
+        ]);
+
+        // The room has never carried a message, so `lastDate` is NULL.
+        let found = resolve_conversations(
+            &db,
+            &["ana".to_string(), "kit".to_string()],
+            &contacts,
+            false,
+        )
+        .unwrap();
+        assert_eq!(found[0].rowid, 20);
+
+        // And by its rowid, which takes the same lookup.
+        let by_id = resolve_chat(&db, "20", &contacts).unwrap();
+        assert_eq!(by_id.rowid, 20);
     }
 
     /// A room named exactly after a person is a real question, not a preference.

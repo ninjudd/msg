@@ -100,15 +100,20 @@ fn build_fixture(path: &Path) {
         -- One address in two casings, which `handle_key` folds to the same
         -- person without any Contacts record. That is what lets the merge be
         -- exercised here, where names are deliberately off.
-          (4, 'robin@example.com'), (5, 'ROBIN@example.com');
+          (4, 'robin@example.com'), (5, 'ROBIN@example.com'), (6, 'kit@example.com');
         INSERT INTO chat (rowid, guid, chat_identifier, display_name, is_filtered) VALUES
           (1, 'iMessage;-;+13105551234', '+13105551234', '', 0),
           (2, 'iMessage;+;chat9', 'chat9', 'Ship Room', 0),
           (3, 'SMS;-;+18885550000', '+18885550000', '', 1),
           (4, 'iMessage;-;robin@example.com', 'robin@example.com', '', 0),
-          (5, 'iMessage;-;ROBIN@example.com', 'ROBIN@example.com', '', 0);
+          (5, 'iMessage;-;ROBIN@example.com', 'ROBIN@example.com', '', 0),
+          -- A room of Robin and one other, for naming a conversation by who is
+          -- in it. Robin joins it under both of his addresses, so it also
+          -- proves membership counts people rather than addresses.
+          (6, 'iMessage;-;kit@example.com', 'kit@example.com', '', 0),
+          (7, 'iMessage;+;chat7', 'chat7', '', 0);
         INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1, 1), (2, 1), (2, 2), (3, 1),
-          (4, 4), (5, 5);
+          (4, 4), (5, 5), (6, 6), (7, 4), (7, 5), (7, 6);
         ",
     )
     .unwrap();
@@ -116,7 +121,7 @@ fn build_fixture(path: &Path) {
     /// rowid, guid, body, from me, handle, associated type, date, chat.
     type Row = (i64, &'static str, &'static str, i64, i64, i64, i64, i64);
 
-    let rows: [Row; 9] = [
+    let rows: [Row; 10] = [
         (1, "m1", "are you around later", 0, 1, 0, at(0), 1),
         (2, "m2", "after 6, yeah", 1, 1, 0, at(1), 1),
         (3, "m3", "deploy is green", 0, 2, 0, at(2), 2),
@@ -128,6 +133,7 @@ fn build_fixture(path: &Path) {
         (7, "m7", "and this from the other", 0, 5, 0, at(-30), 5),
         (8, "m8", "phone again", 0, 4, 0, at(-20), 4),
         (9, "m9", "newest of the pair", 0, 5, 0, at(-10), 5),
+        (10, "m10", "in the room", 0, 6, 0, at(-5), 7),
     ];
     for (rowid, guid, body, from_me, handle, associated, date, chat) in rows {
         insert(
@@ -215,8 +221,12 @@ fn lists_conversations_and_hides_the_filtered_ones() {
         [
             "+13105551234",
             "Ship Room",
+            // The room, named for its members since it has no name of its own.
+            "robin@example.com, ROBIN@example.com, kit@example.com",
             "ROBIN@example.com",
-            "robin@example.com"
+            "robin@example.com",
+            // No messages, so it sorts last.
+            "kit@example.com"
         ]
     );
 }
@@ -224,7 +234,7 @@ fn lists_conversations_and_hides_the_filtered_ones() {
 #[test]
 fn includes_filtered_conversations_when_asked() {
     let chats = names_off_chats(None, true);
-    assert_eq!(chats.len(), 5);
+    assert_eq!(chats.len(), 7);
     assert!(
         chats
             .iter()
@@ -243,7 +253,7 @@ fn filters_by_name() {
 
 fn read(chat: &str, tapbacks: bool) -> serde_json::Value {
     ask(&Request::Read(ReadRequest {
-        chat: chat.into(),
+        chat: vec![chat.into()],
         names: Some(false),
         tapbacks: tapbacks.then_some(true),
         ..Default::default()
@@ -302,6 +312,54 @@ fn search(query: &str, unknown: bool) -> Vec<serde_json::Value> {
     .clone()
 }
 
+/// Several names reach the room with exactly those people, over the wire.
+///
+/// The bug this pins is the one the version bump to 11 exists for. `chat` is a
+/// list now, and a daemon that reads it as a string cannot answer this at all —
+/// which is the loud failure, and the reason the field changed shape rather
+/// than the names being joined with a separator that a name could contain.
+#[test]
+fn naming_a_room_by_its_people_survives_the_wire() {
+    let value = ask(&Request::Read(ReadRequest {
+        chat: vec!["robin".into(), "kit".into()],
+        names: Some(false),
+        ..Default::default()
+    }))
+    .unwrap();
+
+    assert_eq!(value["chat"]["rowid"], serde_json::json!(7), "{value}");
+    let bodies: Vec<&str> = value["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(bodies, ["in the room"]);
+    // A room never merges, however many addresses its members have — and Robin
+    // is in this one under two of them.
+    assert!(value.get("merged").is_none(), "{value}");
+
+    // One of the two names alone is that person, not the room.
+    let alone = ask(&Request::Read(ReadRequest {
+        chat: vec!["kit".into()],
+        names: Some(false),
+        ..Default::default()
+    }))
+    .unwrap();
+    assert_eq!(alone["chat"]["rowid"], serde_json::json!(6), "{alone}");
+
+    // And a pair with no room of its own says so rather than answering with
+    // the room that merely contains them.
+    let error = ask(&Request::Read(ReadRequest {
+        chat: vec!["robin".into(), "someone".into()],
+        names: Some(false),
+        ..Default::default()
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("no conversation with exactly"), "{error}");
+}
+
 /// A person's two threads arrive as one transcript, over the wire.
 ///
 /// The bug this pins is the silent one protocol 10 exists to prevent. A daemon
@@ -312,7 +370,7 @@ fn search(query: &str, unknown: bool) -> Vec<serde_json::Value> {
 #[test]
 fn a_merged_conversation_survives_the_wire() {
     let value = ask(&Request::Read(ReadRequest {
-        chat: "robin".into(),
+        chat: vec!["robin".into()],
         names: Some(false),
         ..Default::default()
     }))
@@ -342,7 +400,7 @@ fn a_merged_conversation_survives_the_wire() {
 
     // A rowid means the thread, so the escape hatch has to cross too.
     let one = ask(&Request::Read(ReadRequest {
-        chat: "4".into(),
+        chat: vec!["4".into()],
         names: Some(false),
         ..Default::default()
     }))
