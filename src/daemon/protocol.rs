@@ -89,13 +89,20 @@ use crate::db::{Chat, Message};
 /// a daemon that does not know them ignores them and answers with bare hits, so
 /// `-C 3` would silently produce exactly what the flag was asked to change.
 ///
+/// 11 makes `read`'s `chat` a list, so several names can name the room with
+/// exactly those people. A changed *field type*, which is the loud kind rather
+/// than the quiet one: an older daemon fails to deserialize the request instead
+/// of answering it wrongly. It is still a bump, because the version check is
+/// what turns that into "reinstall the daemon" rather than a parse error nobody
+/// can place.
+///
 /// 10 merges a person's conversations in `read`, and adds `merged` to the
 /// reply and `unknown` to the request. Sharper still, because the behaviour is
 /// the daemon's: an older one answers a name with a single thread and no field
 /// saying so, which looks exactly like a person who only has one. The reply is
 /// not wrong in a way anything can see — it is simply missing half the
 /// conversation, which is the failure this number exists to make loud.
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";
@@ -135,7 +142,11 @@ pub struct ChatsRequest {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReadRequest {
-    pub chat: String,
+    /// One spec is a conversation; several are the people a room is made of
+    /// (naming-a-conversation.md §4). A list rather than a joined string
+    /// because a name may contain a space, so the argument boundaries are the
+    /// only thing that says where one person ends and the next begins.
+    pub chat: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -616,7 +627,7 @@ mod tests {
         let requests = [
             Request::Chats(ChatsRequest::default()),
             Request::Read(ReadRequest {
-                chat: "1".into(),
+                chat: vec!["1".into()],
                 ..Default::default()
             }),
             Request::Search(SearchRequest {

@@ -23,8 +23,8 @@ use crate::daemon::protocol::{
 use crate::daemon::send::attachment_name;
 use crate::db::{
     Chat, FetchMessages, Message, PersonFilter, attachment_path, fetch_chats, fetch_conversation,
-    fetch_messages, latest_rowid, open_database, person_filter, resolve_chat, resolve_conversation,
-    unreadable, with_context,
+    fetch_messages, latest_rowid, open_database, person_filter, resolve_chat,
+    resolve_conversations, unreadable, with_context,
 };
 use crate::{Error, Result};
 
@@ -42,7 +42,7 @@ pub struct ChatsQuery {
 }
 
 pub struct ReadQuery {
-    pub chat: String,
+    pub chat: Vec<String>,
     pub limit: i64,
     pub since: Option<String>,
     pub tapbacks: bool,
@@ -208,10 +208,10 @@ impl Source {
             .as_deref()
             .map(since_to_apple_date)
             .transpose()?;
-        let (spec, limit, tapbacks) = (query.chat.clone(), query.limit, query.tapbacks);
+        let (specs, limit, tapbacks) = (query.chat.clone(), query.limit, query.tapbacks);
         let unknown = query.unknown;
         let (db, contacts) = self.parts(query.names)?;
-        let threads = resolve_conversation(db, &spec, contacts, unknown)?;
+        let threads = resolve_conversations(db, &specs, contacts, unknown)?;
         let messages = fetch_conversation(db, &threads, after_date, limit, tapbacks, contacts)?;
         Ok(ReadReply::new(threads, messages))
     }

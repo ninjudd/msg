@@ -104,6 +104,17 @@ Contacts record, so `msg` answers with whichever was last active rather than
 asking a question that has no answer. A fragment counts as naming them: typing
 fewer letters does not make it two people.
 
+**Several names are a room.** Each argument names a person, so `msg read dana
+sam` is the conversation whose members are exactly Dana and Sam and you. Exactly
+those: a room that merely contains them is not the answer, because a command
+that quietly hands back a conversation with somebody in it you did not name is
+worse than one that says there is no such conversation. A room with a name of
+its own is still reached by that name.
+
+Because each argument is a person, **a name with a space in it has to be
+quoted** — `msg read "Ana Duarte"` is one person and `msg read ana duarte` is
+two.
+
 **A name is a person before it is anything else.** Someone's own conversation
 wins over every group they are in, because being in a room is not being the
 person — which is what makes a first name usable, since a first name reaches
@@ -121,6 +132,8 @@ collapsed is the Contacts record, never the name it renders as.
 
 ```sh
 msg read "Ship Room"           # a conversation
+msg read dana                  # one person: their own conversation
+msg read dana sam              # two people: the room with exactly those two
 msg read 42 -n 200             # by rowid, with more history
 msg read dana --since 7d       # only the last week
 msg read dana --since 2026-01-15

@@ -26,7 +26,7 @@ use crate::daemon::send::{check_automation, send_attachment, send_message};
 use crate::db::{
     Chat, Context, FetchMessages, Message, PersonFilter, database_path, describe_target,
     fetch_chats, fetch_conversation, fetch_messages, latest_rowid, open_database, person_filter,
-    resolve_chat, resolve_conversation, unreadable, with_context,
+    resolve_chat, resolve_conversations, unreadable, with_context,
 };
 use crate::{Error, Result, VERSION};
 
@@ -385,7 +385,7 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
             let after_date = ask.since.as_deref().map(since_to_apple_date).transpose()?;
             let reply = shared.with_db(|db| {
                 let threads =
-                    resolve_conversation(db, &ask.chat, &contacts, ask.unknown == Some(true))?;
+                    resolve_conversations(db, &ask.chat, &contacts, ask.unknown == Some(true))?;
                 let messages = fetch_conversation(
                     db,
                     &threads,

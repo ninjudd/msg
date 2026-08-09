@@ -3,7 +3,10 @@
 **Status:** Slice one implemented. A name resolves through `resolve_person` and
 answers with that person's own conversation; the word-start rule ships with it,
 for names, because §2 turned out to be a prerequisite rather than an overlap.
-Slice two — several names naming a room by its membership — is not started.
+Slice two — several names naming a room by its membership — is implemented on
+top of it: `read` takes a list, each element resolves through the same
+primitive, and membership is compared on identities so one person reachable two
+ways is one member.
 
 `search-boundaries.md §7` is corrected as part of this: the case it was waiting
 for has been observed, and the shared predicate it asked for now exists as
