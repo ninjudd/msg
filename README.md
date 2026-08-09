@@ -120,6 +120,25 @@ msg read dana --tapbacks       # include reactions
 `--since` accepts a duration (`30m`, `2h`, `7d`, `4w`), an ISO date like
 `2026-01-15`, or a full timestamp. A bare date means midnight UTC.
 
+**A name reads the person; a rowid reads the thread.** Messages keeps a separate
+conversation for every address someone has, so a person you reach at a phone
+number and an email address has two — and naming them shows both as one
+transcript, in the order the messages arrived:
+
+```sh
+msg read dana                  # everything Dana said, at any of her addresses
+msg read 42                    # only the conversation with rowid 42
+```
+
+The rowid is the way out when that is not what you want, and `msg chats` is
+where the rowids are. A conversation Messages files under Unknown Senders is
+left out of the merge unless `--unknown` is passed, so filtered content never
+arrives inside a conversation you think of as known. Groups never merge.
+
+`--json` names the thread a reply would go to in `chat`, as it always has, and
+lists any others in `merged`. A person with one conversation is unchanged in
+both output modes.
+
 An inline reply says what it is answering, so it stops reading as an unrelated
 remark that happens to come later:
 

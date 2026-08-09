@@ -6,4 +6,5 @@ Delete the line when the work is genuinely over. Committed but not started lives
 in [next](next.md); uncommitted ideas in [later](later.md). See
 [README](README.md) for how these lists work.
 
-Nothing in flight.
+- [One person, one conversation](all/conversation-merging.md) — someone with a
+  phone and an email has two threads, and only the newer one is ever shown.

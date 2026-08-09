@@ -25,8 +25,8 @@ use crate::daemon::protocol::{
 use crate::daemon::send::{check_automation, send_attachment, send_message};
 use crate::db::{
     Chat, Context, FetchMessages, Message, PersonFilter, database_path, describe_target,
-    fetch_chats, fetch_messages, latest_rowid, open_database, person_filter, resolve_chat,
-    unreadable, with_context,
+    fetch_chats, fetch_conversation, fetch_messages, latest_rowid, open_database, person_filter,
+    resolve_chat, resolve_conversation, unreadable, with_context,
 };
 use crate::{Error, Result, VERSION};
 
@@ -384,19 +384,17 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
             let contacts = shared.contacts(ask.names != Some(false));
             let after_date = ask.since.as_deref().map(since_to_apple_date).transpose()?;
             let reply = shared.with_db(|db| {
-                let chat = resolve_chat(db, &ask.chat, &contacts)?;
-                let messages = fetch_messages(
+                let threads =
+                    resolve_conversation(db, &ask.chat, &contacts, ask.unknown == Some(true))?;
+                let messages = fetch_conversation(
                     db,
-                    &FetchMessages {
-                        chat_id: Some(chat.rowid),
-                        after_date,
-                        limit: ask.limit.unwrap_or(50),
-                        include_tapbacks: ask.tapbacks == Some(true),
-                        ..Default::default()
-                    },
+                    &threads,
+                    after_date,
+                    ask.limit.unwrap_or(50),
+                    ask.tapbacks == Some(true),
                     &contacts,
                 )?;
-                Ok(ReadReply { chat, messages })
+                Ok(ReadReply::new(threads, messages))
             })?;
             Ok(serde_json::to_value(reply)?)
         }

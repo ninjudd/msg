@@ -96,12 +96,19 @@ fn build_fixture(path: &Path) {
     db.execute_batch(SCHEMA).unwrap();
     db.execute_batch(
         "
-        INSERT INTO handle (rowid, id) VALUES (1, '+13105551234'), (2, 'someone@example.com');
+        INSERT INTO handle (rowid, id) VALUES (1, '+13105551234'), (2, 'someone@example.com'),
+        -- One address in two casings, which `handle_key` folds to the same
+        -- person without any Contacts record. That is what lets the merge be
+        -- exercised here, where names are deliberately off.
+          (4, 'robin@example.com'), (5, 'ROBIN@example.com');
         INSERT INTO chat (rowid, guid, chat_identifier, display_name, is_filtered) VALUES
           (1, 'iMessage;-;+13105551234', '+13105551234', '', 0),
           (2, 'iMessage;+;chat9', 'chat9', 'Ship Room', 0),
-          (3, 'SMS;-;+18885550000', '+18885550000', '', 1);
-        INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1, 1), (2, 1), (2, 2), (3, 1);
+          (3, 'SMS;-;+18885550000', '+18885550000', '', 1),
+          (4, 'iMessage;-;robin@example.com', 'robin@example.com', '', 0),
+          (5, 'iMessage;-;ROBIN@example.com', 'ROBIN@example.com', '', 0);
+        INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1, 1), (2, 1), (2, 2), (3, 1),
+          (4, 4), (5, 5);
         ",
     )
     .unwrap();
@@ -109,12 +116,18 @@ fn build_fixture(path: &Path) {
     /// rowid, guid, body, from me, handle, associated type, date, chat.
     type Row = (i64, &'static str, &'static str, i64, i64, i64, i64, i64);
 
-    let rows: [Row; 5] = [
+    let rows: [Row; 9] = [
         (1, "m1", "are you around later", 0, 1, 0, at(0), 1),
         (2, "m2", "after 6, yeah", 1, 1, 0, at(1), 1),
         (3, "m3", "deploy is green", 0, 2, 0, at(2), 2),
         (4, "m4", "your code is 123456", 0, 1, 0, at(3), 3),
         (5, "m5", "Liked \"after 6, yeah\"", 0, 1, 2000, at(4), 1),
+        // The split conversation, interleaved across its two threads and older
+        // than everything above so the chat list keeps a fixed order.
+        (6, "m6", "sent from the phone", 0, 4, 0, at(-40), 4),
+        (7, "m7", "and this from the other", 0, 5, 0, at(-30), 5),
+        (8, "m8", "phone again", 0, 4, 0, at(-20), 4),
+        (9, "m9", "newest of the pair", 0, 5, 0, at(-10), 5),
     ];
     for (rowid, guid, body, from_me, handle, associated, date, chat) in rows {
         insert(
@@ -193,15 +206,25 @@ fn names_off_chats(query: Option<&str>, unknown: bool) -> Vec<serde_json::Value>
 #[test]
 fn lists_conversations_and_hides_the_filtered_ones() {
     let chats = names_off_chats(None, false);
-    // Ordered by most recent activity, and chat 3 is the filtered one.
+    // Ordered by most recent activity, and chat 3 is the filtered one. The two
+    // trailing rows are the split conversation, which the listing still shows
+    // as two — merging it there is slice two of conversation-merging.md §10.
     let names: Vec<&str> = chats.iter().map(|c| c["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["+13105551234", "Ship Room"]);
+    assert_eq!(
+        names,
+        [
+            "+13105551234",
+            "Ship Room",
+            "ROBIN@example.com",
+            "robin@example.com"
+        ]
+    );
 }
 
 #[test]
 fn includes_filtered_conversations_when_asked() {
     let chats = names_off_chats(None, true);
-    assert_eq!(chats.len(), 3);
+    assert_eq!(chats.len(), 5);
     assert!(
         chats
             .iter()
@@ -277,6 +300,62 @@ fn search(query: &str, unknown: bool) -> Vec<serde_json::Value> {
     .as_array()
     .unwrap()
     .clone()
+}
+
+/// A person's two threads arrive as one transcript, over the wire.
+///
+/// The bug this pins is the silent one protocol 10 exists to prevent. A daemon
+/// that does not merge answers a name with a single thread and no field saying
+/// so, which is indistinguishable from a person who only has one — the reply
+/// looks correct and is missing half the conversation. `db.rs` cannot catch it,
+/// because the omission happens on the other side of the socket.
+#[test]
+fn a_merged_conversation_survives_the_wire() {
+    let value = ask(&Request::Read(ReadRequest {
+        chat: "robin".into(),
+        names: Some(false),
+        ..Default::default()
+    }))
+    .unwrap();
+
+    let bodies: Vec<&str> = value["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        bodies,
+        [
+            "sent from the phone",
+            "and this from the other",
+            "phone again",
+            "newest of the pair"
+        ],
+        "interleaved by arrival, not one thread then the other: {bodies:?}"
+    );
+
+    // `chat` still names the thread a reply would continue, so a consumer
+    // reading it gets what it always got, and `merged` is the new half.
+    assert_eq!(value["chat"]["rowid"], serde_json::json!(5));
+    assert_eq!(value["merged"], serde_json::json!([4]));
+
+    // A rowid means the thread, so the escape hatch has to cross too.
+    let one = ask(&Request::Read(ReadRequest {
+        chat: "4".into(),
+        names: Some(false),
+        ..Default::default()
+    }))
+    .unwrap();
+    let bodies: Vec<&str> = one["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(bodies, ["sent from the phone", "phone again"]);
+    // Skipped when empty, so an unmerged read is byte-identical to version 9.
+    assert!(one.get("merged").is_none(), "{one}");
 }
 
 /// The two lines that join `with_context` to the wire, which nothing else

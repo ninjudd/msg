@@ -88,7 +88,14 @@ use crate::db::{Chat, Message};
 /// messages it answers with. A new *request* field, which is the sharper case:
 /// a daemon that does not know them ignores them and answers with bare hits, so
 /// `-C 3` would silently produce exactly what the flag was asked to change.
-pub const PROTOCOL_VERSION: u32 = 9;
+///
+/// 10 merges a person's conversations in `read`, and adds `merged` to the
+/// reply and `unknown` to the request. Sharper still, because the behaviour is
+/// the daemon's: an older one answers a name with a single thread and no field
+/// saying so, which looks exactly like a person who only has one. The reply is
+/// not wrong in a way anything can see — it is simply missing half the
+/// conversation, which is the failure this number exists to make loud.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";
@@ -137,6 +144,9 @@ pub struct ReadRequest {
     pub tapbacks: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub names: Option<bool>,
+    /// Let a thread Messages files under Unknown Senders join the merge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unknown: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -347,8 +357,34 @@ pub struct ContactsReply {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadReply {
+    /// The thread a reply would go to, which is the most recently active when a
+    /// person has several. Unchanged in meaning from before merging existed, so
+    /// a consumer reading it keeps reading what it always read.
     pub chat: Chat,
     pub messages: Vec<Message>,
+    /// The other threads folded into this transcript, if any. Skipped when
+    /// empty, so an unmerged conversation serializes exactly as it did at
+    /// version 9 (conversation-merging.md §6).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merged: Vec<i64>,
+}
+
+impl ReadReply {
+    /// Build a reply from the threads a conversation resolved to, most recently
+    /// active first. Shared so the two read paths cannot disagree about which
+    /// thread is `chat` and which are `merged`.
+    pub fn new(threads: Vec<Chat>, messages: Vec<Message>) -> Self {
+        let merged = threads.iter().skip(1).map(|chat| chat.rowid).collect();
+        let chat = threads
+            .into_iter()
+            .next()
+            .expect("a resolved conversation holds at least one chat");
+        Self {
+            chat,
+            messages,
+            merged,
+        }
+    }
 }
 
 /// `access-denied` is the one code the CLI acts on, since it maps to the exit

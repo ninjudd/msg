@@ -22,8 +22,9 @@ use crate::daemon::protocol::{
 };
 use crate::daemon::send::attachment_name;
 use crate::db::{
-    Chat, FetchMessages, Message, PersonFilter, attachment_path, fetch_chats, fetch_messages,
-    latest_rowid, open_database, person_filter, resolve_chat, unreadable, with_context,
+    Chat, FetchMessages, Message, PersonFilter, attachment_path, fetch_chats, fetch_conversation,
+    fetch_messages, latest_rowid, open_database, person_filter, resolve_chat, resolve_conversation,
+    unreadable, with_context,
 };
 use crate::{Error, Result};
 
@@ -46,6 +47,7 @@ pub struct ReadQuery {
     pub since: Option<String>,
     pub tapbacks: bool,
     pub names: bool,
+    pub unknown: bool,
 }
 
 pub struct SearchQuery {
@@ -197,6 +199,7 @@ impl Source {
                 since: query.since.clone(),
                 tapbacks: query.tapbacks.then_some(true),
                 names: (!query.names).then_some(false),
+                unknown: query.unknown.then_some(true),
             }))?;
             return Ok(serde_json::from_value(value)?);
         }
@@ -206,20 +209,11 @@ impl Source {
             .map(since_to_apple_date)
             .transpose()?;
         let (spec, limit, tapbacks) = (query.chat.clone(), query.limit, query.tapbacks);
+        let unknown = query.unknown;
         let (db, contacts) = self.parts(query.names)?;
-        let chat = resolve_chat(db, &spec, contacts)?;
-        let messages = fetch_messages(
-            db,
-            &FetchMessages {
-                chat_id: Some(chat.rowid),
-                after_date,
-                limit,
-                include_tapbacks: tapbacks,
-                ..Default::default()
-            },
-            contacts,
-        )?;
-        Ok(ReadReply { chat, messages })
+        let threads = resolve_conversation(db, &spec, contacts, unknown)?;
+        let messages = fetch_conversation(db, &threads, after_date, limit, tapbacks, contacts)?;
+        Ok(ReadReply::new(threads, messages))
     }
 
     pub fn search(&mut self, query: &SearchQuery) -> Result<Vec<Message>> {

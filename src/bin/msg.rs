@@ -288,6 +288,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                 since: since.clone(),
                 tapbacks: *tapbacks,
                 names: cli.names(),
+                unknown: cli.unknown,
             })?;
             print(&if *json {
                 to_json(&reply)
