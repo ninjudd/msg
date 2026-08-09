@@ -2,8 +2,8 @@
 
 **Status:** Shipped. Slice one in #30 — `msg chat <name>` merges every
 conversation with a person, `msg chat <rowid>` reads one thread, and the reply
-carries `merged`. Slice two collapses the `msg chats` listing on the same rule,
-at protocol 13: measured on a real database, 648 one-to-one threads became 602
+carries `merged`. Slice two in #36 collapses the `msg chats` listing on the same
+rule, at protocol 13: measured on a real database, 648 one-to-one threads became 602
 conversations, and the 517 groups were untouched.
 
 Two things slice two settled that this plan did not ask about. The limit counts
