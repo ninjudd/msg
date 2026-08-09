@@ -89,6 +89,15 @@ use crate::db::{Chat, Message};
 /// a daemon that does not know them ignores them and answers with bare hits, so
 /// `-C 3` would silently produce exactly what the flag was asked to change.
 ///
+/// 13 merges the `chats` listing, so a person with two threads is one row
+/// carrying the summed count and the rowid a send would go to. The reply shape
+/// is untouched — the same fields, one row fewer — which makes this the case 8
+/// was and the case this constant is easiest to forget for. Nothing errors
+/// against a stale daemon: it answers a row per thread, the CLI prints them,
+/// and the listing goes back to disagreeing with `chat` about how many
+/// conversations there are. That is the exact defect the change removes, with
+/// nothing to point at the daemon as the reason it came back.
+///
 /// 12 renames the `read` command to `chat`, following the CLI. This one buys
 /// the *better* loud failure rather than the only one, which is worth being
 /// exact about: a renamed command is an unknown command, and that branch
@@ -117,7 +126,7 @@ use crate::db::{Chat, Message};
 /// saying so, which looks exactly like a person who only has one. The reply is
 /// not wrong in a way anything can see — it is simply missing half the
 /// conversation, which is the failure this number exists to make loud.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";

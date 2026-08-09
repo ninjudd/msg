@@ -1,12 +1,29 @@
 # Plan: One person, one conversation
 
-**Status:** Slice one shipped in #30. `msg chat <name>` merges every
+**Status:** Shipped. Slice one in #30 — `msg chat <name>` merges every
 conversation with a person, `msg chat <rowid>` reads one thread, and the reply
-carries `merged`. Slice two — merging the `msg chats` listing — is not started,
-and is all that remains.
+carries `merged`. Slice two collapses the `msg chats` listing on the same rule,
+at protocol 13: measured on a real database, 648 one-to-one threads became 602
+conversations, and the 517 groups were untouched.
+
+Two things slice two settled that this plan did not ask about. The limit counts
+conversations, so it can no longer be given to SQL — which costs nothing,
+because the aggregate `CHATS_SQL` joins against was never correlated and always
+ran in full. And the query is matched after the merge rather than before, so a
+search still reaches someone by an address their newest thread does not use.
+
+Two things it surfaced. The listing no longer shows the rowid of a thread that
+is not the leading one, and §5 promised the listing as where rowids come from;
+they are reachable in `merged` from `msg chat <name> --json`, and whether the
+listing should carry them too is open. That reachability was briefly untrue:
+the reader kept only the newest 50 name matches before answering, so for four
+people the listing merged a second thread that `msg chat` then missed — older
+than this slice, made visible by it, caught in review. The window came off that
+path on this branch, and the bound that remains — latent past 5,000 chats — is
+written up as `resolver-windows.md`.
 
 The command was `msg read` when this was written and `ReadReply` was the reply's
-name; #35 renamed both, and protocol 10 became 12 along the way. The body below
+name; #35 renamed both, and protocol 10 became 13 by way of 12. The body below
 is left in the vocabulary of its time.
 
 Two of §4's claims were wrong and are corrected in place, both about
@@ -243,6 +260,14 @@ explicitly because "merge their conversations" sounds like it should also mean
 "and pick the address for me", and the existing answer to that is already the
 one we want — the merge changes what is *shown*, never where a message goes.
 
+An address is how you choose where it goes, and slice two had to defend that
+rather than restate it: once the reader can answer an address with the person's
+folded threads, the typed address's own thread stays at the head of the answer,
+and the leading thread is the send target. So the rule §5 states in two halves
+has a third case sitting across them — a name means the person, a rowid means
+the thread, and an address means the person to *read* and its own thread to
+*send to*.
+
 ## 8 What the listing shows
 
 One row per person, with the combined count and the latest activity. The rowid
@@ -279,6 +304,24 @@ handling lives in the attachment and reply paths. `chat_id IN (a, b)` is exactly
 what opens the read path to it. If the merged query turns out not to need a
 dedupe, say so as a difference from those three cases rather than as an absence
 of the case.
+
+**(MEASURED — no such join was found, so the merge is a difference from those
+three cases.)** Slice two gave a way to ask without writing SQL: the listing
+counts `chat_message_join` rows and `chat` dedupes by rowid, so one message in
+two of a person's threads shows up as the listing counting higher than `chat`
+prints. Across the 30 merged conversations under 4,000 messages, 29 agreed
+exactly. So the read path's `dedup_by_key` is not currently earning its place on
+this database, and it stays anyway: it costs one pass over a sorted vector, the
+three existing cases prove Messages does join one message to two chats, and §4
+now issues `chat_id = ?` per thread rather than `chat_id IN (…)`, which narrows
+where a duplicate could enter without closing it.
+
+The thirtieth is worth recording as what it is rather than rounding off. One
+conversation counts 14 and prints 12, and the two threads are not the cause —
+its leading thread alone counts 14 and prints 12, so whatever the gap is, it is
+inside a single thread and predates merging. Orphaned join rows would produce
+exactly this, since the count reads `chat_message_join` and the fetch joins
+`message`. Not measured, and not this plan's question.
 
 **Does `chat_id IN (…)` keep the index? (ANSWERED — it keeps the index and
 loses the ordering.)** `EXPLAIN QUERY PLAN` reports the same covering-index

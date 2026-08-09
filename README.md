@@ -75,11 +75,15 @@ checkout.
 ### Conversations
 
 ```sh
-msg chats                      # by most recent activity
+msg chats                      # by most recent activity, one row per person
 msg chats dana                 # filter by contact name, handle, or identifier
 msg chats -n 100               # more of them
 msg chats --unknown            # include the ones Messages filters away
 ```
+
+Someone you reach at two addresses is one row, not two — the same merge
+[reading](#reading) describes, so the count here agrees with what `msg chat`
+prints. `-n` counts conversations, so it means the same thing on both.
 
 Conversations that Messages filters as unknown senders are hidden, matching
 what your phone shows. On one real database that removed 1,395 of 2,559
@@ -157,10 +161,21 @@ msg chat dana                  # everything Dana said, at any of her addresses
 msg chat 42                    # only the conversation with rowid 42
 ```
 
-The rowid is the way out when that is not what you want, and `msg chats` is
-where the rowids are. A conversation Messages files under Unknown Senders is
-left out of the merge unless `--unknown` is passed, so filtered content never
-arrives inside a conversation you think of as known. Groups never merge.
+An address sits across the two: when a person's threads fold together, the
+address you typed keeps its own thread at the head of the answer — and the
+leading thread is where a send goes, so the address is how you choose the
+route.
+
+The rowid is the way out when that is not what you want. `msg chats` merges on
+the same rule, so it lists one row per person rather than one per thread, and
+that row carries their total message count and the rowid a send would go to —
+the newest of their threads. The older ones are not in the listing; `msg chat
+<name> --json` names them in `merged`, which is where to look for the rowid of a
+thread the listing no longer shows.
+
+A conversation Messages files under Unknown Senders is left out of the merge
+unless `--unknown` is passed, so filtered content never arrives inside a
+conversation you think of as known. Groups never merge.
 
 `--json` names the thread a reply would go to in `chat`, as it always has, and
 lists any others in `merged`. A person with one conversation is unchanged in
@@ -347,11 +362,13 @@ would send to Dana Reyes (dana@example.com): on my way
 ```
 
 Somebody you reach at a phone number and an email address has two
-conversations that display the same name, and `msg` picks the one last active.
-The address is the only thing that distinguishes them, and the routes are not
-interchangeable — one of them may be an SMS fallback, and the most recent is not
-always the one that gets read. A dry run that printed only the name would be
-identical in both cases, which would make it useless as the check it is for.
+conversations that display the same name, and a *name* picks the one last
+active. An *address* pins it: the typed address's own thread leads, so the
+send goes by that route whatever spoke last. The address is the only thing
+that distinguishes them, and the routes are not interchangeable — one of them
+may be an SMS fallback, and the most recent is not always the one that gets
+read. A dry run that printed only the name would be identical in both cases,
+which would make it useless as the check it is for.
 Conversations with a name of their own are named by it, since a room is not
 ambiguous the way a person is.
 

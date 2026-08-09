@@ -212,9 +212,10 @@ fn names_off_chats(query: Option<&str>, unknown: bool) -> Vec<serde_json::Value>
 #[test]
 fn lists_conversations_and_hides_the_filtered_ones() {
     let chats = names_off_chats(None, false);
-    // Ordered by most recent activity, and chat 3 is the filtered one. The two
-    // trailing rows are the split conversation, which the listing still shows
-    // as two — merging it there is slice two of conversation-merging.md §10.
+    // Ordered by most recent activity, and chat 3 is the filtered one. The split
+    // conversation is one row, which is slice two of conversation-merging.md
+    // §10 — it appears under the address of its most recently active thread,
+    // and its other thread is no longer a row of its own.
     let names: Vec<&str> = chats.iter().map(|c| c["name"].as_str().unwrap()).collect();
     assert_eq!(
         names,
@@ -224,22 +225,47 @@ fn lists_conversations_and_hides_the_filtered_ones() {
             // The room, named for its members since it has no name of its own.
             "robin@example.com, ROBIN@example.com, kit@example.com",
             "ROBIN@example.com",
-            "robin@example.com",
             // No messages, so it sorts last.
             "kit@example.com"
         ]
     );
+
+    // Names are off here, so the two threads are one person by `handle_key`
+    // alone — the same address in two casings, with no Contacts record behind
+    // it. The count is what proves they were added rather than one being
+    // dropped: two messages in one thread and two in the other.
+    assert_eq!(count_of(&chats, "ROBIN@example.com"), 4);
+
+    // The other half of the filtered rule, and the half that matters: chat 3 is
+    // a filtered thread with the same handle as chat 1, so it is a merge
+    // candidate and is left out anyway. Three messages, not four.
+    assert_eq!(count_of(&chats, "+13105551234"), 3);
+}
+
+fn count_of(chats: &[serde_json::Value], name: &str) -> i64 {
+    chats
+        .iter()
+        .find(|chat| chat["name"] == serde_json::json!(name))
+        .unwrap_or_else(|| panic!("no conversation named {name}"))["messageCount"]
+        .as_i64()
+        .unwrap()
 }
 
 #[test]
 fn includes_filtered_conversations_when_asked() {
     let chats = names_off_chats(None, true);
-    assert_eq!(chats.len(), 7);
-    assert!(
-        chats
-            .iter()
-            .any(|c| c["isFiltered"] == serde_json::json!(true))
-    );
+    // The row count cannot show this any more, and saying so is the point: seven
+    // threads merge to five conversations here, and the six without `--unknown`
+    // merge to five as well, because the filtered thread joins one that was
+    // already in the list rather than adding a row of its own.
+    assert_eq!(chats.len(), names_off_chats(None, false).len());
+
+    // So the flag is proved by what the merged row contains. Chat 3 is filtered
+    // and shares chat 1's handle: excluded it leaves three messages, included it
+    // makes four. This is the assertion that fails if `--unknown` stops
+    // reaching the listing, and its mirror in the test above is what fails if
+    // filtered content starts arriving unasked.
+    assert_eq!(count_of(&chats, "+13105551234"), 4);
 }
 
 #[test]
