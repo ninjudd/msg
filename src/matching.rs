@@ -48,14 +48,24 @@ pub fn begins_a_word(haystack: &str, needle: &str) -> bool {
 /// worse than the noise the rule removes. Real word segmentation needs a
 /// dictionary this program is not going to carry, so the rule simply steps
 /// aside (`search-boundaries.md §4`).
+///
+/// The arms have to cover every block the sentence above names, which is easier
+/// to get wrong than it looks: halfwidth katakana sits far from the main kana
+/// block, Hangul compatibility jamo falls in the gap between kana and the
+/// Hangul syllables, and the ideographs continue into the supplementary plane.
+/// A character these miss is one the rule is applied to and cannot pass.
 fn is_scriptio_continua(ch: char) -> bool {
     matches!(ch,
-        '\u{3040}'..='\u{30ff}'   // Hiragana and Katakana
-        | '\u{3400}'..='\u{4dbf}' // CJK Unified Ideographs Extension A
-        | '\u{4e00}'..='\u{9fff}' // CJK Unified Ideographs
-        | '\u{f900}'..='\u{faff}' // CJK Compatibility Ideographs
-        | '\u{ac00}'..='\u{d7af}' // Hangul syllables
-        | '\u{1100}'..='\u{11ff}' // Hangul Jamo
+        '\u{1100}'..='\u{11ff}'    // Hangul Jamo
+        | '\u{3040}'..='\u{30ff}'  // Hiragana and Katakana
+        | '\u{3130}'..='\u{318f}'  // Hangul Compatibility Jamo
+        | '\u{3400}'..='\u{4dbf}'  // CJK Unified Ideographs Extension A
+        | '\u{4e00}'..='\u{9fff}'  // CJK Unified Ideographs
+        | '\u{ac00}'..='\u{d7af}'  // Hangul syllables
+        | '\u{f900}'..='\u{faff}'  // CJK Compatibility Ideographs
+        | '\u{ff66}'..='\u{ff9f}'  // Halfwidth Katakana
+        | '\u{20000}'..='\u{2fa1f}' // CJK Extension B onwards, and the
+                                     // compatibility supplement
     )
 }
 
@@ -118,6 +128,19 @@ mod tests {
         assert!(begins_a_word("私は東京に行きます", "東京"));
         assert!(begins_a_word("我住在北京市", "北京"));
         assert!(begins_a_word("서울에서 만나요", "울에"));
+    }
+
+    /// Every block the comment above the carve-out names, including the three
+    /// that sit away from the obvious ranges.
+    #[test]
+    fn the_carve_out_covers_the_blocks_it_claims() {
+        // Halfwidth katakana, which is the one of these that turns up in
+        // ordinary Japanese messages rather than in rare-ideograph territory.
+        assert!(begins_a_word("ｱｲｶﾀｶﾅ", "ｶﾀ"));
+        // Hangul compatibility jamo, between the kana and syllable blocks.
+        assert!(begins_a_word("ㄱㄴㄷㄹ", "ㄴㄷ"));
+        // Ideographs in the supplementary plane.
+        assert!(begins_a_word("\u{20000}\u{20001}\u{20002}", "\u{20001}"));
     }
 
     /// Case folding is the caller's job, and stays the caller's job.

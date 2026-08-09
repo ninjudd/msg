@@ -1854,7 +1854,25 @@ pub fn resolve_conversation(
     // way (§8), so reading and searching cannot disagree about who somebody is.
     // A spec that names no person at all — a room's own name — simply falls
     // through, which is why the error is discarded rather than raised.
-    if !is_rowid && let Ok(person) = resolve_person(db, spec, contacts) {
+    // Unless a room is called exactly this. A room's own name is a label
+    // somebody chose, so typing the whole of it is naming that room as
+    // definitely as a name ever names anything, and the preference below is
+    // about rooms that matched by *membership* rather than by their own name.
+    // Both then stay true: a person beats the rooms they are in
+    // (naming-a-conversation.md §3), and a named room is still reached by its
+    // name (§4). Two exact claims on one string is a real question, so it falls
+    // through to the ambiguity the collapse below reports.
+    let named_room = matches.iter().any(|chat| {
+        chat.is_group
+            && chat
+                .display_name
+                .as_ref()
+                .is_some_and(|name| name.to_lowercase() == spec.to_lowercase())
+    });
+    if !is_rowid
+        && !named_room
+        && let Ok(person) = resolve_person(db, spec, contacts)
+    {
         let theirs = one_to_one_chats(db, &person)?;
         let mine: Vec<Chat> = matches
             .iter()
@@ -3119,6 +3137,37 @@ mod tests {
             let chat = resolve_chat(&db, spec, &contacts).unwrap();
             assert_eq!(chat.rowid, alone, "resolving {spec}");
         }
+    }
+
+    /// A room named exactly after a person is a real question, not a preference.
+    ///
+    /// §3's rule is that rooms someone is *in* do not compete with them. A room
+    /// whose own name is the string typed did not match by membership — it
+    /// matched by the label somebody chose for it — so it is as definite a
+    /// claim as the person's, and answering silently with either would be
+    /// wrong. Without this the person always won and §4's promise that a named
+    /// room is reachable by its name quietly stopped holding.
+    #[test]
+    fn a_room_named_after_a_person_keeps_the_ambiguity() {
+        let db = fixture();
+        let alone = one_to_one(&db, 4, "+16175550147");
+        message_in(&db, alone, 10, 5);
+        db.execute(
+            "UPDATE chat SET display_name = 'Robin Adeyemi' WHERE rowid = 2",
+            [],
+        )
+        .unwrap();
+        let contacts = ContactIndex::for_test([("+16175550147", "source:7", "Robin Adeyemi")]);
+
+        let error = resolve_chat(&db, "Robin Adeyemi", &contacts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 chats match"), "{error}");
+
+        // A fragment is not a claim on the room's name, so the person still
+        // wins — which is the whole point of §3.
+        let chat = resolve_chat(&db, "robin", &contacts).unwrap();
+        assert_eq!(chat.rowid, alone);
     }
 
     /// The room is still reachable, by naming the room rather than a member.

@@ -61,7 +61,8 @@ by changing their call site rather than by writing a second rule.
 ## 3 One name means that person's own conversation
 
 When a name resolves to exactly one *contact*, the answer is that contact's
-direct conversation, whatever else the substring also touched. Groups they are a
+direct conversation, whatever else the substring also touched — with the one
+exception §4 records, a room whose own name is exactly the string typed. Groups they are a
 member of do not compete with it: being in a room is not being the person, which
 is the distinction `sole_person` already draws and the one `resolve_chat`'s
 comment already relies on.
@@ -104,6 +105,13 @@ indistinguishable from a hit when it is right.
 
 **A named group is still reachable by its name.** `msg chat "Ship Room"` does
 not change. Membership naming is for the unnamed rooms, which is most of them.
+
+This collides with §3 when a room is named after somebody you also have a
+conversation with, and the collision is resolved in §3's favour only for rooms
+that matched by *membership*. A room whose own name is exactly what was typed
+made a claim as definite as the person's — somebody chose that label — so the
+two claims are a real question and the command reports it rather than picking.
+A fragment of the room's name is not such a claim, and the person still wins.
 
 ## 5 The sharp edge: a space is an argument separator
 

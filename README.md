@@ -109,7 +109,9 @@ wins over every group they are in, because being in a room is not being the
 person — which is what makes a first name usable, since a first name reaches
 every room its owner is a member of. A group is still reached by its own name,
 or by its rowid, and somebody you only ever share a room with still finds the
-room.
+room. A group named after somebody you also have a conversation with is the one
+case where both claims are equally good, so that is reported as an ambiguity
+rather than decided for you.
 
 What still reports an ambiguity is a question that has an answer. Two
 *different* people who happen to share a name are two people, and what gets
