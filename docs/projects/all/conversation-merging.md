@@ -1,9 +1,13 @@
 # Plan: One person, one conversation
 
-**Status:** Slice one shipped in #30. `msg read <name>` merges every
-conversation with a person, `msg read <rowid>` reads one thread, and
-`ReadReply` carries `merged` at protocol 10. Slice two — merging the `msg chats`
-listing — is not started, and is all that remains.
+**Status:** Slice one shipped in #30. `msg chat <name>` merges every
+conversation with a person, `msg chat <rowid>` reads one thread, and the reply
+carries `merged`. Slice two — merging the `msg chats` listing — is not started,
+and is all that remains.
+
+The command was `msg read` when this was written and `ReadReply` was the reply's
+name; #35 renamed both, and protocol 10 became 12 along the way. The body below
+is left in the vocabulary of its time.
 
 Two of §4's claims were wrong and are corrected in place, both about
 performance rather than behaviour: `chat_id IN (…)` keeps the index and loses
