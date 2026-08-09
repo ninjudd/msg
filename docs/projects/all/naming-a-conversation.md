@@ -1,9 +1,13 @@
 # Plan: Name a conversation by who is in it
 
-**Status:** Not started. Depends on nothing, but overlaps
-`search-boundaries.md` — §2 here is partly fixed for free by the word-start rule
-that plan describes, and §7 of that plan is corrected as a result: the case it
-was waiting for has now been observed.
+**Status:** Slice one implemented. A name resolves through `resolve_person` and
+answers with that person's own conversation; the word-start rule ships with it,
+for names, because §2 turned out to be a prerequisite rather than an overlap.
+Slice two — several names naming a room by its membership — is not started.
+
+`search-boundaries.md §7` is corrected as part of this: the case it was waiting
+for has been observed, and the shared predicate it asked for now exists as
+`matching::begins_a_word`.
 
 **Goal:** Let a bare first name reach that person's conversation, and let
 several names reach the group with exactly those people in it, so
@@ -42,9 +46,17 @@ what a word start is — which `search-boundaries.md §3` already anticipated wh
 it asked for the boundary-aware function to take `&str`, since a contact name
 is one.
 
-**This plan does not depend on that one**, and neither blocks the other. But the
-candidate list shrinks by a quarter for free once the boundary rule lands, and
-every example below is cleaner in a world where it has.
+**It does block this plan, which this section first denied. (CORRECTED)** The
+claim here was that neither plan depends on the other. That is wrong for the
+case this one exists to fix, and wrong in a way that only shows up when you try
+to build it: §3 prefers the person when a name resolves to exactly *one*
+contact, and without the word-start rule the four-letter first name above
+resolves to three. The preference never gets a chance, and slice one on its own
+would have changed nothing for the case that prompted it.
+
+So the rule ships here, for names, as part of slice one. Message bodies remain
+`search-boundaries.md`'s own work — the predicate is shared, so bodies adopt it
+by changing their call site rather than by writing a second rule.
 
 ## 3 One name means that person's own conversation
 
