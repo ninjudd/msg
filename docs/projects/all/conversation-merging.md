@@ -143,6 +143,16 @@ content into a conversation the user considers known. Keep filtered threads out
 of the merge unless `--unknown` is passed, which is what that flag already means
 everywhere else.
 
+**Which cuts both ways, and that is the easy half to miss. (CORRECTED)** The
+leading thread is kept whatever it is, because naming a conversation reaches it
+even when Messages filters it and because dropping it would move the send
+target §7 promises not to move. Filtering only the *rest* around it leaves the
+rule holding exactly when the filtered thread happens to be the older one:
+reverse the activity order and a plain `msg read` merges Unknown Senders content
+into a known conversation. So when the leading thread is filtered and
+`--unknown` was not passed, nothing merges into it at all — which is precisely
+what the command did before merging existed.
+
 **The merged conversation is named for the person, and the send target is named
 separately. (DECIDED, and already true)** Nothing needs building for this, which
 is worth recording so nobody builds it. `msg read` prints `reply.chat.name` —

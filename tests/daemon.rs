@@ -302,10 +302,6 @@ fn search(query: &str, unknown: bool) -> Vec<serde_json::Value> {
     .clone()
 }
 
-/// The two lines that join `with_context` to the wire, which nothing else
-/// reaches: the CLI tests drive the direct `--db` path and the `db.rs` tests
-/// drive the windowing in isolation.
-///
 /// A person's two threads arrive as one transcript, over the wire.
 ///
 /// The bug this pins is the silent one protocol 10 exists to prevent. A daemon
@@ -362,6 +358,10 @@ fn a_merged_conversation_survives_the_wire() {
     assert!(one.get("merged").is_none(), "{one}");
 }
 
+/// The two lines that join `with_context` to the wire, which nothing else
+/// reaches: the CLI tests drive the direct `--db` path and the `db.rs` tests
+/// drive the windowing in isolation.
+///
 /// This is the path an installed `msg` actually takes, and the bug it would
 /// hide is the silent one protocol 9 exists to prevent — a daemon answering
 /// with bare hits while the version check passes looks exactly like a search
