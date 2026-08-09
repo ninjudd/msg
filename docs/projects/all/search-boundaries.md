@@ -1,13 +1,13 @@
 # Plan: Stop matching in the middle of a word
 
-**Status:** Built, open as #40, at protocol 15. The predicate
-shipped first for names; the body half now runs it in the decoded filter,
-placed as §3 asked, with §5 decided as the default and no flag. §6's cost is
-measured and real — the numbers are at the end of that section, along with the
-remedy that was tried, measured useless, and removed. The slow tail is
-recorded in [later](../later.md); the client timeout it can now reach answers
-with a sentence instead of a raw errno, on this branch, because the branch is
-what made that path reachable.
+**Status:** Shipped 2026-08-09 — names first, then the body half in #40 at
+protocol 15. The rule runs in the decoded filter, placed as §3 asked, reading
+the boundary from the unfolded text; §5 is decided as the default with no
+flag. §6's cost is measured and real — the numbers are at the end of that
+section, along with the remedy that was tried, measured useless, and removed.
+The slow tail is recorded in [later](../later.md); the client timeout it can
+now reach answers with a sentence instead of a raw errno, shipped in the same
+pull request because that is what made the path reachable.
 
 **Goal:** Make a search needle match at the start of a word, so a short one
 stops finding itself inside unrelated longer words.
