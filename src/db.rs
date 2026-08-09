@@ -1480,6 +1480,18 @@ fn chats_by_id(db: &Connection, ids: &[i64], contacts: &ContactIndex) -> Result<
     Ok(chats)
 }
 
+/// Threads matching a query, newest first.
+///
+/// **A query is matched in Rust, never in SQL.** There used to be two
+/// implementations here, chosen on whether a contact index had loaded: with one,
+/// the rows came back unfiltered and were matched in Rust; without one, SQL
+/// carried `displayName LIKE ?` and the Rust rule never ran. That is the second
+/// definition `naming-a-conversation.md §8` argues against, and the two
+/// disagreed — `LIKE` finds the middle of a word where the Rust rule wants a
+/// word start, so `oom` reached a room called Ship Room down one branch and not
+/// the other. An empty index is not the exotic case it looks: `--no-names`
+/// makes one, and so does any machine where Contacts cannot be read, which
+/// `server.rs` expects of the daemon's first load.
 pub fn fetch_chats(
     db: &Connection,
     query: Option<&str>,
@@ -1487,49 +1499,30 @@ pub fn fetch_chats(
     contacts: &ContactIndex,
     include_filtered: bool,
 ) -> Result<Vec<Chat>> {
-    let mut params: Vec<Value> = Vec::new();
-    let mut conditions: Vec<String> = if include_filtered {
-        Vec::new()
+    let where_clause = if include_filtered {
+        ""
     } else {
-        vec!["isFiltered = 0".into()]
+        "WHERE isFiltered = 0"
     };
-
-    // Contact names live in the Contacts database, so a query that might match
-    // one is filtered after the rows are named rather than in SQL.
-    let filter_by_name = query.is_some() && !contacts.is_empty();
-    if let Some(query) = query
-        && !filter_by_name
-    {
-        conditions.push("(displayName LIKE ? OR chatIdentifier LIKE ? OR handles LIKE ?)".into());
-        for _ in 0..3 {
-            params.push(format!("%{query}%").into());
-        }
-    }
-
-    let where_clause = if conditions.is_empty() {
-        String::new()
+    // Matching in Rust means SQL cannot narrow, so a query reads a window of the
+    // newest rows instead. The listing does not come through here — it has no
+    // budget at all, see `scan_all_chats` — and the resolver wants the most
+    // recently active, which is the front of the window.
+    let scan = if query.is_some() {
+        NAME_SEARCH_SCAN
     } else {
-        format!("WHERE {}", conditions.join(" AND "))
+        limit
     };
-    params.push(
-        if filter_by_name {
-            NAME_SEARCH_SCAN
-        } else {
-            limit
-        }
-        .into(),
-    );
-
     let sql = format!("{CHATS_SQL} {where_clause} ORDER BY lastDate DESC LIMIT ?");
     let mut statement = db.prepare(&sql)?;
-    let mut rows = statement.query(params_from_iter(params))?;
+    let mut rows = statement.query([scan])?;
 
     let mut chats = Vec::new();
     while let Some(row) = rows.next()? {
         chats.push(chat_from_row(row, contacts));
     }
 
-    let Some(query) = query.filter(|_| filter_by_name) else {
+    let Some(query) = query else {
         return Ok(chats);
     };
     retain_matching(&mut chats, query, contacts);
@@ -5052,10 +5045,14 @@ mod tests {
     ///
     /// It did not before this: with no contact index there was nothing to match
     /// in Rust, so the query went to SQL as `displayName LIKE '%q%'` and found
-    /// the middle of a word. Moving the filter above the merge moved it off SQL
-    /// for this case too, which settles the inconsistency in favour of the rule
-    /// `naming-a-conversation.md §2` decided — the named path had already been
-    /// matching from a word start, and only `--no-names` disagreed.
+    /// the middle of a word. The rule is now the one
+    /// `naming-a-conversation.md §2` decided, on every path — which took
+    /// deleting the SQL branch rather than routing around it. Moving the
+    /// listing off it first only moved the disagreement: the listing stopped
+    /// finding `hip` and the resolver went on finding it, so the index and the
+    /// thing it indexes contradicted each other, which is §5's own defect.
+    /// `the_listing_and_the_resolver_match_alike_without_contacts` is what pins
+    /// the two together; this pins which rule they landed on.
     ///
     /// An address is unchanged and still matches anywhere, because a fragment of
     /// a phone number is how anyone types part of one.
@@ -5074,6 +5071,32 @@ mod tests {
         assert!(!found("hip"), "inside a word, which SQL LIKE used to find");
         // The same conversation by an address, which is a substring match.
         assert!(found("5551234"), "the middle of a member's number");
+    }
+
+    /// The index and the thing it indexes agree about what a query matches.
+    ///
+    /// With no contact index the query used to go to SQL as a `LIKE`, so the
+    /// listing and the resolver ran different rules: `oom` listed nothing and
+    /// opened Ship Room. That is §5's defect moved rather than removed, and it
+    /// arrives without a flag on any machine where Contacts cannot be read.
+    #[test]
+    fn the_listing_and_the_resolver_match_alike_without_contacts() {
+        let db = fixture();
+        let empty = ContactIndex::empty();
+        // Each of these names at most one conversation. A spec matching several
+        // is not a disagreement — the listing shows them all and the resolver
+        // reports the ambiguity, which is what both are supposed to do.
+        for spec in ["Ship", "room", "oom", "hip", "someone@example"] {
+            let listed = fetch_conversations(&db, Some(spec), 30, &empty, true)
+                .unwrap()
+                .iter()
+                .any(|chat| chat.rowid == 2);
+            let resolved = resolve_chat(&db, spec, &empty).is_ok_and(|chat| chat.rowid == 2);
+            assert_eq!(
+                listed, resolved,
+                "`{spec}` reaches chat 2 down one path only"
+            );
+        }
     }
 
     /// A conversation with no messages still appears, with no date and a count
