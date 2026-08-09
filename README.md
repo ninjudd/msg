@@ -161,6 +161,11 @@ msg chat dana                  # everything Dana said, at any of her addresses
 msg chat 42                    # only the conversation with rowid 42
 ```
 
+An address sits across the two: when a person's threads fold together, the
+address you typed keeps its own thread at the head of the answer — and the
+leading thread is where a send goes, so the address is how you choose the
+route.
+
 The rowid is the way out when that is not what you want. `msg chats` merges on
 the same rule, so it lists one row per person rather than one per thread, and
 that row carries their total message count and the rowid a send would go to —
@@ -357,11 +362,13 @@ would send to Dana Reyes (dana@example.com): on my way
 ```
 
 Somebody you reach at a phone number and an email address has two
-conversations that display the same name, and `msg` picks the one last active.
-The address is the only thing that distinguishes them, and the routes are not
-interchangeable — one of them may be an SMS fallback, and the most recent is not
-always the one that gets read. A dry run that printed only the name would be
-identical in both cases, which would make it useless as the check it is for.
+conversations that display the same name, and a *name* picks the one last
+active. An *address* pins it: the typed address's own thread leads, so the
+send goes by that route whatever spoke last. The address is the only thing
+that distinguishes them, and the routes are not interchangeable — one of them
+may be an SMS fallback, and the most recent is not always the one that gets
+read. A dry run that printed only the name would be identical in both cases,
+which would make it useless as the check it is for.
 Conversations with a name of their own are named by it, since a room is not
 ambiguous the way a person is.
 

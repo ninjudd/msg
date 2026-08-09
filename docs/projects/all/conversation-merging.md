@@ -260,6 +260,14 @@ explicitly because "merge their conversations" sounds like it should also mean
 "and pick the address for me", and the existing answer to that is already the
 one we want — the merge changes what is *shown*, never where a message goes.
 
+An address is how you choose where it goes, and slice two had to defend that
+rather than restate it: once the reader can answer an address with the person's
+folded threads, the typed address's own thread stays at the head of the answer,
+and the leading thread is the send target. So the rule §5 states in two halves
+has a third case sitting across them — a name means the person, a rowid means
+the thread, and an address means the person to *read* and its own thread to
+*send to*.
+
 ## 8 What the listing shows
 
 One row per person, with the combined count and the latest activity. The rowid
