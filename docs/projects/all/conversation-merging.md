@@ -12,10 +12,13 @@ because the aggregate `CHATS_SQL` joins against was never correlated and always
 ran in full. And the query is matched after the merge rather than before, so a
 search still reaches someone by an address their newest thread does not use.
 
-One thing it surfaced and did not settle: the listing no longer shows the rowid
+Two things it surfaced and did not settle. The listing no longer shows the rowid
 of a thread that is not the leading one, and §5 promised the listing as where
-rowids come from. They are reachable in `merged` from `msg chat <name> --json`.
-Whether the listing should carry them too is open.
+rowids come from; they are reachable in `merged` from `msg chat <name> --json`,
+and whether the listing should carry them too is open. And the reader turns out
+to bound what it searches where the listing now does not, so four people have a
+second thread the listing merges and `msg chat` misses — older than this slice,
+made visible by it, and written up as `resolver-windows.md`.
 
 The command was `msg read` when this was written and `ReadReply` was the reply's
 name; #35 renamed both, and protocol 10 became 13 by way of 12. The body below
