@@ -153,7 +153,7 @@ the plain substring test is correct.
 *Rejected:* applying the rule uniformly, which silently breaks emoji and
 punctuation searches for no benefit.
 
-**Scripts written without spaces need a carve-out. (DECIDED, unimplemented)**
+**Scripts written without spaces need a carve-out. (DECIDED)**
 Han, Hiragana, Katakana, and Hangul characters are alphanumeric, and text in
 those scripts is written without spaces between words. The rule as stated would
 therefore reject nearly every match in a Chinese or Japanese message — a
