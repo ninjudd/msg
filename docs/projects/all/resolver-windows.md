@@ -1,67 +1,53 @@
-# Plan: The reader bounds what it searches and the listing does not
+# Plan: Resolve the person before matching chat rows
 
-**Status:** Not started. Found while building `conversation-merging.md` slice
-two, which is what made it visible rather than what caused it. Both bounds
-predate that branch.
+**Status:** The half that bit is fixed, on `merge-the-listing` (#36), pinned by
+`rooms_cannot_crowd_a_persons_own_thread_out_of_the_answer`. What remains is
+latent: it cannot bite below 5,000 chats, and this database holds 1,165.
 
-**Goal:** Make `msg chat <name>` reach the same conversations `msg chats` shows,
-so a name that is listed can be opened and opens all of it.
+## 1 The bug, by example
 
-## 1 Two bounds, one shape
+Robin has two threads: a phone thread, texted yesterday, and an email thread
+last used in 2019. Robin is also in 84 unnamed rooms, and an unnamed room
+renders as its members' names, so every one of those matches "robin" too.
 
-`fetch_conversations` reads every chat, because merging means a count of threads
-is not a count of conversations until the merge has run. The reader still reads
-a window. There are two:
+`msg chat robin` used to start from the chat rows the name matches — 86 here —
+keep only the newest 50, and then keep the person's own threads *out of that
+window*. The rooms are all more recently active than a thread last used in
+2019, so they filled the window, the email thread fell outside it, and the
+reader answered with the phone thread alone. Nothing said so: the transcript
+was silently missing every email message, and once the listing merged the two
+threads into one row, the email thread's rowid was printed nowhere — not in
+`msg chats`, not in `merged` — so there was no way left to reach it. Four
+people on a real database of 1,165 chats were in exactly Robin's shape, with
+names matching 87–112 chats each.
 
-- **`CHAT_MATCH_SCAN`, 50.** `resolve_conversation` matches chat rows by name and
-  keeps the newest 50 before intersecting with the person's own threads.
-- **`NAME_SEARCH_SCAN`, 5,000.** `fetch_chats` reads that many rows before
-  matching a query in Rust.
+## 2 The fix
 
-Neither is new. What is new is that the listing has no equivalent, so where the
-two used to be wrong together they are now wrong apart — and a conversation that
-is listed but cannot be opened is worse than one missing from both, because the
-listing is where rowids come from.
+The right order is the obvious one: resolve the name to a person, gather every
+address their Contacts record has, find the chats with each address, and answer
+with all of them. `resolve_person` and `one_to_one_chats` already did the first
+three; the defect was one intersection filtering their complete answer through
+the windowed name-match. It is deleted — once a person resolves, their threads
+are the answer, and how many rooms they are in cannot change it.
 
-## 2 The 50 is the one that bites today
+## 3 What remains, and why it can wait
 
-Measured on a real database of 1,165 chats. Four people have two threads each
-that `msg chats` merges and `msg chat <name>` does not, and the cause is not
-ambiguity: the name resolves to exactly one person, by §8's rule that an exact
-match breaks a tie among people sharing a first name.
+The resolver still *enters* through the chat-row match: `fetch_chats` reads the
+newest `NAME_SEARCH_SCAN` (5,000) rows before matching, and a spec that matches
+nothing inside that window errors before the person lookup ever runs. Past
+5,000 chats, someone whose every thread and room has gone quiet falls out of
+reach. Demonstrated on a fixture, impossible on this database.
 
-It is the intersection that loses the thread. Those names match 87, 110, 112 and
-71 chats, and **84 of the 87 are groups that person is in**. The window keeps the
-50 most recent of those, the person's own older low-traffic thread falls outside
-it, and `matches ∩ theirs` never sees it. So the reader answers with one thread
-and no indication that it is half a conversation — which is the defect
-`conversation-merging.md` §5 exists to remove, surviving in the read path.
+The full fix is the order this plan is named for: resolve the person first, and
+use the chat-row match only for what is not a person — a rowid, a room named
+outright, rooms found by membership, and the ambiguity error. The care it needs
+is precedence: a room named exactly the spec currently stands equal to a person
+of that name (`naming-a-conversation.md` §3 and §4 both hold), and reordering
+must not let the person path swallow that case.
 
-The intersection is the wrong place for a window in any case. It is bounding the
-candidate *chat rows* when what the answer needs is the *person's* threads, and
-`one_to_one_chats` already returns those directly without a limit.
+## 4 Not this
 
-## 3 The 5,000 is latent
-
-Past 5,000 conversations a name reaches the listing and not the reader. Not
-reproducible on this database; demonstrated on a fixture. `chats_by_id`'s comment
-records the same trap on the same table and is the precedent for not trusting a
-generous number.
-
-## 4 Open
-
-**What replaces the 50?** Dropping the truncation makes the reader read the whole
-chat table on every `msg chat <name>`, which measured at the same 0.11s the
-listing already pays. It also widens the ambiguity error from "at least 50 chats
-match" to the true count, which is a better message and a changed one.
-
-**Does the intersection need `matches` at all?** If the person resolves, their
-threads are `one_to_one_chats`, and filtering those by which chat rows happened
-to match the spec is what drops the thread. Removing the intersection may be the
-whole fix, and is smaller than removing either window.
-
-## 5 Not this
-
-- **Not the listing.** It merges correctly; this is the reader disagreeing.
+- **Not the listing.** It reads every row and merges correctly; both halves of
+  this are the reader's.
 - **Not ambiguity handling.** A name that names several people errors, and
-  should. These names name one.
+  should. The names here name one person each.

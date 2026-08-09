@@ -2161,14 +2161,22 @@ pub fn resolve_conversation(
         && !named_room
         && let Ok(person) = resolve_person(db, spec, contacts)
     {
+        // Their threads, not the ones that also happened to match the spec.
+        //
+        // This used to intersect with `matches`, which quietly bounded the
+        // answer by `CHAT_MATCH_SCAN`: a name matching 87 chats keeps the newest
+        // 50, and where 84 of those are rooms the person is in, their own older
+        // thread falls outside and the reader answered with half a conversation.
+        // `one_to_one_chats` already returns exactly the threads §3 is asking
+        // for, so the intersection was never adding anything but the bound.
+        //
+        // Named rather than scanned, for the reason `chats_by_id` exists.
         let theirs = one_to_one_chats(db, &person)?;
-        let mine: Vec<Chat> = matches
-            .iter()
-            .filter(|chat| theirs.contains(&chat.rowid))
-            .cloned()
-            .collect();
-        if !mine.is_empty() {
-            return Ok(one_bucket(mine, unknown));
+        if !theirs.is_empty() {
+            let mine = chats_by_id(db, &theirs, contacts)?;
+            if !mine.is_empty() {
+                return Ok(one_bucket(mine, unknown));
+            }
         }
     }
 
@@ -3226,6 +3234,48 @@ mod tests {
         let messages = fetch_conversation(&db, &threads, None, 50, false, &contacts).unwrap();
         let ids: Vec<i64> = messages.iter().map(|message| message.rowid).collect();
         assert_eq!(ids, [10]);
+    }
+
+    /// The rooms a person is in cannot crowd their own thread out of the answer.
+    ///
+    /// The name matches both of Robin's threads and every room Robin is in,
+    /// and the resolver keeps only the newest `CHAT_MATCH_SCAN` matches. With
+    /// more rooms than the window holds, all more recently active than the
+    /// phone thread, the phone thread falls outside it. The answer used to be
+    /// intersected with that window, so the reader returned half a
+    /// conversation — the defect resolver-windows.md measured, reduced to a
+    /// fixture. A resolved person's threads are looked up directly now, so how
+    /// many rooms they share cannot change what the reader answers.
+    #[test]
+    fn rooms_cannot_crowd_a_persons_own_thread_out_of_the_answer() {
+        let db = fixture();
+        let phone = one_to_one(&db, 4, "+16175550147");
+        let email = one_to_one(&db, 5, "robin@example.com");
+        message_in(&db, phone, 10, 5);
+        message_in(&db, email, 11, 90);
+        for i in 0..CHAT_MATCH_SCAN + 5 {
+            let room = 200 + i;
+            db.execute(
+                "INSERT INTO chat (rowid, guid, chat_identifier, display_name, is_filtered)
+                 VALUES (?, ?, ?, '', 0)",
+                rusqlite::params![room, format!("iMessage;+;room{i}"), format!("room{i}")],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, 1), (?, 4)",
+                rusqlite::params![room, room],
+            )
+            .unwrap();
+            message_in(&db, room, 1000 + i, 10 + i);
+        }
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ]);
+
+        let threads = resolve_conversation(&db, "Robin", &contacts, false).unwrap();
+        let rowids: Vec<i64> = threads.iter().map(|chat| chat.rowid).collect();
+        assert_eq!(rowids, [email, phone], "both threads, however many rooms");
     }
 
     /// Unknown Senders content does not arrive inside a known conversation.

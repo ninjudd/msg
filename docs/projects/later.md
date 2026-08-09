@@ -17,5 +17,10 @@ See [README](README.md) for how these lists work.
   transcript, which is deliberately not being built; showing every message in a
   thread given any message in it. Needs message ids to be visible first, which
   is the same problem attachments solved by printing theirs.
+- [Resolve the person before matching chat rows](all/resolver-windows.md) — §3.
+  The remaining latent half: the resolver enters through a scan of the newest
+  5,000 chat rows, so past 5,000 chats a long-quiet person falls out of reach
+  before the person lookup runs. Cannot bite below 5,000; this database holds
+  1,165.
 - Export a conversation to a file, once there is a second consumer that wants
   more shape than `--json` piped through `jq`.
