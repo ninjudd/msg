@@ -232,6 +232,15 @@ fn status_for(error: &Error) -> ExitCode {
     }
 }
 
+/// [`styling_allowed`] against this process's actual environment and stdout.
+fn styled_now() -> bool {
+    msg::format::styling_allowed(
+        std::env::var_os("NO_COLOR").as_deref(),
+        std::env::var_os("TERM").as_deref(),
+        std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    )
+}
+
 fn print(text: &str) {
     print!("{text}");
     std::io::stdout().flush().ok();
@@ -316,7 +325,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                                 (false, false) => Trail::Symbols,
                             },
                             day_headers: true,
-                            bold_headers: std::io::IsTerminal::is_terminal(&std::io::stdout(),),
+                            styled: styled_now(),
                         },
                     )
                 )
@@ -364,7 +373,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                         show_chat: true,
                         trail: if *who { Trail::Named } else { Trail::Symbols },
                         day_headers: false,
-                        bold_headers: false,
+                        styled: styled_now(),
                     },
                 )
             });
@@ -389,7 +398,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                     Trail::Symbols
                 },
                 day_headers: true,
-                bold_headers: std::io::IsTerminal::is_terminal(&std::io::stdout()),
+                styled: styled_now(),
             });
             source.watch(
                 &WatchQuery {

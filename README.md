@@ -153,8 +153,8 @@ msg chat dana --tapbacks       # reactions as their own rows, not trailing
 `2026-01-15`, or a full timestamp. A bare date means midnight UTC.
 
 A transcript carries a bare date line whenever the day changes — bold, when
-writing to a terminal — and each message shows only its time, the same shape
-Messages uses. `watch` does the
+writing to a terminal, honouring `NO_COLOR` and `TERM=dumb` — and each message
+shows only its time, the same shape Messages uses. `watch` does the
 same across its stream. `search` keeps its stamps as they always were — a date
 on every line except today's, which shows only a time — since its results jump
 between days by construction.

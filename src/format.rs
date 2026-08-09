@@ -175,11 +175,32 @@ pub struct Render {
     /// its stamps as they were — `format_timestamp`, a date except on
     /// today's — because its results jump between days by construction.
     pub day_headers: bool,
-    /// Wrap each date header in ANSI bold. Callers set this exactly when
-    /// stdout is a terminal, so a pipe still sees plain text and grep still
-    /// works — the only control codes this program writes, and only where a
-    /// human is looking.
-    pub bold_headers: bool,
+    /// Wrap each date header in ANSI bold. Callers set this through
+    /// [`styling_allowed`], so a pipe still sees plain text, grep still works,
+    /// and a terminal that asked for plain gets it — the only control codes
+    /// this program writes, and only where a human is looking and has not
+    /// said no.
+    pub styled: bool,
+}
+
+/// Whether bold may be written: someone is looking, and nobody asked for
+/// plain. `NO_COLOR` present and non-empty refuses styling (no-color.org, and
+/// its constituency is real — screen readers, terminals that render SGR
+/// badly, a session teed to a file); `TERM=dumb` is the older form of the
+/// same request. Pure in its inputs so the rule is testable without touching
+/// the process environment, which parallel tests cannot safely do.
+pub fn styling_allowed(
+    no_color: Option<&std::ffi::OsStr>,
+    term: Option<&std::ffi::OsStr>,
+    is_tty: bool,
+) -> bool {
+    if no_color.is_some_and(|value| !value.is_empty()) {
+        return false;
+    }
+    if term.is_some_and(|value| value == "dumb") {
+        return false;
+    }
+    is_tty
 }
 
 /// Rendering with the day held between calls, so a stream that prints one
@@ -188,6 +209,24 @@ pub struct Render {
 pub struct Renderer {
     options: Render,
     last_day: Option<(i32, u32, u32)>,
+}
+
+/// One message, one line: a newline inside a body becomes a visible `↵`
+/// instead of breaking the transcript's line-per-message shape, which the
+/// context gutter, `-C` line counts, and grep over a transcript all rely on.
+/// Gray when styling is on, so the mark reads as structure rather than as
+/// text the sender typed; plain otherwise, and a pipe wants the one-line
+/// property most and the escape-free property just as much. A trailing
+/// newline run is trimmed rather than drawn — a mark that says only "the
+/// body ended" marks nothing.
+fn one_line(text: &str, styled: bool) -> String {
+    let unified = text.replace("\r\n", "\n").replace('\r', "\n");
+    let trimmed = unified.trim_end_matches('\n');
+    if styled {
+        trimmed.replace('\n', "\x1b[90m↵\x1b[0m")
+    } else {
+        trimmed.replace('\n', "↵")
+    }
 }
 
 pub fn render_messages(messages: &[Message], options: Render) -> String {
@@ -207,7 +246,7 @@ impl Renderer {
             show_chat,
             trail,
             day_headers,
-            bold_headers,
+            styled,
         } = self.options;
         if messages.is_empty() {
             return "no messages found\n".to_string();
@@ -230,9 +269,10 @@ impl Renderer {
             }
             // Two columns before the timestamp rather than colour, so a hit
             // is still marked after the output has been piped, pasted, or
-            // grepped again. The bold on a date header is the one exception
-            // this program makes, and only when stdout is a terminal — piped
-            // output still carries no control codes at all.
+            // grepped again. The bold on a date header and the gray on a
+            // folded `↵` are the styling exceptions this program makes, and
+            // only when a terminal is looking and not refusing — piped output
+            // still carries no control codes at all.
             let gutter = match (in_context, message.matched) {
                 (false, _) => "",
                 (true, true) => "> ",
@@ -248,7 +288,7 @@ impl Renderer {
                     } else {
                         date.format("%b %-d, %Y").to_string()
                     };
-                    if bold_headers {
+                    if styled {
                         out.push_str(&format!("\x1b[1m{header}\x1b[0m\n"));
                     } else {
                         out.push_str(&format!("{header}\n"));
@@ -268,12 +308,12 @@ impl Renderer {
                 (true, Some(name)) => format!("[{name}] "),
                 _ => String::new(),
             };
-            let body = message.body.as_deref().unwrap_or("(no text)");
+            let body = one_line(message.body.as_deref().unwrap_or("(no text)"), styled);
             // What is being answered goes above the answer, indented to the width of
             // a timestamp, so a reply reads as a reply without the transcript
             // stopping being chronological.
             if let Some(answering) = &message.reply_to {
-                let quoted = answering.excerpt.as_deref().unwrap_or("(no text)");
+                let quoted = one_line(answering.excerpt.as_deref().unwrap_or("(no text)"), styled);
                 out.push_str(&format!(
                     "{gutter}{:width$}  ↳ replying to {}: {quoted}\n",
                     "",
@@ -481,7 +521,7 @@ mod tests {
                     show_chat: false,
                     trail: Trail::Symbols,
                     day_headers: false,
-                    bold_headers: false
+                    styled: false
                 }
             ),
             "no messages found\n"
@@ -540,7 +580,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Symbols,
                 day_headers: false,
-                bold_headers: false,
+                styled: false,
             },
         );
 
@@ -564,7 +604,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Symbols,
                 day_headers: false,
-                bold_headers: false,
+                styled: false,
             },
         );
         assert_eq!(rendered, "Jan 15, 9:30 AM  Dana Reyes: hello\n");
@@ -586,7 +626,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Symbols,
                 day_headers: false,
-                bold_headers: false,
+                styled: false,
             },
         );
 
@@ -599,6 +639,33 @@ mod tests {
         // Indented to where the sender starts, not to column zero.
         assert!(lines[1].starts_with("       "), "{out}");
         assert!(lines[2].contains("me: yes, that works"), "{out}");
+    }
+
+    /// Someone looking is necessary and not sufficient: NO_COLOR set and
+    /// non-empty refuses the bold, TERM=dumb refuses it the older way, and a
+    /// pipe never gets it whatever the environment says.
+    #[test]
+    fn styling_needs_a_terminal_and_no_refusal() {
+        use std::ffi::OsStr;
+        assert!(styling_allowed(None, None, true));
+        assert!(!styling_allowed(None, None, false), "a pipe");
+        assert!(
+            !styling_allowed(Some(OsStr::new("1")), None, true),
+            "NO_COLOR"
+        );
+        assert!(
+            styling_allowed(Some(OsStr::new("")), None, true),
+            "empty NO_COLOR does not count, per no-color.org"
+        );
+        assert!(
+            !styling_allowed(None, Some(OsStr::new("dumb")), true),
+            "TERM=dumb"
+        );
+        assert!(styling_allowed(
+            None,
+            Some(OsStr::new("xterm-256color")),
+            true
+        ));
     }
 
     /// A date header when the day changes and a bare time on every line —
@@ -619,7 +686,7 @@ mod tests {
             show_chat: false,
             trail: Trail::Symbols,
             day_headers: true,
-            bold_headers: false,
+            styled: false,
         };
         let out = render_messages(&[first.clone(), second.clone()], options);
         let lines: Vec<&str> = out.lines().collect();
@@ -643,7 +710,7 @@ mod tests {
         let bold = render_messages(
             &[first.clone()],
             Render {
-                bold_headers: true,
+                styled: true,
                 ..options
             },
         );
@@ -697,7 +764,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Named,
                 day_headers: false,
-                bold_headers: false,
+                styled: false,
             },
         );
         assert!(named.contains("green ← ❤️  Sam Oyelaran, 👍 me"), "{named}");
@@ -707,7 +774,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Symbols,
                 day_headers: false,
-                bold_headers: false,
+                styled: false,
             },
         );
         assert!(bare.contains("green ← ❤️ 👍"), "{bare}");
@@ -724,7 +791,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Symbols,
                 day_headers: false,
-                bold_headers: false,
+                styled: false,
             },
         );
         assert_eq!(out.lines().count(), 1, "{out}");
@@ -745,7 +812,7 @@ mod tests {
                 show_chat: false,
                 trail: Trail::Symbols,
                 day_headers: false,
-                bold_headers: false,
+                styled: false,
             },
         );
         assert!(out.contains("↳ replying to Dana Reyes: (no text)"), "{out}");
