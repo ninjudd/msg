@@ -11,6 +11,7 @@ pub mod contacts;
 pub mod daemon;
 pub mod db;
 pub mod format;
+pub mod matching;
 pub mod source;
 
 /// One version string, shared by the CLI, the daemon, and their handshake.

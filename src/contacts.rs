@@ -50,10 +50,16 @@ impl Contact {
     /// Whether this contact answers to `needle`: part of the name they are shown
     /// as, or part of the one they are filed under.
     ///
+    /// Part, but from the start of a word. A first name inside somebody else's
+    /// surname is not a match — `ana` reaches Ana Duarte and not Dana Reyes —
+    /// which is `naming-a-conversation.md §2`, found by a first name resolving
+    /// to three different people.
+    ///
     /// `needle` must already be lowercased, since one query is matched against
     /// every contact rather than the other way round.
     pub fn answers_to(&self, needle: &str) -> bool {
-        self.names().any(|name| name.contains(needle))
+        self.names()
+            .any(|name| crate::matching::begins_a_word(&name, needle))
     }
 
     /// Whether one of those names is exactly `needle`, for breaking a tie

@@ -1502,13 +1502,22 @@ pub fn fetch_chats(
         return Ok(chats);
     };
     let needle = query.to_lowercase();
-    let matches =
+    // A name matches from the start of a word, an address matches anywhere.
+    //
+    // The split is the same one `resolve_person` draws, and it has to be: `ana`
+    // must not reach Dana Reyes, while a partial number has to keep reaching the
+    // address it is part of, since the middle of a phone number is exactly how
+    // anyone types a fragment of one (naming-a-conversation.md §2, §8).
+    let named = |value: Option<&String>| {
+        value.is_some_and(|value| crate::matching::begins_a_word(&value.to_lowercase(), &needle))
+    };
+    let addressed =
         |value: Option<&String>| value.is_some_and(|value| value.to_lowercase().contains(&needle));
     chats.retain(|chat| {
-        matches(Some(&chat.name))
-            || matches(chat.display_name.as_ref())
-            || matches(chat.handles.as_ref())
-            || matches(Some(&chat.identifier))
+        named(Some(&chat.name))
+            || named(chat.display_name.as_ref())
+            || addressed(chat.handles.as_ref())
+            || addressed(Some(&chat.identifier))
             // A displaced filed name is shown nowhere, so it is searched
             // separately — but only where the name shown in its place is
             // searched too. A conversation with a display name of its own is
@@ -1764,6 +1773,27 @@ fn describe<'a>(people: impl Iterator<Item = &'a Person> + Clone) -> String {
 /// "at least" instead of naming a number it cannot stand behind.
 const CHAT_MATCH_SCAN: i64 = 50;
 
+/// Keep a merged conversation inside one filtered bucket.
+///
+/// The leading thread is kept whatever it is: naming a conversation reaches it
+/// even when Messages filters it, which predates merging, and dropping it would
+/// move the send target `conversation-merging.md §7` promises not to move. But
+/// nothing merges into a filtered head, so whether Unknown Senders content
+/// appears never turns on which thread happens to be more recently active.
+fn one_bucket(mut threads: Vec<Chat>, unknown: bool) -> Vec<Chat> {
+    let leading = threads.remove(0);
+    if !unknown && leading.is_filtered {
+        return vec![leading];
+    }
+    let mut conversation = vec![leading];
+    conversation.extend(
+        threads
+            .into_iter()
+            .filter(|chat| unknown || !chat.is_filtered),
+    );
+    conversation
+}
+
 /// Find a single chat by rowid, identifier, or name substring.
 ///
 /// The one a message would be sent to when a person has several, which is the
@@ -1813,6 +1843,45 @@ pub fn resolve_conversation(
     }
     if matches.len() == 1 {
         return Ok(matches);
+    }
+
+    // A name names a person, and a person's conversation is their own
+    // (naming-a-conversation.md §3). Rooms they are in do not compete with it:
+    // being in a room is not being the person, which is the distinction
+    // `sole_person` already draws.
+    //
+    // Resolved by the one primitive rather than by matching chat rows a second
+    // way (§8), so reading and searching cannot disagree about who somebody is.
+    // A spec that names no person at all — a room's own name — simply falls
+    // through, which is why the error is discarded rather than raised.
+    // Unless a room is called exactly this. A room's own name is a label
+    // somebody chose, so typing the whole of it is naming that room as
+    // definitely as a name ever names anything, and the preference below is
+    // about rooms that matched by *membership* rather than by their own name.
+    // Both then stay true: a person beats the rooms they are in
+    // (naming-a-conversation.md §3), and a named room is still reached by its
+    // name (§4). Two exact claims on one string is a real question, so it falls
+    // through to the ambiguity the collapse below reports.
+    let named_room = matches.iter().any(|chat| {
+        chat.is_group
+            && chat
+                .display_name
+                .as_ref()
+                .is_some_and(|name| name.to_lowercase() == spec.to_lowercase())
+    });
+    if !is_rowid
+        && !named_room
+        && let Ok(person) = resolve_person(db, spec, contacts)
+    {
+        let theirs = one_to_one_chats(db, &person)?;
+        let mine: Vec<Chat> = matches
+            .iter()
+            .filter(|chat| theirs.contains(&chat.rowid))
+            .cloned()
+            .collect();
+        if !mine.is_empty() {
+            return Ok(one_bucket(mine, unknown));
+        }
     }
 
     let lowered = spec.to_lowercase();
@@ -1875,24 +1944,7 @@ pub fn resolve_conversation(
         // filtered thread must not pull the known one in behind it any more
         // than the reverse. So the rest join only if they are filtered the same
         // way, unless `unknown` says the distinction is not wanted.
-        let leading = narrowed[0].clone();
-        if !unknown && leading.is_filtered {
-            // Naming a conversation reaches it even when Messages filters it,
-            // which predates merging and is why the leading thread is kept
-            // whatever it is — dropping it would move the send target that §7
-            // promises not to move. But nothing merges into it, so whether
-            // Unknown Senders content appears never turns on which thread
-            // happens to be the more recently active.
-            return Ok(vec![leading]);
-        }
-        let mut conversation = vec![leading];
-        conversation.extend(
-            narrowed[1..]
-                .iter()
-                .filter(|chat| unknown || !chat.is_filtered)
-                .cloned(),
-        );
-        return Ok(conversation);
+        return Ok(one_bucket(narrowed.clone(), unknown));
     }
 
     // Say how many are not being shown, rather than printing six and reporting
@@ -3026,13 +3078,49 @@ mod tests {
         assert_eq!(ids, [10, 11]);
     }
 
-    /// The collapse stops at a room.
+    /// The listing takes the same rule, so its count agrees with what reading
+    /// a name resolves to.
     ///
-    /// Reaching a person and a group with one fragment is a real question about
-    /// which was meant, and `sole_person` refusing to speak for a group is the
-    /// whole reason widening the collapse to fragments is safe.
+    /// A name matches from a word start and an address matches anywhere: `ana`
+    /// must not list Dana Reyes, while a fragment of a phone number has to keep
+    /// reaching the number it is part of, which is how anyone types one.
     #[test]
-    fn a_group_that_also_matched_keeps_the_ambiguity() {
+    fn the_listing_matches_a_name_from_a_word_start_and_an_address_anywhere() {
+        let db = fixture();
+        let ana = one_to_one(&db, 4, "+16175550147");
+        let dana = one_to_one(&db, 5, "+16175550148");
+        message_in(&db, ana, 10, 5);
+        message_in(&db, dana, 11, 6);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:1", "Ana Duarte"),
+            ("+16175550148", "source:2", "Dana Reyes"),
+        ]);
+
+        let listed = |spec: &str| -> Vec<i64> {
+            fetch_chats(&db, Some(spec), 30, &contacts, false)
+                .unwrap()
+                .iter()
+                .map(|chat| chat.rowid)
+                .collect()
+        };
+        assert_eq!(listed("ana"), [ana], "not the one it is spelled inside");
+        assert_eq!(listed("dana"), [dana]);
+        // The middle of an address still matches, which the name rule must not
+        // take away.
+        assert_eq!(listed("5550148"), [dana], "a fragment of a number");
+        assert_eq!(listed("617555"), [dana, ana], "a fragment of both");
+    }
+
+    /// A room the person is in does not compete with the person.
+    ///
+    /// This reverses what the collapse used to do, deliberately
+    /// (naming-a-conversation.md §3). Reaching someone's own conversation and a
+    /// group they are in used to be reported as a question about which was
+    /// meant; it is not one, because being in a room is not being the person.
+    /// The old behaviour made a first name almost unusable, since a first name
+    /// reaches every room its owner is in.
+    #[test]
+    fn a_room_the_person_is_in_does_not_beat_the_person() {
         let db = fixture();
         let alone = one_to_one(&db, 4, "+16175550147");
         message_in(&db, alone, 10, 5);
@@ -3042,11 +3130,81 @@ mod tests {
             ("+16175550148", "source:8", "Kit Alvarez"),
         ]);
 
-        // The fragment reaches his one-to-one and the group he is in.
-        let error = resolve_chat(&db, "adeyemi", &contacts)
+        // The fragment reaches his one-to-one and the group he is in, and the
+        // one-to-one is the answer — by surname, by first name, and by the
+        // whole of it.
+        for spec in ["adeyemi", "robin", "Robin Adeyemi"] {
+            let chat = resolve_chat(&db, spec, &contacts).unwrap();
+            assert_eq!(chat.rowid, alone, "resolving {spec}");
+        }
+    }
+
+    /// A room named exactly after a person is a real question, not a preference.
+    ///
+    /// §3's rule is that rooms someone is *in* do not compete with them. A room
+    /// whose own name is the string typed did not match by membership — it
+    /// matched by the label somebody chose for it — so it is as definite a
+    /// claim as the person's, and answering silently with either would be
+    /// wrong. Without this the person always won and §4's promise that a named
+    /// room is reachable by its name quietly stopped holding.
+    #[test]
+    fn a_room_named_after_a_person_keeps_the_ambiguity() {
+        let db = fixture();
+        let alone = one_to_one(&db, 4, "+16175550147");
+        message_in(&db, alone, 10, 5);
+        db.execute(
+            "UPDATE chat SET display_name = 'Robin Adeyemi' WHERE rowid = 2",
+            [],
+        )
+        .unwrap();
+        let contacts = ContactIndex::for_test([("+16175550147", "source:7", "Robin Adeyemi")]);
+
+        let error = resolve_chat(&db, "Robin Adeyemi", &contacts)
             .unwrap_err()
             .to_string();
         assert!(error.contains("2 chats match"), "{error}");
+
+        // A fragment is not a claim on the room's name, so the person still
+        // wins — which is the whole point of §3.
+        let chat = resolve_chat(&db, "robin", &contacts).unwrap();
+        assert_eq!(chat.rowid, alone);
+    }
+
+    /// The room is still reachable, by naming the room rather than a member.
+    ///
+    /// §3 decides which conversation a *person's* name means. It says nothing
+    /// about a group's own name, which still resolves to the group.
+    #[test]
+    fn a_named_room_still_resolves_to_the_room() {
+        let db = fixture();
+        let contacts = ContactIndex::empty();
+        let chat = resolve_chat(&db, "Ship Room", &contacts).unwrap();
+        assert_eq!(chat.rowid, 2);
+        assert!(chat.is_group);
+    }
+
+    /// A person with no conversation of their own falls through to the rooms.
+    ///
+    /// There is nothing to prefer, so inventing a conversation that does not
+    /// exist would be worse than listing what does.
+    #[test]
+    fn somebody_you_only_share_a_room_with_still_finds_the_room() {
+        let db = fixture();
+        // The handle exists and has no conversation of its own, which is the
+        // whole point — `one_to_one` would give it one.
+        db.execute(
+            "INSERT INTO handle (rowid, id) VALUES (4, '+16175550147')",
+            [],
+        )
+        .unwrap();
+        also_in_an_unnamed_group(&db, 4);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("+16175550148", "source:8", "Kit Alvarez"),
+        ]);
+
+        let chat = resolve_chat(&db, "adeyemi", &contacts).unwrap();
+        assert!(chat.is_group, "{chat:?}");
     }
 
     /// The same shape, and the opposite answer, because these are two people.
@@ -3735,6 +3893,44 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("--with and --from"), "{error}");
+    }
+
+    /// A first name reaches the person it names, not everyone it is spelled
+    /// inside.
+    ///
+    /// The case that prompted `naming-a-conversation.md`: on a real database a
+    /// four-letter first name resolved to three people, two of them strangers
+    /// whose surnames happen to contain it. `answers_to` was a plain substring
+    /// test, so being inside a name counted as being the name.
+    #[test]
+    fn a_first_name_does_not_resolve_to_a_stranger_who_spells_it_inside_theirs() {
+        let db = fixture();
+        let ana = one_to_one(&db, 4, "+16175550147");
+        one_to_one(&db, 5, "+16175550148");
+        one_to_one(&db, 6, "+16175550149");
+        message_in(&db, ana, 10, 5);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:1", "Ana Duarte"),
+            // Sus-ana and D-ana: the needle sits inside the name rather than
+            // starting a word in it, the same shape as the real case.
+            ("+16175550148", "source:2", "Susana Vidal"),
+            ("+16175550149", "source:3", "Dana Reyes"),
+        ]);
+
+        let person = resolve_person(&db, "ana", &contacts).unwrap();
+        assert_eq!(person.name, "Ana Duarte");
+
+        // Their own names still reach them, from any word.
+        for (spec, expected) in [
+            ("susana", "Susana Vidal"),
+            ("vidal", "Susana Vidal"),
+            ("dana", "Dana Reyes"),
+            ("reyes", "Dana Reyes"),
+            ("duarte", "Ana Duarte"),
+        ] {
+            let found = resolve_person(&db, spec, &contacts).unwrap();
+            assert_eq!(found.name, expected, "resolving {spec}");
+        }
     }
 
     #[test]

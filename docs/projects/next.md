@@ -14,5 +14,5 @@ Committed to, not started. One line each, same rules as [now](now.md). See
   Messages does, instead of repeating the date on every line.
 - Rename `msg read` to `msg chat` — `read` fits badly when almost every command
   reads, and the new name lands one letter from `msg chats`.
-- [Name a conversation by who is in it](all/naming-a-conversation.md) — a first
-  name should reach that person, and `msg chat dana sam` the room with both.
+- [Name a room by who is in it](all/naming-a-conversation.md) — §10 slice two.
+  `msg chat dana sam` should reach the room with exactly those two people.

@@ -86,9 +86,12 @@ what your phone shows. On one real database that removed 1,395 of 2,559
 conversations: verification codes, delivery notifications, and one-off numbers
 that were never saved as contacts.
 
-A chat can be named by its rowid, by a handle, or by any substring of its name.
-When a substring matches more than one conversation, `msg` lists the candidates
-instead of guessing.
+A chat can be named by its rowid, by a handle, or by part of its name. A name
+matches from the start of a word, so `ana` reaches Ana Duarte and not Dana
+Reyes, while typing a prefix still works and `rob` still reaches Robin. An
+address is different and matches anywhere, because the middle of a phone number
+is exactly how anyone types a fragment of one. When a name still matches more
+than one conversation, `msg` lists the candidates instead of guessing.
 
 A [nickname](#contacts) counts as one of those names, so someone filed under
 their full name and known to you as something else is found by either — and is
@@ -101,11 +104,18 @@ Contacts record, so `msg` answers with whichever was last active rather than
 asking a question that has no answer. A fragment counts as naming them: typing
 fewer letters does not make it two people.
 
+**A name is a person before it is anything else.** Someone's own conversation
+wins over every group they are in, because being in a room is not being the
+person — which is what makes a first name usable, since a first name reaches
+every room its owner is a member of. A group is still reached by its own name,
+or by its rowid, and somebody you only ever share a room with still finds the
+room. A group named after somebody you also have a conversation with is the one
+case where both claims are equally good, so that is reported as an ambiguity
+rather than decided for you.
+
 What still reports an ambiguity is a question that has an answer. Two
 *different* people who happen to share a name are two people, and what gets
-collapsed is the Contacts record, never the name it renders as. And a name that
-reaches both somebody's own conversation and a group they are in is a genuine
-choice between a person and a room, so it is put back to you.
+collapsed is the Contacts record, never the name it renders as.
 
 ### Reading
 

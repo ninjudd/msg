@@ -1,8 +1,13 @@
 # Plan: Stop matching in the middle of a word
 
-**Status:** Not started. Written from an observed case: a three-letter needle
-returned two hits that were not the word at all, buried inside longer words, and
-one that was. §5 is an open question that has to be answered before this ships.
+**Status:** Half shipped. The rule and its predicate exist —
+`matching::begins_a_word`, taking `&str` as §3 asked — and *name* matching uses
+it, because `naming-a-conversation.md` turned out to need it first. Message
+bodies still do not: `msg_body_has` and the decoded filter are unchanged, so
+searching `art` still returns `apartment`.
+
+What remains is §3's placement question applied to bodies, and §5, which is
+still open and still has to be answered before the body half ships.
 
 **Goal:** Make a search needle match at the start of a word, so a short one
 stops finding itself inside unrelated longer words.
