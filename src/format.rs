@@ -477,8 +477,6 @@ mod tests {
         assert!(lines[2].contains("me: yes, that works"), "{out}");
     }
 
-    /// An ordinary message gains nothing, so a transcript without replies reads
-    /// exactly as it did.
     /// `--who` names each reaction's sender beside its symbol — "me" for my
     /// own, then the same contact-name-then-handle precedence every sender
     /// line uses — and without it the trail stays symbols alone.
@@ -510,6 +508,8 @@ mod tests {
         assert!(!bare.contains("Sam"), "{bare}");
     }
 
+    /// An ordinary message gains nothing, so a transcript without replies reads
+    /// exactly as it did.
     #[test]
     fn a_message_that_is_not_a_reply_is_unchanged() {
         let out = render_messages(&[message(1, "Dana Reyes", "hello")], false, Trail::Symbols);
