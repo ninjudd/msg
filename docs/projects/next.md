@@ -7,3 +7,5 @@ Committed to, not started. One line each, same rules as [now](now.md). See
   the body, instead of rows that interleave or are hidden.
 - [Stop matching in the middle of a word](all/search-boundaries.md) — a short
   needle finds itself inside longer words, so `art` returns `apartment`.
+- [One person, one conversation](all/conversation-merging.md) — someone with a
+  phone and an email has two threads, and only the newer one is ever shown.
