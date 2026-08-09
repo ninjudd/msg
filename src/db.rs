@@ -2186,11 +2186,13 @@ pub fn resolve_conversation(
     // A room named exactly this falls through to the text match instead of
     // being beaten — or being *spoken over*: a room's own name is a label
     // somebody chose, so typing the whole of it claims the room as definitely
-    // as a name claims the person (§4). One person and the room is the tie
-    // reported below; several people and the room is still the room's claim
-    // to be part of, not an ambiguity among people to report as if no room
-    // existed. A room that merely matched by membership never competes —
-    // being in a room is not being the person (§3).
+    // as a name claims the person (§4). The text match below is where whole
+    // claims meet: the room wins outright unless somebody is *named* exactly
+    // the string too, and then the two whole claims are the tie it reports.
+    // The axis is whether another claim on the string is whole, never how
+    // many people answer to part of it. A room that merely matched by
+    // membership never competes — being in a room is not being the person
+    // (§3).
     let mut people = people_matching(db, spec, contacts)?;
     let named_room = !people.is_empty() && exactly_names_a_room(db, spec)?;
     if people.len() > 1 && !named_room && people.keys().any(|key| key.starts_with("contact:")) {

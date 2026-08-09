@@ -42,12 +42,14 @@ fragment by the substring rule every other fragment uses. A name two contacts
 share errors naming the people, an address alongside each — unless a room's own
 label is exactly the string typed, which is the one claim that outranks that
 error. Chat rows are matched as text only for what no contact claims: a room's
-own name, a group identifier, an address fragment. A room named exactly what
-*one* person answers to is still the tie it always was, now checked against the
-whole table instead of the window; named exactly what *two* people answer to,
-the room wins outright, because its claim is whole where theirs are fragments —
-first written the other way here, corrected when review showed the people error
-speaking over the label.
+own name, a group identifier, an address fragment. A room labelled exactly the
+string typed wins outright — unless somebody is *named* exactly it too, and
+then the two whole claims are the tie this reports. The axis is whether another
+claim on the string is whole, never how many people answer to part of it; the
+label check runs against the whole table instead of the window. This sentence
+has now been corrected twice — first hung on ambiguity, then on the count of
+people — and both times the rule underneath was the same one: whole beats
+fragment, and wholes tie.
 
 ## 3 What remains, and why it can wait
 
