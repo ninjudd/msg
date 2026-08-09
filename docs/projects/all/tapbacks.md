@@ -1,11 +1,11 @@
 # Plan: Put a reaction on the message it reacted to
 
-**Status:** Slice 1 shipped 2026-08-09 — #43 at protocol 17, its rendering
-settled by #44 — the trailing render, the table, removals cancelled, the JSON
-field. Slice 2, names behind `--who`, is open as #46: rendering only, no
-protocol change. The type numbering in §2 is measured against the real
-database, and the two questions §9 opened are measured too (2026-08-09): the
-emoji lives in its own column, and the guid is part-prefixed 96% of the time.
+**Status:** Shipped whole, 2026-08-09. Slice 1 as #43 at protocol 17 with its
+rendering settled by #44; slice 2, names behind `--who`, as #46 — rendering
+only, no protocol change. The type numbering in §2 is measured against the
+real database, and the two questions §9 opened are measured too: the emoji
+lives in its own column, the guid takes three stored forms, and the outliers —
+types 1000 and 2007 — stay unidentified and excluded.
 §4's symbols reversed the same day, from shorthand to the Messages emoji, by
 request. Building it added two facts to the record: the reaction lookup rides
 `message_idx_associated_message2`, a partial index over non-null

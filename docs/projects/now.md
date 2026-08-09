@@ -6,5 +6,4 @@ Delete the line when the work is genuinely over. Committed but not started lives
 in [next](next.md); uncommitted ideas in [later](later.md). See
 [README](README.md) for how these lists work.
 
-- [Name who reacted, behind a flag](all/tapbacks.md) — §8 slice 2, open as
-  #46: `--who` on chat and search, `← ❤️ dana, 🙏 me`, rendering only.
+Nothing in flight.
