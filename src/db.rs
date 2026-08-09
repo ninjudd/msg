@@ -1224,6 +1224,33 @@ impl Default for FetchMessages<'_> {
     }
 }
 
+/// How many new messages a single watch tick will fetch.
+pub const WATCH_BATCH: i64 = 200;
+
+impl FetchMessages<'_> {
+    /// The fetch both watch paths make, built in one place so they cannot
+    /// disagree. Two call sites — the CLI's poll loop and the daemon's
+    /// delivery — once carried this struct as twin literals, and the twin is
+    /// exactly how a stream rule dies: the daemon's `attach_tapbacks: false`
+    /// was pinned by a test while the CLI's identical line was guarded by
+    /// nothing, on the path every `--db` invocation takes and where the
+    /// protocol version has no reach. One constructor makes the stream's
+    /// no-attach rule a single line, and the daemon test covers it for both.
+    pub fn watch(chat_id: Option<i64>, after_rowid: i64, tapbacks: bool, unknown: bool) -> Self {
+        Self {
+            chat_id,
+            after_rowid: Some(after_rowid),
+            limit: WATCH_BATCH,
+            include_tapbacks: tapbacks,
+            // Streams attach no reactions; snapshots do (tapbacks.md §10).
+            attach_tapbacks: false,
+            include_filtered: unknown,
+            oldest_first: true,
+            ..Default::default()
+        }
+    }
+}
+
 /// The conversations that are just me and this person.
 ///
 /// A chat whose membership is exactly one handle, and that handle is theirs.
