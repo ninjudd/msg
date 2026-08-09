@@ -167,13 +167,14 @@ pub struct Render {
     /// several — search and an unscoped watch.
     pub show_chat: bool,
     pub trail: Trail,
-    /// A bare date line when the local day changes, and only a time on each
-    /// message — what Messages does. The chat transcript and the watch
-    /// stream: a stream headers a day change too, since the header goes in
-    /// front of the new line and the last emitted day is all it takes —
-    /// `Renderer` holds that day across calls for exactly this. Search keeps
-    /// its stamps as they were — `format_timestamp`, a date except on
-    /// today's — because its results jump between days by construction.
+    /// A day line when the local day changes — [`day_header`]'s shape,
+    /// `Today` through `Friday, July 7` — and only a time on each message:
+    /// what Messages does. The chat transcript and the watch stream: a
+    /// stream headers a day change too, since the header goes in front of
+    /// the new line and the last emitted day is all it takes — `Renderer`
+    /// holds that day across calls for exactly this. Search keeps its stamps
+    /// as they were — `format_timestamp`, a date except on today's — because
+    /// its results jump between days by construction.
     pub day_headers: bool,
     /// Wrap each date header in ANSI bold. Callers set this through
     /// [`styling_allowed`], so a pipe still sees plain text, grep still works,
