@@ -1,8 +1,8 @@
 # Plan: Resolve the person before matching chat rows
 
-**Status:** Built, in two slices. The windowed intersection came off on
-`merge-the-listing` (#36), and the person-first order this plan is named for
-landed on `person-first-resolution` (#37, protocol 14). What §3 still records
+**Status:** Shipped 2026-08-09, in two slices. The windowed intersection came
+off on `merge-the-listing` (#36), and the person-first order this plan is named
+for landed on `person-first-resolution` (#37, protocol 14). What §3 still records
 is the residue for what is *not* a person — a room's own name or an address
 fragment past the newest 5,000 chat rows — which is loud, cannot bite below
 5,000 chats, and this database holds 1,165.
