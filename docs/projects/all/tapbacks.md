@@ -1,6 +1,7 @@
 # Plan: Put a reaction on the message it reacted to
 
-**Status:** Slice 1 shipped 2026-08-09 as #43 at protocol 17 — the trailing render, the
+**Status:** Slice 1 shipped 2026-08-09 — #43 at protocol 17, its rendering
+settled by #44 — the trailing render, the
 table, removals cancelled, the JSON field. Slice 2 (names behind a flag) stays
 in [next](../next.md). The type numbering in §2 is measured against the real
 database, and the two questions §9 opened are measured too (2026-08-09): the
