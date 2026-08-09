@@ -183,6 +183,23 @@ pub struct Render {
     pub styled: bool,
 }
 
+/// The transcript's date line: relative words while they are unambiguous,
+/// then the date with its weekday, the year only when it is not this year —
+/// `Today`, `Yesterday`, a bare weekday inside the last week, then
+/// `Friday, July 7`, then `Friday, July 7, 2023`. English fixed, the same
+/// choice TIME and DATE_TIME already made. Pure in `now` so every branch is
+/// testable on any day the suite runs.
+fn day_header(date: DateTime<Local>, now: DateTime<Local>) -> String {
+    let days = (now.date_naive() - date.date_naive()).num_days();
+    match days {
+        0 => "Today".to_string(),
+        1 => "Yesterday".to_string(),
+        2..=6 => date.format("%A").to_string(),
+        _ if date.year() == now.year() => date.format("%A, %B %-d").to_string(),
+        _ => date.format("%A, %B %-d, %Y").to_string(),
+    }
+}
+
 /// Whether bold may be written: someone is looking, and nobody asked for
 /// plain. `NO_COLOR` present and non-empty refuses styling (no-color.org, and
 /// its constituency is real — screen readers, terminals that render SGR
@@ -281,13 +298,7 @@ impl Renderer {
             if day_headers && let Some(date) = message.date.map(local) {
                 let day = (date.year(), date.month(), date.day());
                 if self.last_day != Some(day) {
-                    // The year only when it is not this year — the same choice
-                    // DATE_TIME already makes by never printing one.
-                    let header = if date.year() == Local::now().year() {
-                        date.format("%b %-d").to_string()
-                    } else {
-                        date.format("%b %-d, %Y").to_string()
-                    };
+                    let header = day_header(date, Local::now());
                     if styled {
                         out.push_str(&format!("\x1b[1m{header}\x1b[0m\n"));
                     } else {
@@ -641,6 +652,28 @@ mod tests {
         assert!(lines[2].contains("me: yes, that works"), "{out}");
     }
 
+    /// Every branch of the header, against one fixed clock — relative words
+    /// while they are unambiguous, weekday inside the week, then the full
+    /// date, the year only when foreign. 2026-07-10 is a Friday. Built in
+    /// local civil time, so the same calendar day means the same header in
+    /// every timezone the suite runs in.
+    #[test]
+    fn a_header_reads_relative_then_weekday_then_the_date() {
+        use chrono::TimeZone;
+        let civil = |y: i32, m: u32, d: u32| Local.with_ymd_and_hms(y, m, d, 12, 0, 0).unwrap();
+        let now = civil(2026, 7, 10);
+        let header = |y, m, d| day_header(civil(y, m, d), now);
+        assert_eq!(header(2026, 7, 10), "Today");
+        assert_eq!(header(2026, 7, 9), "Yesterday");
+        assert_eq!(header(2026, 7, 7), "Tuesday");
+        assert_eq!(header(2026, 7, 4), "Saturday");
+        // Seven days back is a week ago today: the bare weekday would be
+        // ambiguous with three days ago, so the full date takes over.
+        assert_eq!(header(2026, 7, 3), "Friday, July 3");
+        assert_eq!(header(2026, 6, 30), "Tuesday, June 30");
+        assert_eq!(header(2025, 12, 31), "Wednesday, December 31, 2025");
+    }
+
     /// Someone looking is necessary and not sufficient: NO_COLOR set and
     /// non-empty refuses the bold, TERM=dumb refuses it the older way, and a
     /// pipe never gets it whatever the environment says.
@@ -693,9 +726,20 @@ mod tests {
         assert_eq!(lines.len(), 4, "{out}");
         // Two headers, one per day, each a bare date with no year — the same
         // no-year choice DATE_TIME has always made.
-        assert!(lines[0].starts_with("Jun 1"), "{out}");
-        assert!(!lines[0].contains(&year.to_string()), "{out}");
-        assert!(lines[2].starts_with("Jun 1"), "{out}");
+        // The header text itself is day_header's, pinned exhaustively in its
+        // own test — here the contract is that the renderer emits exactly
+        // that, once per day, wherever in the calendar the suite runs.
+        let now = Local::now();
+        assert_eq!(
+            lines[0],
+            day_header(first.date.unwrap().with_timezone(&Local), now),
+            "{out}"
+        );
+        assert_eq!(
+            lines[2],
+            day_header(second.date.unwrap().with_timezone(&Local), now),
+            "{out}"
+        );
         assert_ne!(lines[0], lines[2], "{out}");
         // Message lines carry a time and never a date.
         assert!(

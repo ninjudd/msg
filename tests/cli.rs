@@ -117,14 +117,15 @@ fn it_reads_a_conversation() {
     assert_eq!(code(&output), 0);
     let text = stdout(&output);
     assert!(text.contains("are you around later"));
-    // The transcript spans two days, so it carries two date headers — bare
-    // dates on their own lines — and every message line shows only a time.
-    let headers = text.lines().filter(|line| line.starts_with("Jan ")).count();
+    // The transcript spans two days, so it carries two date headers — the
+    // weekday-and-date form, since the fixture is long past the relative
+    // window — and every message line shows only a time.
+    let headers = text.lines().filter(|line| line.contains("January")).count();
     assert_eq!(headers, 2, "{text}");
     assert!(
         !text
             .lines()
-            .any(|line| line.contains("Jan") && line.contains(":")),
+            .any(|line| line.contains("January") && line.contains(":")),
         "a message line still carries a date: {text}"
     );
     // Bold headers are for terminals; this output is piped, so it must carry
