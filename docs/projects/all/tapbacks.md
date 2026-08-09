@@ -217,10 +217,10 @@ database-wide — 34 prefixed, 21 bare, 1 `bp:` — which render nowhere and mus
 not error. So the join §4's builder writes strips both prefixes *and* accepts
 the bare form; written `= message.guid` it would have matched 404 rows of
 32,092, the working-sometimes failure this section predicted, delivered at
-scale — and a join that knew `p:` but not `bp:` would have quietly dropped 867
-more. The earlier inference from
-`threading.md §2` — 71 bare rows attested, prefix form unknown — pointed the
-right way and undercounted both forms.
+scale — and a join that knew `p:` but not `bp:` would have quietly dropped the
+`bp:` bucket whole: 867 rows, 866 of them renderable. The earlier inference
+from `threading.md §2` — 71 bare rows attested, prefix form unknown — pointed
+the right way and undercounted both forms.
 
 Scale, while the queries were open: the whole database holds roughly 31,900
 tapbacks against the ~58,000 the sample scaling guessed — same order of

@@ -113,7 +113,11 @@ pub struct Tapback {
     pub date: Option<DateTime<Utc>>,
     pub is_from_me: bool,
     pub handle: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Written as null when there is no saved contact, matching the message
+    /// this rides on — one shape for the same key, not two. `default` stays
+    /// for reading: a daemon built before the skip came off omits the key,
+    /// and both builds answer protocol 16.
+    #[serde(default)]
     pub contact_name: Option<String>,
 }
 
@@ -2635,22 +2639,24 @@ mod tests {
         assert!(messages[2].is_tapback);
     }
 
-    /// The whole of tapbacks.md §4–§6 in one conversation: both stored guid
-    /// forms reach their target, a removal cancels its add by sender and type
-    /// family, a type 2006 reads its emoji off the column, an unidentified
-    /// type renders nowhere, and an orphaned target matches nothing.
+    /// The whole of tapbacks.md §4–§6 in one conversation: all three stored
+    /// guid forms reach their target, a removal cancels its add by sender and
+    /// type family, a type 2006 reads its emoji off the column, an
+    /// unidentified type renders nowhere, and an orphaned target matches
+    /// nothing.
     #[test]
     fn reactions_land_on_the_message_they_react_to() {
         let db = fixture();
         /// rowid, type, from me, handle, target, emoji.
         type Reaction = (i64, i64, i64, i64, &'static str, Option<&'static str>);
-        let reactions: [Reaction; 6] = [
+        let reactions: [Reaction; 7] = [
             (10, 2000, 0, 2, "p:0/m1", None), // ❤️, cancelled by 13
             (11, 2001, 1, 1, "m1", None),     // 👍, the bare form
             (12, 2006, 0, 1, "p:0/m1", Some("🙏")),
             (13, 3000, 0, 2, "p:0/m1", None), // removes 10: same sender, family
             (14, 2007, 0, 1, "p:0/m1", None), // nothing identifies it (§9)
             (15, 2000, 0, 1, "p:0/ghost", None), // target no longer exists
+            (16, 2001, 0, 2, "bp:m1", None),  // 👍, the second prefix form
         ];
         for (rowid, kind, from_me, handle, target, emoji) in reactions {
             db.execute(
@@ -2696,7 +2702,7 @@ mod tests {
             .iter()
             .map(|tapback| tapback.symbol.as_str())
             .collect();
-        assert_eq!(symbols, ["👍", "🙏"], "{:?}", m1.tapbacks);
+        assert_eq!(symbols, ["👍", "🙏", "👍"], "{:?}", m1.tapbacks);
         assert_eq!(m1.tapbacks[0].associated_message_type, 2001);
         assert!(m1.tapbacks[0].is_from_me);
         assert_eq!(m1.tapbacks[1].handle.as_deref(), Some("+13105551234"));

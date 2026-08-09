@@ -192,8 +192,8 @@ correctly: `filedAs` took 7 and the `contacts` lookup took 8 while this sat in
 ## 6 Slices
 
 One slice. The window, the merging, the gutter and `--`, tapbacks in the
-window (since reversed — §3),
-the two JSON fields, and the protocol bump all ship together — the daemon is
+window (since reversed — §3), the two JSON fields, and the protocol bump all
+ship together — the daemon is
 where search actually runs on a real machine, so a version that skips the
 protocol half would only work through `--db` against a fixture.
 
