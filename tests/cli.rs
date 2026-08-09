@@ -297,6 +297,14 @@ fn reactions_ride_the_message_and_the_flag_trades_them_for_rows() {
     assert!(!text.contains("[❤️🙏]"), "{text}");
     assert!(text.contains("Loved"), "{text}");
 
+    // A context window shows a reaction once, as the bracket on its target —
+    // the rows stay out, or `-A` would print the same reaction twice.
+    let output = msg(&["--no-names", "search", "art deco", "-A", "4"]);
+    assert_eq!(code(&output), 0);
+    let text = stdout(&output);
+    assert!(text.contains("[❤️🙏]"), "{text}");
+    assert!(!text.contains("Loved"), "{text}");
+
     let output = msg(&["--no-names", "chat", "3", "--json"]);
     assert_eq!(code(&output), 0);
     let value: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();

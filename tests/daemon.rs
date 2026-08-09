@@ -141,6 +141,10 @@ fn build_fixture(path: &Path) {
             &db, rowid, guid, body, from_me, handle, associated, date, chat,
         );
     }
+    // The tapback names its target, so it lands as a bracket on m2 rather
+    // than interleaving as a row.
+    db.execute_batch("UPDATE message SET associated_message_guid = 'p:0/m2' WHERE rowid = 5;")
+        .unwrap();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -467,16 +471,19 @@ fn context_widths_survive_the_wire() {
         .iter()
         .map(|m| m["body"].as_str().unwrap())
         .collect();
+    // The reaction row used to cross into the window as context; now it rides
+    // the hit as a bracket instead, and the window holds only what was said —
+    // the same reaction twice was tapbacks.md §6's exact complaint.
     assert_eq!(
         bodies,
-        [
-            "are you around later",
-            "after 6, yeah",
-            // A reaction is context even though a search can never return one,
-            // and this proves the window's `include_tapbacks` crosses too.
-            "Liked \"after 6, yeah\""
-        ],
+        ["are you around later", "after 6, yeah"],
         "{bodies:?}"
+    );
+    assert_eq!(
+        messages[1]["tapbacks"][0]["symbol"].as_str().unwrap(),
+        "❤️",
+        "{:?}",
+        messages[1]
     );
 
     // `matched` rides on a serde default rather than a field always written, so
@@ -486,19 +493,21 @@ fn context_widths_survive_the_wire() {
         .iter()
         .map(|m| m["matched"].as_bool().unwrap_or(true))
         .collect();
-    assert_eq!(matched, [false, true, false], "{matched:?}");
+    assert_eq!(matched, [false, true], "{matched:?}");
 
     // And one run, so the separator is reproducible by whoever reads this.
     let groups: Vec<i64> = messages
         .iter()
         .map(|m| m["group"].as_i64().unwrap())
         .collect();
-    assert_eq!(groups, [0, 0, 0], "{groups:?}");
+    assert_eq!(groups, [0, 0], "{groups:?}");
 
     // Asymmetric, because equal widths cannot tell the two fields apart: a
-    // daemon that swapped them would answer the case above correctly.
+    // daemon that swapped them would answer the case above correctly. The hit
+    // is one with a real message after it — the tapback row that used to fill
+    // this role rides its target as a bracket now.
     let lopsided = ask(&Request::Search(SearchRequest {
-        query: "after 6".into(),
+        query: "sent".into(),
         names: Some(false),
         before: Some(0),
         after: Some(1),
@@ -511,11 +520,7 @@ fn context_widths_survive_the_wire() {
         .iter()
         .map(|m| m["body"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        bodies,
-        ["after 6, yeah", "Liked \"after 6, yeah\""],
-        "{bodies:?}"
-    );
+    assert_eq!(bodies, ["sent from the phone", "phone again"], "{bodies:?}");
 }
 
 #[test]

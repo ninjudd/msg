@@ -1031,8 +1031,11 @@ pub fn with_context(
                     after_rowid: options.after_rowid,
                     before_rowid: options.before_rowid,
                     oldest_first: options.oldest_first,
-                    // A conversation is what was said in it.
-                    include_tapbacks: true,
+                    // Reactions used to cross into the window as rows, on "a
+                    // conversation is what was said in it" — until brackets
+                    // put them on the message they react to, and a window
+                    // showed the same reaction twice (tapbacks.md §6).
+                    include_tapbacks: false,
                     include_filtered: true,
                     ..Default::default()
                 },
@@ -2785,17 +2788,20 @@ mod tests {
         assert!(out[0].matched && out[0].group.is_none());
     }
 
-    /// A window is a slice of the conversation, not a continuation of the
-    /// filter — so it holds what a search can never return.
+    /// A reaction is never a hit, and since brackets it is not a row in the
+    /// window either: it rides its target, so a window cannot show the same
+    /// reaction twice. This test used to pin the row *crossing into* the
+    /// window — right when rows were the only way a reaction showed, and
+    /// tapbacks.md §6's exact complaint once they were not.
     #[test]
-    fn a_window_holds_what_the_search_itself_would_not() {
+    fn a_window_shows_a_reaction_on_its_target_not_as_a_row() {
         let db = fixture();
         let chat = talkative(&db);
-        // A reaction to the message right after the hit.
+        // A reaction to the hit itself, dated inside the window's reach.
         db.execute(
             "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
-                 associated_message_type, date, service)
-             VALUES (200, 'react', 'Liked \"the needle\"', 0, 4, 2000, ?, 'iMessage')",
+                 associated_message_type, associated_message_guid, date, service)
+             VALUES (200, 'react', 'Liked \"the needle\"', 0, 4, 2000, 'p:0/g106', ?, 'iMessage')",
             [at(23)],
         )
         .unwrap();
@@ -2808,8 +2814,9 @@ mod tests {
         // A tapback can never be a hit...
         let bare = found(&db, Context::default());
         assert_eq!(bare.len(), 1, "{bare:?}");
+        assert_eq!(bare[0].tapbacks.len(), 1, "{:?}", bare[0].tapbacks);
 
-        // ...and is still context, because it is often the whole reply.
+        // ...and the window carries it on the hit, not as a row of its own.
         let out = found(
             &db,
             Context {
@@ -2818,10 +2825,12 @@ mod tests {
             },
         );
         assert!(
-            out.iter().any(|message| message.rowid == 200),
+            !out.iter().any(|message| message.rowid == 200),
             "{:?}",
             out.iter().map(|m| m.rowid).collect::<Vec<_>>()
         );
+        let hit = out.iter().find(|message| message.rowid == 106).unwrap();
+        assert_eq!(hit.tapbacks[0].symbol, "❤️");
     }
 
     /// Two hits close together are one stretch of conversation, and print once.
