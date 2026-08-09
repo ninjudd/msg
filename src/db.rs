@@ -2177,17 +2177,26 @@ pub fn resolve_conversation(
             let mut mine = chats_by_id(db, &theirs, contacts)?;
             if !mine.is_empty() {
                 // For an address the intersection did one more thing: it kept
-                // the typed thread first. An address typed in full still
-                // leads with its own thread here — reading merges either way,
-                // but the leading thread is where a send goes, and a send
-                // addressed to a number must not drift to whichever thread
-                // spoke last (conversation-merging.md §7).
+                // the typed thread first. An address still leads with its own
+                // thread here — reading merges either way, but the leading
+                // thread is where a send goes, and a send addressed to a
+                // number must not drift to whichever thread spoke last
+                // (conversation-merging.md §7).
+                //
+                // A whole address leads on its key, and a fragment on the
+                // substring rule every other address fragment uses — the
+                // `addressed` arm of `retain_matching`, the `loosely` pass of
+                // `resolve_person` — so typing less of the address does not
+                // quietly hand the aim back to activity order. A name has no
+                // key, so a name cannot reorder anything.
                 if let Some(wanted) = crate::contacts::handle_key(spec) {
+                    let typed = spec.to_lowercase();
                     mine.sort_by_key(|chat| {
-                        chat.handles
-                            .as_deref()
-                            .and_then(crate::contacts::handle_key)
-                            != Some(wanted.clone())
+                        let handles = chat.handles.as_deref().unwrap_or("");
+                        (
+                            crate::contacts::handle_key(handles) != Some(wanted.clone()),
+                            !handles.to_lowercase().contains(&typed),
+                        )
                     });
                 }
                 return Ok(one_bucket(mine, unknown));
@@ -3329,6 +3338,23 @@ mod tests {
             [email, phone],
             "either address, its own thread first"
         );
+
+        // A fragment of an address aims the same way. It has no whole key,
+        // but it reaches the person all the same — a partial email is a plain
+        // substring — and typing less of the address must not quietly hand
+        // the aim back to activity order.
+        let by_part = resolve_conversation(&db, "+1617555014", &contacts, false).unwrap();
+        let rowids: Vec<i64> = by_part.iter().map(|chat| chat.rowid).collect();
+        assert_eq!(rowids, [phone, email], "a partial number still aims");
+
+        // The phone thread is now the newest, so a partial email that fell
+        // back to activity order would answer with the phone thread leading.
+        message_in(&db, phone, 12, 200);
+        for spec in ["robin@example", "robin@"] {
+            let threads = resolve_conversation(&db, spec, &contacts, false).unwrap();
+            let rowids: Vec<i64> = threads.iter().map(|chat| chat.rowid).collect();
+            assert_eq!(rowids, [email, phone], "a partial email still aims: {spec}");
+        }
     }
 
     /// Unknown Senders content does not arrive inside a known conversation.
