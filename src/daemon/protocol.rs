@@ -297,6 +297,12 @@ pub enum Request {
 
 /// The command names this daemon knows, so an unknown one is reported as such
 /// rather than as a parse failure.
+///
+/// `read` keeps its name here after the CLI's became `chat`. These are two
+/// vocabularies and only one of them is typed: renaming the wire would cost a
+/// version bump and a reinstall on every machine, to change a string no user
+/// ever sees. The divergence is the cheaper of the two prices, and is a
+/// decision rather than an oversight.
 pub const COMMANDS: &[&str] = &[
     "chats",
     "read",

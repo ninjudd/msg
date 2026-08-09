@@ -13,7 +13,7 @@ $ msg chats
     6  Thursday Climbing       1h ago   2 people
    23  Dana Reyes, Sam Oyelaran  7h ago  3 people
 
-$ msg read "Dana" -n 3
+$ msg chat "Dana" -n 3
 Dana Reyes
 
 5:30 PM  Dana Reyes: are you around later
@@ -104,7 +104,7 @@ Contacts record, so `msg` answers with whichever was last active rather than
 asking a question that has no answer. A fragment counts as naming them: typing
 fewer letters does not make it two people.
 
-**Several names are a room.** Each argument names a person, so `msg read dana
+**Several names are a room.** Each argument names a person, so `msg chat dana
 sam` is the conversation whose members are exactly Dana and Sam and you. Exactly
 those: a room that merely contains them is not the answer, because a command
 that quietly hands back a conversation with somebody in it you did not name is
@@ -112,7 +112,7 @@ worse than one that says there is no such conversation. A room with a name of
 its own is still reached by that name.
 
 Because each argument is a person, **a name with a space in it has to be
-quoted** — `msg read "Ana Duarte"` is one person and `msg read ana duarte` is
+quoted** — `msg chat "Ana Duarte"` is one person and `msg chat ana duarte` is
 two.
 
 **A name is a person before it is anything else.** Someone's own conversation
@@ -130,14 +130,18 @@ collapsed is the Contacts record, never the name it renders as.
 
 ### Reading
 
+`msg chats` lists conversations and `msg chat` prints one, which is a letter
+apart and worth reading twice. The plural is the index; the singular opens
+something in it.
+
 ```sh
-msg read "Ship Room"           # a conversation
-msg read dana                  # one person: their own conversation
-msg read dana sam              # two people: the room with exactly those two
-msg read 42 -n 200             # by rowid, with more history
-msg read dana --since 7d       # only the last week
-msg read dana --since 2026-01-15
-msg read dana --tapbacks       # include reactions
+msg chat "Ship Room"           # a conversation
+msg chat dana                  # one person: their own conversation
+msg chat dana sam              # two people: the room with exactly those two
+msg chat 42 -n 200             # by rowid, with more history
+msg chat dana --since 7d       # only the last week
+msg chat dana --since 2026-01-15
+msg chat dana --tapbacks       # include reactions
 ```
 
 `--since` accepts a duration (`30m`, `2h`, `7d`, `4w`), an ISO date like
@@ -149,8 +153,8 @@ number and an email address has two — and naming them shows both as one
 transcript, in the order the messages arrived:
 
 ```sh
-msg read dana                  # everything Dana said, at any of her addresses
-msg read 42                    # only the conversation with rowid 42
+msg chat dana                  # everything Dana said, at any of her addresses
+msg chat 42                    # only the conversation with rowid 42
 ```
 
 The rowid is the way out when that is not what you want, and `msg chats` is
@@ -568,7 +572,7 @@ list, at the head of a conversation, and against every message he sent. You told
 Contacts what he is called; a transcript that says Robert Chen throughout is
 answering a question nobody asked.
 
-Both names still find him. `msg read bob` and `msg read "Robert Chen"` open the
+Both names still find him. `msg chat bob` and `msg chat "Robert Chen"` open the
 same conversation, and it reads as Bob either way — the display does not follow
 whichever name you typed. The filed name is displaced, not discarded, which
 matters because it is the one you have when a nickname is all you remember of
