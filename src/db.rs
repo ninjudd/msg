@@ -1826,11 +1826,15 @@ pub fn resolve_room(db: &Connection, people: &[Person], contacts: &ContactIndex)
 
     // Naming one person twice describes a room of one, which is a one-to-one
     // and not a room. Counted on identities rather than on rendered names,
-    // which is the rule everywhere else here and matters in both directions:
-    // two records can share a name and are two people, while one person named
-    // once by address and once by name renders as two different strings. The
-    // second is the dangerous one — it would leave a single identity wanted and
-    // quietly answer a two-argument question with a one-to-one.
+    // because two records can carry one name and are two people — counting
+    // names refused their room as though one person had been named twice.
+    //
+    // Only that direction. Resolving the same person by two different specs
+    // yields the same rendered name from both, since `Person.name` comes from
+    // the resolved record rather than from what was typed, so a name count
+    // caught that case too. Identity is the right key regardless — it is what
+    // `wanted` is built from one line below, so the guard and the membership
+    // comparison read one set instead of two rules kept in step.
     if wanted.len() < people.len() {
         return Err(Error::other(
             "the same person named twice; a room needs different people",
@@ -3479,13 +3483,14 @@ mod tests {
         assert_eq!(found[0].rowid, 20, "same name, different records");
     }
 
-    /// One person named two ways is not a room, however differently the two
-    /// specs render.
+    /// One person named two ways is not a room.
     ///
-    /// This is the direction a name-based check misses: an address and a
-    /// contact name are different strings for one person, so counting names
-    /// leaves a single identity wanted and the lookup answers a two-argument
-    /// question with that person's one-to-one.
+    /// Nothing else asserts this, so it is worth pinning: naming somebody by
+    /// their number and again by their name describes a room of one, and a room
+    /// of one is a one-to-one. It does not distinguish counting identities from
+    /// counting names — `Person.name` renders the resolved record rather than
+    /// the spec, so both specs give one name and either rule refuses this. The
+    /// test that separates them is the one above.
     #[test]
     fn one_person_named_two_ways_is_not_a_room() {
         let db = fixture();
