@@ -57,6 +57,14 @@ pub fn relative_age(date: Option<DateTime<Utc>>) -> String {
 /// answer, which regressed emoji-named conversations that the JavaScript
 /// build's UTF-16 `.length` had happened to get right. This is UAX #11, which
 /// is the question actually being asked.
+///
+/// One class of character splits the answer: a VS16-promoted symbol like `❤️`
+/// is two cells to this crate and one to the wcwidth most terminals still
+/// follow, so the glyph draws a cell wider than the terminal advances. In the
+/// transcript `spill` pads for that; in the chats column, a name carrying one
+/// misaligns by that cell on such terminals — knowingly left rather than
+/// unnoticed, until someone actually hits it (tapbacks.md §4 has the
+/// mechanism).
 fn width_of(value: &str) -> usize {
     UnicodeWidthStr::width(value)
 }
