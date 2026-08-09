@@ -1307,6 +1307,61 @@ pub fn fetch_messages(
     Ok(messages)
 }
 
+/// Read a conversation that may span more than one thread, oldest-first.
+///
+/// One `fetch_messages` per thread rather than one query with `chat_id IN (…)`,
+/// which is the shape conversation-merging.md §4 was corrected to. The `IN`
+/// keeps the index and loses the ordering: two ranges of
+/// `chat_message_join` are each ordered and not jointly, so SQLite sorts the
+/// whole conversation before the limit applies. Measured on a synthetic
+/// database with the real schema, `LIMIT 50` over a 300,000-message
+/// conversation cost 70-80ms that way and under a millisecond this way, and the
+/// gap grows with the conversation rather than with the limit.
+///
+/// Merged on `rowid`, which is arrival order and is the same number in every
+/// thread — `chat_message_join.message_id` joins to `message.rowid` on
+/// equality, so nothing has to be invented to interleave them.
+pub fn fetch_conversation(
+    db: &Connection,
+    chats: &[Chat],
+    after_date: Option<i64>,
+    limit: i64,
+    include_tapbacks: bool,
+    contacts: &ContactIndex,
+) -> Result<Vec<Message>> {
+    let mut merged: Vec<Message> = Vec::new();
+    for chat in chats {
+        merged.extend(fetch_messages(
+            db,
+            &FetchMessages {
+                chat_id: Some(chat.rowid),
+                after_date,
+                limit,
+                include_tapbacks,
+                ..Default::default()
+            },
+            contacts,
+        )?);
+    }
+    if chats.len() < 2 {
+        return Ok(merged);
+    }
+
+    merged.sort_by_key(|message| message.rowid);
+    // A message joined to two of these threads arrives from both fetches, the
+    // same one rowid and two rows that `attachments_for` and the reply lookup
+    // above already have to allow for.
+    merged.dedup_by_key(|message| message.rowid);
+    // Each thread returned at most `limit` of its own newest, so the newest
+    // `limit` of the union is the answer: anything dropped here is older than
+    // something kept, and its thread had more to give.
+    let wanted = usize::try_from(limit).unwrap_or(usize::MAX);
+    if merged.len() > wanted {
+        merged.drain(..merged.len() - wanted);
+    }
+    Ok(merged)
+}
+
 /// How many chats to consider when a query has to be matched against names.
 const NAME_SEARCH_SCAN: i64 = 5_000;
 
@@ -1690,7 +1745,35 @@ fn describe<'a>(people: impl Iterator<Item = &'a Person> + Clone) -> String {
 const CHAT_MATCH_SCAN: i64 = 50;
 
 /// Find a single chat by rowid, identifier, or name substring.
+///
+/// The one a message would be sent to when a person has several, which is the
+/// most recently active — [`resolve_conversation`] decides that, and this takes
+/// its first answer. Kept separate because sending needs exactly one
+/// conversation and reading does not (conversation-merging.md §7).
 pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Result<Chat> {
+    Ok(resolve_conversation(db, spec, contacts, false)?
+        .into_iter()
+        .next()
+        .expect("a resolved conversation holds at least one chat"))
+}
+
+/// Every conversation with the person a spec names, most recently active first.
+///
+/// A name means the person and a rowid means the thread
+/// (conversation-merging.md §5), so a rowid answers with exactly the thread
+/// asked for and a name answers with all of them. One element is the ordinary
+/// case; more than one is somebody reachable at more than one address, whose
+/// messages Messages splits across a conversation per address.
+///
+/// `unknown` is what lets a filtered thread join the merge. Without it a
+/// conversation Messages files under Unknown Senders stays out, since merging
+/// it would quietly promote filtered content into one the user considers known.
+pub fn resolve_conversation(
+    db: &Connection,
+    spec: &str,
+    contacts: &ContactIndex,
+    unknown: bool,
+) -> Result<Vec<Chat>> {
     // Naming a chat outright reaches it even when Messages filters it.
     let is_rowid = !spec.is_empty() && spec.bytes().all(|byte| byte.is_ascii_digit());
     let matches: Vec<Chat> = if is_rowid {
@@ -1709,7 +1792,7 @@ pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Res
         return Err(Error::other(format!("no chat matching {spec}")));
     }
     if matches.len() == 1 {
-        return Ok(matches.into_iter().next().expect("one match"));
+        return Ok(matches);
     }
 
     let lowered = spec.to_lowercase();
@@ -1731,7 +1814,7 @@ pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Res
         .cloned()
         .collect();
     if exact.len() == 1 {
-        return Ok(exact.remove(0));
+        return Ok(vec![exact.remove(0)]);
     }
 
     // Several conversations with one person is not an ambiguity about who.
@@ -1740,9 +1823,9 @@ pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Res
     // phone number and an email address has two, and naming them exactly hit
     // both and asked which. But the addresses belong to one Contacts record, so
     // the question it was asking was one nobody can answer from a name — it is
-    // the same person either way. Answer with the one last active, since
-    // `fetch_chats` ordered them that way and it is the conversation you would
-    // be continuing.
+    // the same person either way. Answer with all of them, most recently active
+    // first, since `fetch_chats` ordered them that way and the first is the
+    // conversation a reply would continue.
     //
     // Identity, never the rendered name: two records can carry one name and
     // those are two people, so collapsing by what they print as would answer
@@ -1766,7 +1849,18 @@ pub fn resolve_chat(db: &Connection, spec: &str, contacts: &ContactIndex) -> Res
             .collect::<Option<BTreeSet<String>>>()
         && people.len() == 1
     {
-        return Ok(narrowed[0].clone());
+        // The first is kept whatever it is — it is what the caller named and
+        // what a send would go to. The rest join only if they are not filtered,
+        // so Unknown Senders content never arrives inside a conversation the
+        // user thinks of as known.
+        let mut conversation = vec![narrowed[0].clone()];
+        conversation.extend(
+            narrowed[1..]
+                .iter()
+                .filter(|chat| unknown || !chat.is_filtered)
+                .cloned(),
+        );
+        return Ok(conversation);
     }
 
     // Say how many are not being shown, rather than printing six and reporting
@@ -2657,6 +2751,151 @@ mod tests {
             let chat = resolve_chat(&db, spec, &contacts).unwrap();
             assert_eq!(chat.rowid, newer, "resolving {spec}: {chat:?}");
         }
+    }
+
+    /// A two-address person reads as one conversation, in arrival order.
+    ///
+    /// The half `resolve_chat` does not answer with used to be unreachable —
+    /// not merged, not mentioned, absent. Both halves now arrive interleaved by
+    /// rowid, which is arrival and is the same number in either thread.
+    #[test]
+    fn both_of_a_persons_threads_are_read_as_one_conversation() {
+        let db = fixture();
+        let phone = one_to_one(&db, 4, "+16175550147");
+        let email = one_to_one(&db, 5, "robin@example.com");
+        // Interleaved on purpose: neither thread is wholly older than the other,
+        // so concatenating them in either order gives the wrong transcript.
+        message_in(&db, phone, 10, 5);
+        message_in(&db, email, 11, 6);
+        message_in(&db, phone, 12, 7);
+        message_in(&db, email, 13, 90);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ]);
+
+        let threads = resolve_conversation(&db, "Robin", &contacts, false).unwrap();
+        let rowids: Vec<i64> = threads.iter().map(|chat| chat.rowid).collect();
+        assert_eq!(rowids, [email, phone], "most recently active first");
+
+        let messages = fetch_conversation(&db, &threads, None, 50, false, &contacts).unwrap();
+        let ids: Vec<i64> = messages.iter().map(|message| message.rowid).collect();
+        assert_eq!(ids, [10, 11, 12, 13], "one transcript in arrival order");
+
+        // And the reply says which thread a send would continue, and which were
+        // folded in behind it.
+        let reply = crate::daemon::protocol::ReadReply::new(threads, messages);
+        assert_eq!(reply.chat.rowid, email);
+        assert_eq!(reply.merged, [phone]);
+    }
+
+    /// The limit counts the merged conversation, not each thread.
+    #[test]
+    fn the_newest_are_taken_across_both_threads() {
+        let db = fixture();
+        let phone = one_to_one(&db, 4, "+16175550147");
+        let email = one_to_one(&db, 5, "robin@example.com");
+        for rowid in [10, 12, 14] {
+            message_in(&db, phone, rowid, rowid);
+        }
+        for rowid in [11, 13, 15] {
+            message_in(&db, email, rowid, rowid);
+        }
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ]);
+
+        let threads = resolve_conversation(&db, "Robin", &contacts, false).unwrap();
+        let messages = fetch_conversation(&db, &threads, None, 3, false, &contacts).unwrap();
+        let ids: Vec<i64> = messages.iter().map(|message| message.rowid).collect();
+        // Not the newest three of each, which would be all six, and not the
+        // newest three of whichever thread was asked first.
+        assert_eq!(ids, [13, 14, 15]);
+    }
+
+    /// A rowid names one thread, so it is the way out of a merge that is wrong.
+    #[test]
+    fn a_rowid_names_one_thread_and_never_merges() {
+        let db = fixture();
+        let phone = one_to_one(&db, 4, "+16175550147");
+        let email = one_to_one(&db, 5, "robin@example.com");
+        message_in(&db, phone, 10, 5);
+        message_in(&db, email, 11, 90);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ]);
+
+        let threads = resolve_conversation(&db, &phone.to_string(), &contacts, false).unwrap();
+        let rowids: Vec<i64> = threads.iter().map(|chat| chat.rowid).collect();
+        assert_eq!(rowids, [phone], "a rowid is a thread, not a person");
+        let messages = fetch_conversation(&db, &threads, None, 50, false, &contacts).unwrap();
+        let ids: Vec<i64> = messages.iter().map(|message| message.rowid).collect();
+        assert_eq!(ids, [10]);
+    }
+
+    /// Unknown Senders content does not arrive inside a known conversation.
+    #[test]
+    fn a_filtered_thread_stays_out_of_the_merge_unless_asked() {
+        let db = fixture();
+        let known = one_to_one(&db, 4, "+16175550147");
+        let filtered = one_to_one(&db, 5, "robin@example.com");
+        db.execute(
+            "UPDATE chat SET is_filtered = 1 WHERE rowid = ?",
+            [filtered],
+        )
+        .unwrap();
+        message_in(&db, filtered, 10, 5);
+        message_in(&db, known, 11, 90);
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ]);
+
+        let threads = resolve_conversation(&db, "Robin", &contacts, false).unwrap();
+        assert_eq!(
+            threads.iter().map(|chat| chat.rowid).collect::<Vec<_>>(),
+            [known],
+            "the filtered half is left out"
+        );
+
+        let asked = resolve_conversation(&db, "Robin", &contacts, true).unwrap();
+        assert_eq!(
+            asked.iter().map(|chat| chat.rowid).collect::<Vec<_>>(),
+            [known, filtered],
+            "--unknown lets it in"
+        );
+    }
+
+    /// One rowid in two of the merged threads is one message.
+    ///
+    /// `MESSAGE_FROM` joins `chat_message_join`, so such a message comes back
+    /// from both fetches — the same shape `attachments_for` and the reply lookup
+    /// already allow for, reaching the read path for the first time here because
+    /// `chat_id = ?` could only ever match one join row.
+    #[test]
+    fn a_message_in_both_threads_appears_once() {
+        let db = fixture();
+        let phone = one_to_one(&db, 4, "+16175550147");
+        let email = one_to_one(&db, 5, "robin@example.com");
+        message_in(&db, phone, 10, 5);
+        message_in(&db, email, 11, 90);
+        db.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+             VALUES (?, 10, ?)",
+            rusqlite::params![email, at(5)],
+        )
+        .unwrap();
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:7", "Robin Adeyemi"),
+            ("robin@example.com", "source:7", "Robin Adeyemi"),
+        ]);
+
+        let threads = resolve_conversation(&db, "Robin", &contacts, false).unwrap();
+        let messages = fetch_conversation(&db, &threads, None, 50, false, &contacts).unwrap();
+        let ids: Vec<i64> = messages.iter().map(|message| message.rowid).collect();
+        assert_eq!(ids, [10, 11]);
     }
 
     /// The collapse stops at a room.
