@@ -191,7 +191,7 @@ impl Source {
         fetch_chats(db, text.as_deref(), limit, contacts, unknown)
     }
 
-    pub fn read(&mut self, query: &ChatQuery) -> Result<ChatReply> {
+    pub fn chat(&mut self, query: &ChatQuery) -> Result<ChatReply> {
         if self.kind == Kind::Daemon {
             let value = call(&Request::Chat(ChatRequest {
                 chat: query.chat.clone(),

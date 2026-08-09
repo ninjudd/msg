@@ -346,11 +346,11 @@ fn it_saves_an_attachment_by_the_id_it_printed() {
     drop(db);
 
     // The id has to be discoverable from the output, or it cannot be used.
-    let read = msg_in(&database, &["chat", "1", "--no-names"]);
+    let chat = msg_in(&database, &["chat", "1", "--no-names"]);
     assert!(
-        stdout(&read).contains("[#77 holiday.bin,"),
+        stdout(&chat).contains("[#77 holiday.bin,"),
         "{}",
-        stdout(&read)
+        stdout(&chat)
     );
 
     let into = directory.join("out");

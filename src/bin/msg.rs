@@ -285,7 +285,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
             tapbacks,
             json,
         } => {
-            let reply = source.read(&ChatQuery {
+            let reply = source.chat(&ChatQuery {
                 chat: chat.clone(),
                 limit: *limit,
                 since: since.clone(),
