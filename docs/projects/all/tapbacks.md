@@ -240,9 +240,12 @@ A reaction that arrives after its target was already streamed is invisible to
 a default `msg watch`: the new row crosses the watermark but is filtered as a
 tapback, and the target — which now carries the reaction in its bracket — is
 not re-emitted, because nothing re-emits an already-streamed message. Caught
-by review on slice 1, and true before slice 1 too: default watch has never
-shown reactions in any form. `--tapbacks` still streams them as rows, which
-remains the way to follow reactions live.
+by review on slice 1, and narrower than it first reads: before slice 1 a
+default watch showed no reactions at all, and since slice 1 it shows exactly
+those that beat the poll, attached to the target they ride in on — the
+invisible one is the reaction that lands after its target printed.
+`--tapbacks` still streams them as rows, which remains the way to follow
+reactions live.
 
 Deliberately not fixed in slice 1, because the fix is a design decision and
 not a patch. Re-emitting the target with its updated bracket is an *update
@@ -254,6 +257,7 @@ which a consumer is.
 answer.** A stream that revises already-printed lines is a terminal UI's job,
 and this program is not growing one; short of that, re-emission is a
 half-measure with the consumer ambiguity above built in. So a default watch
-shows messages, a `--tapbacks` watch shows reactions as they land, and the
-README says so. *Rejected:* re-emitting the target as an update event, for
+shows messages — with a bracket exactly when the reaction was already there to
+ride its target in — a `--tapbacks` watch shows reactions as they land, and
+the README says so. *Rejected:* re-emitting the target as an update event, for
 the reason above; a TUI, as a different program.
