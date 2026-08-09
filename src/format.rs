@@ -324,7 +324,11 @@ impl Renderer {
             // a timestamp, so a reply reads as a reply without the transcript
             // stopping being chronological.
             if let Some(answering) = &message.reply_to {
-                let quoted = one_line(answering.excerpt.as_deref().unwrap_or("(no text)"), styled);
+                // Not folded: `excerpt` already flattened every run of
+                // whitespace to one space, so there is no newline here to
+                // mark and a fold call would be a dead path wearing a live
+                // one's clothes.
+                let quoted = answering.excerpt.as_deref().unwrap_or("(no text)");
                 out.push_str(&format!(
                     "{gutter}{:width$}  ↳ replying to {}: {quoted}\n",
                     "",
