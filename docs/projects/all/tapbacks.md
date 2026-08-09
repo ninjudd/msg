@@ -242,8 +242,9 @@ tapback, and the target — which now carries the reaction in its bracket — is
 not re-emitted, because nothing re-emits an already-streamed message. Caught
 by review on slice 1, and narrower than it first reads: before slice 1 a
 default watch showed no reactions at all, and since slice 1 it shows exactly
-those that beat the poll, attached to the target they ride in on — the
-invisible one is the reaction that lands after its target printed.
+those already there to ride their target in — on the CLI's poll and the
+daemon's delivery alike — and the invisible one is the reaction that lands
+after its target printed.
 `--tapbacks` still streams them as rows, which remains the way to follow
 reactions live.
 
