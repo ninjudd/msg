@@ -248,6 +248,12 @@ Deliberately not fixed in slice 1, because the fix is a design decision and
 not a patch. Re-emitting the target with its updated bracket is an *update
 event*: a JSON consumer that appends lines would show the message twice, one
 that keys by rowid would do the right thing, and nothing in the protocol says
-which a consumer is. Whether watch gains re-emission, a distinct event shape,
-or a documented "use --tapbacks to follow reactions" is a call to make with a
-consumer in hand, not ahead of one.
+which a consumer is.
+
+**Decided 2026-08-09: `--tapbacks` is watch's answer, and that is the whole
+answer.** A stream that revises already-printed lines is a terminal UI's job,
+and this program is not growing one; short of that, re-emission is a
+half-measure with the consumer ambiguity above built in. So a default watch
+shows messages, a `--tapbacks` watch shows reactions as they land, and the
+README says so. *Rejected:* re-emitting the target as an update event, for
+the reason above; a TUI, as a different program.
