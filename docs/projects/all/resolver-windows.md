@@ -52,9 +52,13 @@ died with #37, because for a person the chat-row match no longer runs at all.
 What is left is the window on what the text match still serves: `fetch_chats`
 reads the newest `NAME_SEARCH_SCAN` (5,000) rows, so past 5,000 chats a
 long-quiet *room* stops being findable by its name, and a contactless address
-fragment stops reaching a long-quiet thread. Loud in both cases — "no chat
-matching", with the rowid still working — and rooms never merge, so the silent
-half-conversation mode has no equivalent here. Impossible below 5,000 chats.
+fragment stops reaching a long-quiet thread. One member of the residue is a
+person after all: someone with no thread of their own — you only ever share
+rooms — resolves and then finds nothing, so they drop to the same text match
+by design, and past 5,000 chats their quiet rooms are out of reach by their
+name too. Loud in all three cases — "no chat matching", with the rowid still
+working — and rooms never merge, so the silent half-conversation mode has no
+equivalent here. Impossible below 5,000 chats.
 
 ## 4 Not this
 
