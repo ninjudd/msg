@@ -325,6 +325,16 @@ fn reactions_ride_the_message_and_the_flag_trades_them_for_rows() {
     let output = msg(&["--no-names", "chat", "3", "--who", "--tapbacks"]);
     assert_ne!(code(&output), 0);
 
+    // `--who` on search is its own expression in the dispatch, so it gets its
+    // own pin — reduced to a no-op, this is the assertion that notices.
+    let output = msg(&["--no-names", "search", "art deco", "--who"]);
+    assert_eq!(code(&output), 0);
+    let text = stdout(&output);
+    assert!(
+        text.contains("art deco ← ❤️ dana@example.com, 🙏 me"),
+        "{text}"
+    );
+
     let output = msg(&["--no-names", "chat", "3", "--json"]);
     assert_eq!(code(&output), 0);
     let value: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
