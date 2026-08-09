@@ -31,9 +31,6 @@ use crate::{Error, Result};
 const BASE64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;
 
-/// How many new messages one poll of the direct path will report.
-const WATCH_BATCH: i64 = 200;
-
 pub struct ChatsQuery {
     pub query: Option<String>,
     pub limit: i64,
@@ -467,15 +464,7 @@ impl Source {
         loop {
             let messages = fetch_messages(
                 db,
-                &FetchMessages {
-                    chat_id,
-                    after_rowid: Some(watermark),
-                    limit: WATCH_BATCH,
-                    include_tapbacks: tapbacks,
-                    include_filtered: unknown,
-                    oldest_first: true,
-                    ..Default::default()
-                },
+                &FetchMessages::watch(chat_id, watermark, tapbacks, unknown),
                 contacts,
             )?;
             for message in &messages {

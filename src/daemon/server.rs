@@ -24,9 +24,9 @@ use crate::daemon::protocol::{
 };
 use crate::daemon::send::{check_automation, send_attachment, send_message};
 use crate::db::{
-    Chat, Context, FetchMessages, Message, PersonFilter, database_path, describe_target,
-    fetch_conversation, fetch_conversations, fetch_messages, latest_rowid, open_database,
-    person_filter, resolve_chat, resolve_conversations, unreadable, with_context,
+    Chat, Context, FetchMessages, Message, PersonFilter, WATCH_BATCH, database_path,
+    describe_target, fetch_conversation, fetch_conversations, fetch_messages, latest_rowid,
+    open_database, person_filter, resolve_chat, resolve_conversations, unreadable, with_context,
 };
 use crate::{Error, Result, VERSION};
 
@@ -45,9 +45,6 @@ const CONTACTS_TTL: Duration = Duration::from_secs(10 * 60);
 
 /// How soon to try again when the index came back empty.
 const CONTACTS_RETRY: Duration = Duration::from_secs(10);
-
-/// How many new messages a single tick will hand to one watcher.
-const WATCH_BATCH: i64 = 200;
 
 /// How long a stalled watcher may block delivery before it is dropped.
 ///
@@ -729,15 +726,12 @@ fn deliver(shared: &Arc<Shared>, watcher: &mut Watcher, latest: i64) -> Result<(
         let messages = shared.with_db(|db| {
             fetch_messages(
                 db,
-                &FetchMessages {
-                    chat_id: watcher.chat_id,
-                    after_rowid: Some(watcher.watermark),
-                    limit: WATCH_BATCH,
-                    include_tapbacks: watcher.request.tapbacks == Some(true),
-                    include_filtered: watcher.request.unknown == Some(true),
-                    oldest_first: true,
-                    ..Default::default()
-                },
+                &FetchMessages::watch(
+                    watcher.chat_id,
+                    watcher.watermark,
+                    watcher.request.tapbacks == Some(true),
+                    watcher.request.unknown == Some(true),
+                ),
                 &watcher.contacts,
             )
         })?;

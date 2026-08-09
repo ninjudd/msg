@@ -1,10 +1,17 @@
 # Plan: Put a reaction on the message it reacted to
 
-**Status:** Designed, not started. Committed to in [next](../next.md). The type
-numbering in §2 is measured against the real database, and the two questions §9
-opened are now measured too (2026-08-09): the emoji lives in its own column,
-and the guid is part-prefixed 96% of the time. §4's symbols reversed the same
-day, from shorthand to the Messages emoji, by request.
+**Status:** Slice 1 built, open as #43 at protocol 16 — the bracket, the
+table, removals cancelled, the JSON field. Slice 2 (names behind a flag) stays
+in [next](../next.md). The type numbering in §2 is measured against the real
+database, and the two questions §9 opened are measured too (2026-08-09): the
+emoji lives in its own column, and the guid is part-prefixed 96% of the time.
+§4's symbols reversed the same day, from shorthand to the Messages emoji, by
+request. Building it added two facts to the record: the reaction lookup rides
+`message_idx_associated_message2`, a partial index over non-null
+`associated_message_guid`, so the query says `IS NOT NULL` outright — measured
+at 0.95s a page without that clause and 0.2s with it — and 51 reactions live
+in a different chat than their target, so the lookup must not be scoped to the
+conversation being read.
 
 **Goal:** Render tapbacks as `[😂🙏❤️❤️]` after the message they react to, instead
 of as separate rows that either interleave into the transcript or are hidden
@@ -159,7 +166,10 @@ level. If the data turns out to nest, the bracket goes on the tapback row that
 have none and would otherwise carry `[]`.
 
 Each entry holds the raw `associatedMessageType`, the rendered `symbol`, the
-`date`, and the sender's `handle` and `contactName`. The type is published beside
+`date`, `isFromMe`, and the sender's `handle` and `contactName`. `isFromMe` was
+not in this list as designed and earned its place in the build: my own reaction
+rows carry no handle, so without it the sender of mine would not survive into
+the JSON at all. The type is published beside
 the symbol deliberately: a consumer that wants Messages' own glyphs, or wants to
 count Love separately from a heart emoji, should not have to re-derive it from a
 string this program chose.
@@ -197,14 +207,20 @@ recorded here and deliberately not built.
 **Is `associated_message_guid` a bare guid? (MEASURED: 96% part-prefixed.)**
 32,092 rows carry the guid — the denominator this section said nothing had
 measured. 30,800 of them are part-prefixed `p:N/<guid>`, and 30,766 of those
-join to `message.guid` once the prefix is stripped. The other 1,292 are bare:
-404 join directly, and 888 resolve to no surviving message — reactions whose
-target is gone, which render nowhere and must not error. So the join §4's
-builder writes strips the prefix *and* accepts the bare form; written
-`= message.guid` it would have matched 404 rows of 32,092, the working-sometimes
-failure this section predicted, delivered at scale. The earlier inference from
-`threading.md §2` — 71 bare rows attested, prefix form unknown — pointed the
-right way and undercounted both forms.
+join to `message.guid` once the prefix is stripped. The other 1,292 first read
+as 404 bare rows that join plus 888 orphans — and that attribution was wrong,
+caught in review by its own numbers: an orphan rate of 68.7% in one bucket
+against 0.11% in the other, when both supposedly held the same thing. Measured
+again: 867 of the 888 carry a *third* form, `bp:<guid>` with no part number,
+and 866 of those join once `bp:` is stripped. The genuine orphans are 56
+database-wide — 34 prefixed, 21 bare, 1 `bp:` — which render nowhere and must
+not error. So the join §4's builder writes strips both prefixes *and* accepts
+the bare form; written `= message.guid` it would have matched 404 rows of
+32,092, the working-sometimes failure this section predicted, delivered at
+scale — and a join that knew `p:` but not `bp:` would have quietly dropped the
+`bp:` bucket whole: 867 rows, 866 of them renderable. The earlier inference
+from `threading.md §2` — 71 bare rows attested, prefix form unknown — pointed
+the right way and undercounted both forms.
 
 Scale, while the queries were open: the whole database holds roughly 31,900
 tapbacks against the ~58,000 the sample scaling guessed — same order of
@@ -217,3 +233,36 @@ excluded by the `!= 0` test today and so already invisible. Most likely a
 sticker placed on a message rather than a reaction. Out of scope; identify it —
 and type 2007, which the measurement surfaced with 24 rows — before assuming
 the 2000/3000 ranges are the whole story.
+
+## 10 Watch does not surface a late reaction, found in review
+
+A reaction that arrives after its target was already streamed is invisible to
+a default `msg watch`: the new row crosses the watermark but is filtered as a
+tapback, and the target — which now carries the reaction in its bracket — is
+not re-emitted, because nothing re-emits an already-streamed message. Caught
+by review on slice 1, which first shipped the half-behaviour: a bracket
+appeared exactly when the reaction happened to land before its target was
+emitted — on the CLI's poll and the daemon's delivery alike — and nothing
+appeared otherwise. `--tapbacks` still streams reactions as rows, which
+remains the way to follow them live.
+
+Deliberately not fixed in slice 1, because the fix is a design decision and
+not a patch. Re-emitting the target with its updated bracket is an *update
+event*: a JSON consumer that appends lines would show the message twice, one
+that keys by rowid would do the right thing, and nothing in the protocol says
+which a consumer is.
+
+**Decided 2026-08-09: `--tapbacks` is watch's answer, and that is the whole
+answer — so a default watch attaches no `tapbacks` at all, at protocol 17.**
+A stream that revises already-printed lines is a terminal UI's job, and this
+program is not growing one; short of that, re-emission is a half-measure with
+the consumer ambiguity above built in. The racy half-behaviour came out with
+the decision rather than surviving beside it: a bracket that appears exactly
+when the reaction beat the delivery is a race, not a contract, and a bracket
+whose absence means nothing teaches a reader that it does. Snapshots attach
+reactions; streams show them as events, behind the flag. So "a default watch
+shows messages only" — the sentence every summary of this section kept
+reaching for, twice corrected for overclaiming — is now true by construction.
+*Rejected:* re-emitting the target as an update event, for the reason above;
+a TUI, as a different program; keeping the beat-the-delivery bracket, as the
+unreliable half of a feature.

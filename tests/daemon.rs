@@ -30,7 +30,8 @@ const SCHEMA: &str = "
   CREATE TABLE message (
     rowid INTEGER PRIMARY KEY, guid TEXT, text TEXT, attributedBody BLOB,
     is_from_me INTEGER DEFAULT 0, handle_id INTEGER,
-    associated_message_type INTEGER DEFAULT 0, date INTEGER, service TEXT,
+    associated_message_type INTEGER DEFAULT 0, associated_message_guid TEXT,
+          associated_message_emoji TEXT, date INTEGER, service TEXT,
         thread_originator_guid TEXT, thread_originator_part TEXT
   );
   CREATE TABLE chat_message_join (
@@ -140,6 +141,10 @@ fn build_fixture(path: &Path) {
             &db, rowid, guid, body, from_me, handle, associated, date, chat,
         );
     }
+    // The tapback names its target, so it lands as a bracket on m2 rather
+    // than interleaving as a row.
+    db.execute_batch("UPDATE message SET associated_message_guid = 'p:0/m2' WHERE rowid = 5;")
+        .unwrap();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -466,16 +471,19 @@ fn context_widths_survive_the_wire() {
         .iter()
         .map(|m| m["body"].as_str().unwrap())
         .collect();
+    // The reaction row used to cross into the window as context; now it rides
+    // the hit as a bracket instead, and the window holds only what was said —
+    // the same reaction twice was tapbacks.md §6's exact complaint.
     assert_eq!(
         bodies,
-        [
-            "are you around later",
-            "after 6, yeah",
-            // A reaction is context even though a search can never return one,
-            // and this proves the window's `include_tapbacks` crosses too.
-            "Liked \"after 6, yeah\""
-        ],
+        ["are you around later", "after 6, yeah"],
         "{bodies:?}"
+    );
+    assert_eq!(
+        messages[1]["tapbacks"][0]["symbol"].as_str().unwrap(),
+        "❤️",
+        "{:?}",
+        messages[1]
     );
 
     // `matched` rides on a serde default rather than a field always written, so
@@ -485,19 +493,21 @@ fn context_widths_survive_the_wire() {
         .iter()
         .map(|m| m["matched"].as_bool().unwrap_or(true))
         .collect();
-    assert_eq!(matched, [false, true, false], "{matched:?}");
+    assert_eq!(matched, [false, true], "{matched:?}");
 
     // And one run, so the separator is reproducible by whoever reads this.
     let groups: Vec<i64> = messages
         .iter()
         .map(|m| m["group"].as_i64().unwrap())
         .collect();
-    assert_eq!(groups, [0, 0, 0], "{groups:?}");
+    assert_eq!(groups, [0, 0], "{groups:?}");
 
     // Asymmetric, because equal widths cannot tell the two fields apart: a
-    // daemon that swapped them would answer the case above correctly.
+    // daemon that swapped them would answer the case above correctly. The hit
+    // is one with a real message after it — the tapback row that used to fill
+    // this role rides its target as a bracket now.
     let lopsided = ask(&Request::Search(SearchRequest {
-        query: "after 6".into(),
+        query: "sent".into(),
         names: Some(false),
         before: Some(0),
         after: Some(1),
@@ -510,11 +520,7 @@ fn context_widths_survive_the_wire() {
         .iter()
         .map(|m| m["body"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        bodies,
-        ["after 6, yeah", "Liked \"after 6, yeah\""],
-        "{bodies:?}"
-    );
+    assert_eq!(bodies, ["sent from the phone", "phone again"], "{bodies:?}");
 }
 
 #[test]
@@ -832,6 +838,58 @@ fn streams_a_message_that_arrives_after_the_client_subscribed() {
     assert_eq!(received.len(), 1);
     assert_eq!(received[0]["body"], serde_json::json!("just landed"));
     assert_eq!(received[0]["rowid"], serde_json::json!(rowid));
+}
+
+/// A stream never carries `tapbacks`, even when the reaction landed in the
+/// same burst as its target — the case where it *could* have. Attached
+/// brackets on a stream were a race, not a contract: whether one appeared
+/// depended on whether the reaction beat the delivery, and a bracket whose
+/// absence means nothing teaches a reader that it does (tapbacks.md §10).
+#[test]
+fn a_stream_carries_no_tapbacks_even_when_the_reaction_beat_delivery() {
+    let rowids = next_rowids(2);
+    let (target, reaction) = (rowids.start, rowids.start + 1);
+    let received = watch_collect(
+        1,
+        move |seen| seen == target,
+        move || {
+            let writer = Connection::open(&harness().database).unwrap();
+            insert(
+                &writer,
+                target,
+                &format!("g{target}"),
+                "see you at 8",
+                0,
+                1,
+                0,
+                at(600),
+                1,
+            );
+            writer
+                .execute(
+                    "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
+                         associated_message_type, associated_message_guid, date, service)
+                     VALUES (?, ?, NULL, 1, 1, 2001, ?, ?, 'iMessage')",
+                    rusqlite::params![
+                        reaction,
+                        format!("g{reaction}"),
+                        format!("p:0/g{target}"),
+                        at(601)
+                    ],
+                )
+                .unwrap();
+            writer
+                .execute(
+                    "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+                     VALUES (1, ?, ?)",
+                    rusqlite::params![reaction, at(601)],
+                )
+                .unwrap();
+        },
+    );
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0]["body"], serde_json::json!("see you at 8"));
+    assert!(received[0].get("tapbacks").is_none(), "{}", received[0]);
 }
 
 #[test]

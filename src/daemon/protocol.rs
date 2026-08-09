@@ -89,6 +89,20 @@ use crate::db::{Chat, Message};
 /// a daemon that does not know them ignores them and answers with bare hits, so
 /// `-C 3` would silently produce exactly what the flag was asked to change.
 ///
+/// 17 takes `tapbacks` back off the messages `watch` streams. 16 attached
+/// them everywhere, which on a stream meant a bracket appeared exactly when
+/// the reaction happened to land before its target was emitted — a race, not
+/// a contract, and a bracket whose absence means nothing teaches a reader
+/// that it does. A stale daemon keeps racing: same command, changed answers,
+/// the quiet kind again.
+///
+/// 16 added `tapbacks` to every message: the reactions on it, oldest first,
+/// removals already cancelled, each carrying the raw type beside the rendered
+/// symbol. A new *reply* field, wrong in the mild direction — a stale daemon
+/// omits it and a message reads as it did before, no brackets anywhere. Still
+/// a bump, for the reason 4 gave: "reinstall the daemon" is a better thing to
+/// be told than to wonder why reactions show on one machine and not another.
+///
 /// 15 makes a search hit start where a word starts, so `art` stops finding
 /// `apartment` while `start` still finds `starting`. Same command, same
 /// fields, changed answers — the case 8 and 13 were. Nothing errors against a
@@ -143,7 +157,7 @@ use crate::db::{Chat, Message};
 /// saying so, which looks exactly like a person who only has one. The reply is
 /// not wrong in a way anything can see — it is simply missing half the
 /// conversation, which is the failure this number exists to make loud.
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";

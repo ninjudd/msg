@@ -124,7 +124,10 @@ pub fn render_chats(chats: &[Chat]) -> String {
     out
 }
 
-pub fn render_messages(messages: &[Message], show_chat: bool) -> String {
+/// `brackets` is false exactly when `--tapbacks` is showing reaction rows as
+/// their own messages — printing both is the same information twice
+/// (tapbacks.md §6).
+pub fn render_messages(messages: &[Message], show_chat: bool, brackets: bool) -> String {
     if messages.is_empty() {
         return "no messages found\n".to_string();
     }
@@ -170,8 +173,20 @@ pub fn render_messages(messages: &[Message], show_chat: bool) -> String {
                 width = stamp.chars().count()
             ));
         }
+        // Reactions ride the message they answer, oldest first, skipped
+        // entirely when there are none — so ordinary output is unchanged.
+        let reactions = if brackets && !message.tapbacks.is_empty() {
+            let symbols: String = message
+                .tapbacks
+                .iter()
+                .map(|tapback| tapback.symbol.as_str())
+                .collect();
+            format!(" [{symbols}]")
+        } else {
+            String::new()
+        };
         out.push_str(&format!(
-            "{gutter}{stamp}  {where_}{}: {body}\n",
+            "{gutter}{stamp}  {where_}{}: {body}{reactions}\n",
             message.sender
         ));
     }
@@ -327,7 +342,7 @@ mod tests {
     #[test]
     fn an_empty_result_says_so_rather_than_printing_nothing() {
         assert_eq!(render_chats(&[]), "no chats found\n");
-        assert_eq!(render_messages(&[], false), "no messages found\n");
+        assert_eq!(render_messages(&[], false, true), "no messages found\n");
     }
 
     fn message(rowid: i64, sender: &str, body: &str) -> Message {
@@ -347,6 +362,7 @@ mod tests {
             service: Some("iMessage".into()),
             attachments: Vec::new(),
             reply_to: None,
+            tapbacks: Vec::new(),
             matched: true,
             group: None,
         }
@@ -378,6 +394,7 @@ mod tests {
                 hit(4, 1, "the needle again"),
             ],
             false,
+            true,
         );
 
         let lines: Vec<&str> = rendered.lines().collect();
@@ -394,7 +411,7 @@ mod tests {
     /// Every search that asks for no context prints exactly what it always did.
     #[test]
     fn without_context_nothing_gains_a_gutter() {
-        let rendered = render_messages(&[message(1, "Dana Reyes", "hello")], false);
+        let rendered = render_messages(&[message(1, "Dana Reyes", "hello")], false, true);
         assert_eq!(rendered, "Jan 15, 9:30 AM  Dana Reyes: hello\n");
     }
 
@@ -411,6 +428,7 @@ mod tests {
         let out = render_messages(
             &[message(1, "Dana Reyes", "are you around later"), reply],
             false,
+            true,
         );
 
         let lines: Vec<&str> = out.lines().collect();
@@ -428,7 +446,7 @@ mod tests {
     /// exactly as it did.
     #[test]
     fn a_message_that_is_not_a_reply_is_unchanged() {
-        let out = render_messages(&[message(1, "Dana Reyes", "hello")], false);
+        let out = render_messages(&[message(1, "Dana Reyes", "hello")], false, true);
         assert_eq!(out.lines().count(), 1, "{out}");
         assert!(!out.contains("↳"), "{out}");
     }
@@ -441,7 +459,7 @@ mod tests {
             sender: "Dana Reyes".into(),
             excerpt: None,
         });
-        let out = render_messages(&[reply], false);
+        let out = render_messages(&[reply], false, true);
         assert!(out.contains("↳ replying to Dana Reyes: (no text)"), "{out}");
     }
 }

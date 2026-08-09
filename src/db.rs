@@ -41,6 +41,10 @@ pub struct Message {
     /// Set when this message is an inline reply. 0.75% of a real database.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<ReplyTo>,
+    /// The reactions on this message, oldest first, removals already cancelled.
+    /// Empty for most messages, so it stays out of the JSON like `attachments`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tapbacks: Vec<Tapback>,
     /// Whether this is a search hit, as against context shown around one.
     ///
     /// Defaulted true and omitted when true, so a search asked for without
@@ -91,6 +95,48 @@ pub struct Attachment {
     /// False when Messages kept the row but not the file — never downloaded, or
     /// purged since. 1,301 of 76,317 on a real database.
     pub is_downloaded: bool,
+}
+
+/// One reaction on a message.
+///
+/// The raw type is published beside the symbol deliberately: a consumer that
+/// wants Messages' own glyphs, or wants to count Love separately from a heart
+/// emoji, should not have to re-derive it from a string this program chose
+/// (tapbacks.md §7). `is_from_me` is there because it is the only way the
+/// sender survives for a reaction of mine — my own rows carry no handle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tapback {
+    pub associated_message_type: i64,
+    pub symbol: String,
+    #[serde(with = "crate::iso")]
+    pub date: Option<DateTime<Utc>>,
+    pub is_from_me: bool,
+    pub handle: Option<String>,
+    /// Written as null when there is no saved contact, matching the message
+    /// this rides on — one shape for the same key, not two. `default` stays
+    /// for reading: a daemon built before the skip came off omits the key,
+    /// and both builds answer protocol 16.
+    #[serde(default)]
+    pub contact_name: Option<String>,
+}
+
+/// The symbol table from tapbacks.md §4: the classic six as their Messages
+/// emoji, a type 2006 as the emoji the sender chose, read from the column §9
+/// measured as always populated. `None` is a type the table does not know —
+/// 2007 exists in real data and nothing yet identifies it — which renders
+/// nowhere rather than guessing.
+fn tapback_symbol(kind: i64, emoji: Option<&str>) -> Option<String> {
+    match kind {
+        2000 => Some("❤️".to_string()),
+        2001 => Some("👍".to_string()),
+        2002 => Some("👎".to_string()),
+        2003 => Some("😂".to_string()),
+        2004 => Some("‼️".to_string()),
+        2005 => Some("❓".to_string()),
+        2006 => emoji.filter(|emoji| !emoji.is_empty()).map(str::to_string),
+        _ => None,
+    }
 }
 
 impl Attachment {
@@ -542,6 +588,132 @@ pub fn unreadable(id: i64, error: &std::io::Error) -> Error {
 /// enough that a transcript does not contain itself twice over.
 const EXCERPT: usize = 60;
 
+/// The reactions on these messages, keyed by message rowid, removals cancelled.
+///
+/// A second query beside `attachments_for` and `replies_for`, keyed on the
+/// guids of the messages being returned (tapbacks.md §5). The stored target
+/// takes three forms — part-prefixed `p:N/<guid>` 96% of the time, `bp:<guid>`
+/// for most of the rest, and bare — all measured in §9, where the second form
+/// first hid inside an implausible orphan count. A join written
+/// `= message.guid` would have matched 1.3% of tapbacks while looking correct,
+/// so the join strips both prefixes and accepts the bare form. The 56 rows
+/// whose target genuinely no longer exists simply match nothing.
+fn tapbacks_for(
+    db: &Connection,
+    wanted: &[(i64, String)],
+    contacts: &ContactIndex,
+) -> Result<BTreeMap<i64, Vec<Tapback>>> {
+    let mut found: BTreeMap<i64, Vec<Tapback>> = BTreeMap::new();
+    if wanted.is_empty() {
+        return Ok(found);
+    }
+
+    let mut guids: Vec<&str> = wanted.iter().map(|(_, guid)| guid.as_str()).collect();
+    guids.sort_unstable();
+    guids.dedup();
+
+    // The emoji column arrived with a macOS version and §9 measured only this
+    // machine, so its absence is a schema to survive rather than an error —
+    // without it a type 2006 has no symbol and renders nowhere.
+    let has_emoji: i64 = db.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('message')
+          WHERE name = 'associated_message_emoji'",
+        [],
+        |row| row.get(0),
+    )?;
+    let emoji = if has_emoji > 0 {
+        "m.associated_message_emoji"
+    } else {
+        "NULL"
+    };
+
+    /// kind, emoji, date, from me, handle — one reaction row, pre-cancellation.
+    type Reaction = (i64, Option<String>, Option<i64>, bool, Option<String>);
+    let target = "CASE WHEN m.associated_message_guid LIKE 'p:%' \
+                  THEN substr(m.associated_message_guid, instr(m.associated_message_guid, '/') + 1) \
+                  WHEN m.associated_message_guid LIKE 'bp:%' \
+                  THEN substr(m.associated_message_guid, 4) \
+                  ELSE m.associated_message_guid END";
+    let mut raw: BTreeMap<String, Vec<Reaction>> = BTreeMap::new();
+    for batch in guids.chunks(ATTACHMENT_BATCH) {
+        let slots = vec!["?"; batch.len()].join(",");
+        let sql = format!(
+            "SELECT {target} AS target, m.associated_message_type AS kind,
+                    {emoji} AS emoji, m.date AS date,
+                    m.is_from_me AS isFromMe, handle.id AS handle
+               FROM message m LEFT JOIN handle ON m.handle_id = handle.rowid
+              WHERE m.associated_message_guid IS NOT NULL
+                AND m.associated_message_type BETWEEN 2000 AND 3999
+                AND {target} IN ({slots})
+              ORDER BY m.date"
+        );
+        let mut statement = db.prepare(&sql)?;
+        let mut rows = statement.query(params_from_iter(batch.iter().copied()))?;
+        while let Some(row) = rows.next()? {
+            let Some(target) = text(row, "target") else {
+                continue;
+            };
+            raw.entry(target).or_default().push((
+                number(row, "kind"),
+                text(row, "emoji"),
+                row.get::<_, Option<i64>>("date").ok().flatten(),
+                number(row, "isFromMe") == 1,
+                text(row, "handle"),
+            ));
+        }
+    }
+
+    let mut per_guid: BTreeMap<&str, Vec<Tapback>> = BTreeMap::new();
+    for (guid, reactions) in &raw {
+        // A removal cancels the latest surviving add from the same sender in
+        // its type family, and drops itself either way — an unmatched removal
+        // retracts a reaction this page never saw (tapbacks.md §6).
+        let mut kept: Vec<&Reaction> = Vec::new();
+        for reaction in reactions {
+            let (kind, _, _, from_me, handle) = reaction;
+            if *kind >= 3000 {
+                let family = kind - 1000;
+                if let Some(at) =
+                    kept.iter()
+                        .rposition(|(kind, _, _, kept_from_me, kept_handle)| {
+                            *kind == family && kept_from_me == from_me && kept_handle == handle
+                        })
+                {
+                    kept.remove(at);
+                }
+                continue;
+            }
+            kept.push(reaction);
+        }
+        let rendered: Vec<Tapback> = kept
+            .into_iter()
+            .filter_map(|(kind, emoji, date, is_from_me, handle)| {
+                let symbol = tapback_symbol(*kind, emoji.as_deref())?;
+                Some(Tapback {
+                    associated_message_type: *kind,
+                    symbol,
+                    date: from_apple_date(*date),
+                    is_from_me: *is_from_me,
+                    handle: handle.clone(),
+                    contact_name: contacts.lookup(handle.as_deref()).map(str::to_string),
+                })
+            })
+            .collect();
+        if !rendered.is_empty() {
+            per_guid.insert(guid.as_str(), rendered);
+        }
+    }
+
+    for (rowid, guid) in wanted {
+        // Cloned rather than taken, for the reason `attachments_for` documents:
+        // one message in two conversations is two rows with one rowid.
+        if let Some(list) = per_guid.get(guid.as_str()) {
+            found.insert(*rowid, list.clone());
+        }
+    }
+    Ok(found)
+}
+
 /// What each of these messages is replying to, keyed by the reply's rowid.
 ///
 /// A second query, like attachments, and for a sharper reason than shape: 19
@@ -776,6 +948,7 @@ fn to_message(row: &Row<'_>, contacts: &ContactIndex) -> Message {
         service: text(row, "service"),
         attachments: Vec::new(),
         reply_to: None,
+        tapbacks: Vec::new(),
         matched: true,
         group: None,
     }
@@ -821,9 +994,12 @@ struct Window {
 ///
 /// Nothing here narrows the window the way the search was narrowed. `--from`,
 /// `--since` and the body match all bound what counts as a hit; a window is a
-/// slice of the conversation around one, so it holds whatever was actually said
-/// — including tapbacks, which the search itself can never return and which are
-/// frequently the entire reply.
+/// slice of the conversation around one, so it holds whatever was actually
+/// said. Tapback rows are the one exception, since brackets: the reaction
+/// rides its target's bracket instead, and a window that also held the row
+/// showed the same reaction twice (tapbacks.md §6). What that trades away is
+/// the reaction whose target sits outside the window — it renders nowhere,
+/// where the row once stood in for the reply (search-context.md §3).
 pub fn with_context(
     db: &Connection,
     hits: Vec<Message>,
@@ -866,8 +1042,11 @@ pub fn with_context(
                     after_rowid: options.after_rowid,
                     before_rowid: options.before_rowid,
                     oldest_first: options.oldest_first,
-                    // A conversation is what was said in it.
-                    include_tapbacks: true,
+                    // Reactions used to cross into the window as rows, on "a
+                    // conversation is what was said in it" — until brackets
+                    // put them on the message they react to, and a window
+                    // showed the same reaction twice (tapbacks.md §6).
+                    include_tapbacks: false,
                     include_filtered: true,
                     ..Default::default()
                 },
@@ -1010,6 +1189,13 @@ pub struct FetchMessages<'a> {
     pub person: Option<PersonFilter<'a>>,
     pub limit: i64,
     pub include_tapbacks: bool,
+    /// Whether reactions ride the returned messages as `tapbacks`. Watch turns
+    /// this off: a stream that attached them would show a bracket exactly when
+    /// the reaction happened to land before its target was emitted — a race,
+    /// not a contract — and a bracket whose absence means nothing teaches a
+    /// reader that it does (tapbacks.md §10). Snapshots attach; streams show
+    /// reactions as events, behind `--tapbacks`.
+    pub attach_tapbacks: bool,
     pub include_filtered: bool,
     /// Take the oldest matches rather than the newest.
     ///
@@ -1031,8 +1217,36 @@ impl Default for FetchMessages<'_> {
             person: None,
             limit: 50,
             include_tapbacks: false,
+            attach_tapbacks: true,
             include_filtered: false,
             oldest_first: false,
+        }
+    }
+}
+
+/// How many new messages a single watch tick will fetch.
+pub const WATCH_BATCH: i64 = 200;
+
+impl FetchMessages<'_> {
+    /// The fetch both watch paths make, built in one place so they cannot
+    /// disagree. Two call sites — the CLI's poll loop and the daemon's
+    /// delivery — once carried this struct as twin literals, and the twin is
+    /// exactly how a stream rule dies: the daemon's `attach_tapbacks: false`
+    /// was pinned by a test while the CLI's identical line was guarded by
+    /// nothing, on the path every `--db` invocation takes and where the
+    /// protocol version has no reach. One constructor makes the stream's
+    /// no-attach rule a single line, and the daemon test covers it for both.
+    pub fn watch(chat_id: Option<i64>, after_rowid: i64, tapbacks: bool, unknown: bool) -> Self {
+        Self {
+            chat_id,
+            after_rowid: Some(after_rowid),
+            limit: WATCH_BATCH,
+            include_tapbacks: tapbacks,
+            // Streams attach no reactions; snapshots do (tapbacks.md §10).
+            attach_tapbacks: false,
+            include_filtered: unknown,
+            oldest_first: true,
+            ..Default::default()
         }
     }
 }
@@ -1271,6 +1485,19 @@ pub fn fetch_messages(
         .collect();
     let replies = replies_for(db, &wanted, contacts)?;
 
+    // Reactions land on the messages they react to, so only non-tapback rows
+    // are targets — a reaction to a reaction renders nowhere (tapbacks.md §6).
+    let targets: Vec<(i64, String)> = if options.attach_tapbacks {
+        messages
+            .iter()
+            .filter(|message| !message.is_tapback)
+            .map(|message| (message.rowid, message.guid.clone()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let tapbacks = tapbacks_for(db, &targets, contacts)?;
+
     for message in &mut messages {
         // Cloned rather than taken. `MESSAGE_FROM` joins `chat_message_join`, so
         // a message in two conversations comes back as two rows with one rowid,
@@ -1283,6 +1510,7 @@ pub fn fetch_messages(
         // when it is not: one rowid, two rows, and `remove` gives the quote to
         // whichever arrives first.
         message.reply_to = replies.get(&message.rowid).cloned();
+        message.tapbacks = tapbacks.get(&message.rowid).cloned().unwrap_or_default();
     }
 
     if !options.oldest_first {
@@ -2304,7 +2532,8 @@ mod tests {
       CREATE TABLE message (
         rowid INTEGER PRIMARY KEY, guid TEXT, text TEXT, attributedBody BLOB,
         is_from_me INTEGER DEFAULT 0, handle_id INTEGER,
-        associated_message_type INTEGER DEFAULT 0, date INTEGER, service TEXT,
+        associated_message_type INTEGER DEFAULT 0, associated_message_guid TEXT,
+          associated_message_emoji TEXT, date INTEGER, service TEXT,
         thread_originator_guid TEXT, thread_originator_part TEXT
       );
       CREATE TABLE chat_message_join (
@@ -2449,6 +2678,83 @@ mod tests {
         assert!(messages[2].is_tapback);
     }
 
+    /// The whole of tapbacks.md §4–§6 in one conversation: all three stored
+    /// guid forms reach their target, a removal cancels its add by sender and
+    /// type family, a type 2006 reads its emoji off the column, an
+    /// unidentified type renders nowhere, and an orphaned target matches
+    /// nothing.
+    #[test]
+    fn reactions_land_on_the_message_they_react_to() {
+        let db = fixture();
+        /// rowid, type, from me, handle, target, emoji.
+        type Reaction = (i64, i64, i64, i64, &'static str, Option<&'static str>);
+        let reactions: [Reaction; 7] = [
+            (10, 2000, 0, 2, "p:0/m1", None), // ❤️, cancelled by 13
+            (11, 2001, 1, 1, "m1", None),     // 👍, the bare form
+            (12, 2006, 0, 1, "p:0/m1", Some("🙏")),
+            (13, 3000, 0, 2, "p:0/m1", None), // removes 10: same sender, family
+            (14, 2007, 0, 1, "p:0/m1", None), // nothing identifies it (§9)
+            (15, 2000, 0, 1, "p:0/ghost", None), // target no longer exists
+            (16, 2001, 0, 2, "bp:m1", None),  // 👍, the second prefix form
+        ];
+        for (rowid, kind, from_me, handle, target, emoji) in reactions {
+            db.execute(
+                "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
+                     associated_message_type, associated_message_guid,
+                     associated_message_emoji, date, service)
+                 VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'iMessage')",
+                rusqlite::params![
+                    rowid,
+                    format!("t{rowid}"),
+                    from_me,
+                    handle,
+                    kind,
+                    target,
+                    emoji,
+                    at(10 + rowid)
+                ],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chat_message_join (chat_id, message_id, message_date)
+                 VALUES (1, ?, ?)",
+                rusqlite::params![rowid, at(10 + rowid)],
+            )
+            .unwrap();
+        }
+
+        let messages = fetch_messages(
+            &db,
+            &FetchMessages {
+                chat_id: Some(1),
+                ..Default::default()
+            },
+            &ContactIndex::empty(),
+        )
+        .unwrap();
+        let m1 = messages
+            .iter()
+            .find(|message| message.guid == "m1")
+            .expect("the target");
+        let symbols: Vec<&str> = m1
+            .tapbacks
+            .iter()
+            .map(|tapback| tapback.symbol.as_str())
+            .collect();
+        assert_eq!(symbols, ["👍", "🙏", "👍"], "{:?}", m1.tapbacks);
+        assert_eq!(m1.tapbacks[0].associated_message_type, 2001);
+        assert!(m1.tapbacks[0].is_from_me);
+        assert_eq!(m1.tapbacks[1].handle.as_deref(), Some("+13105551234"));
+        // Everything else on the page stays bare, including the message the
+        // orphaned reaction pointed at before its target vanished.
+        assert!(
+            messages
+                .iter()
+                .filter(|message| message.guid != "m1")
+                .all(|message| message.tapbacks.is_empty())
+        );
+    }
+
     #[test]
     fn reaches_a_filtered_conversation_when_it_is_named_outright() {
         let db = fixture();
@@ -2534,17 +2840,20 @@ mod tests {
         assert!(out[0].matched && out[0].group.is_none());
     }
 
-    /// A window is a slice of the conversation, not a continuation of the
-    /// filter — so it holds what a search can never return.
+    /// A reaction is never a hit, and since brackets it is not a row in the
+    /// window either: it rides its target, so a window cannot show the same
+    /// reaction twice. This test used to pin the row *crossing into* the
+    /// window — right when rows were the only way a reaction showed, and
+    /// tapbacks.md §6's exact complaint once they were not.
     #[test]
-    fn a_window_holds_what_the_search_itself_would_not() {
+    fn a_window_shows_a_reaction_on_its_target_not_as_a_row() {
         let db = fixture();
         let chat = talkative(&db);
-        // A reaction to the message right after the hit.
+        // A reaction to the hit itself, dated inside the window's reach.
         db.execute(
             "INSERT INTO message (rowid, guid, text, is_from_me, handle_id,
-                 associated_message_type, date, service)
-             VALUES (200, 'react', 'Liked \"the needle\"', 0, 4, 2000, ?, 'iMessage')",
+                 associated_message_type, associated_message_guid, date, service)
+             VALUES (200, 'react', 'Liked \"the needle\"', 0, 4, 2000, 'p:0/g106', ?, 'iMessage')",
             [at(23)],
         )
         .unwrap();
@@ -2557,8 +2866,9 @@ mod tests {
         // A tapback can never be a hit...
         let bare = found(&db, Context::default());
         assert_eq!(bare.len(), 1, "{bare:?}");
+        assert_eq!(bare[0].tapbacks.len(), 1, "{:?}", bare[0].tapbacks);
 
-        // ...and is still context, because it is often the whole reply.
+        // ...and the window carries it on the hit, not as a row of its own.
         let out = found(
             &db,
             Context {
@@ -2567,10 +2877,12 @@ mod tests {
             },
         );
         assert!(
-            out.iter().any(|message| message.rowid == 200),
+            !out.iter().any(|message| message.rowid == 200),
             "{:?}",
             out.iter().map(|m| m.rowid).collect::<Vec<_>>()
         );
+        let hit = out.iter().find(|message| message.rowid == 106).unwrap();
+        assert_eq!(hit.tapbacks[0].symbol, "❤️");
     }
 
     /// Two hits close together are one stretch of conversation, and print once.

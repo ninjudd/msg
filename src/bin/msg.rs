@@ -76,7 +76,7 @@ enum Command {
         /// only messages after a duration like 2h or a date
         #[arg(long)]
         since: Option<String>,
-        /// include reactions
+        /// show reactions as their own rows instead of brackets
         #[arg(long)]
         tapbacks: bool,
         #[arg(long)]
@@ -120,7 +120,7 @@ enum Command {
         /// how often to poll without a daemon
         #[arg(long, default_value_t = 3, value_parser = positive_seconds)]
         interval: u64,
-        /// include reactions
+        /// show reactions as their own rows instead of brackets
         #[arg(long)]
         tapbacks: bool,
         /// emit JSON lines
@@ -299,7 +299,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                 format!(
                     "{}\n\n{}",
                     reply.chat.name,
-                    render_messages(&reply.messages, false)
+                    render_messages(&reply.messages, false, !*tapbacks)
                 )
             });
         }
@@ -338,7 +338,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
             print(&if *json {
                 to_json(&messages)
             } else {
-                render_messages(&messages, true)
+                render_messages(&messages, true, true)
             });
         }
 
@@ -362,7 +362,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                     print(&if as_json {
                         format!("{}\n", serde_json::to_string(message)?)
                     } else {
-                        render_messages(std::slice::from_ref(message), show_chat)
+                        render_messages(std::slice::from_ref(message), show_chat, !*tapbacks)
                     });
                     Ok(())
                 },
