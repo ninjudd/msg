@@ -28,8 +28,14 @@ responsible for what an identifier is for. They compose through ordinary CLI
 output:
 
 ```sh
-gog gmail search "from:$(msg contacts resolve dana --email)"
+email=$(msg contacts resolve dana --email) &&
+gog gmail search "from:$email"
 ```
+
+The guard is part of the composition. §7 keeps stdout empty on failure
+precisely so the `&&` has something honest to test — pasted inline instead,
+a failed substitution hands `gog` an empty `from:` and the search runs
+anyway, broader than anything the caller meant.
 
 ## 2 What exists, and the one real gap
 
@@ -56,10 +62,18 @@ drift, and the first time they disagree, `resolve`'s answer is a lie about
 what `send` would do — the exact failure the dry-run address exists to
 prevent.
 
-The domains differ even though the rules do not: `resolve` answers from all
-of Contacts, while `chat` goes on to require a conversation. Someone never
-messaged resolves fine and then has no chats, which is two different
-questions getting two different answers, not a disagreement.
+The rules are shared; the domain is each command's own. `chat` resolves
+among people present in the Messages handle table — that is what
+`people_matching` reads — while `resolve` answers from Contacts. The visible
+consequence, decided here rather than discovered later: a name two Contacts
+records answer to, only one of them ever messaged, opens uniquely in `msg
+chat` and reports ambiguity from `resolve`. That is the two questions
+differing, not the rules — "who that I message is Dana" has one answer on
+that machine, "who is Dana" has two, and a caller who means the messaged one
+says so with an address. Rejected: letting Messages presence break the
+`resolve` tie, which is §8's rejection again — an iMessage signal quietly
+deciding a generic identity answer. The §3 fixture pins this case from both
+sides.
 
 ## 4 Command grammar (DECIDED)
 
@@ -77,6 +91,15 @@ The existing `msg contacts <terms>` behavior is untouched. It is an
 annotator: it happily lists several people, because identifying whoever
 matched is its whole job. `resolve` is a picker, and the two coexist the way
 `chats` and `chat` do.
+
+Output modes, spelled out. Bare `resolve <term>` prints for a person: the
+name line `msg contacts` prints today, then one address per line with its
+label — human-first, like every read command here. `--json` emits the §5
+object. `--emails` and `--phones` emit values one per line; `--email` and
+`--phone` are §8's singular forms. Those five flags are mutually exclusive,
+enforced by clap: a script wanting values has the line forms, one wanting
+structure has the object, and `--json --email` has no meaning that is not
+better spelled one of those two ways.
 
 ## 5 The schema (DECIDED)
 
@@ -110,6 +133,15 @@ Identifiers are objects from day one:
   across resyncs. If the AddressBook schema turns out to carry a durable
   record UID, tightening the promise later is additive; promising now and
   retracting is not. Verify against the database before claiming more.
+- **The domain is address-bearing contacts, stated plainly.** The loader
+  builds the index from the phone and email tables, so a record with
+  neither — a notes-only card, a company shell — never enters it, and
+  `resolve` reports nobody matched for a name Contacts.app would show.
+  Documented rather than fixed in v1: this command exists to hand back
+  identifiers, and a hit carrying none leads a caller to the same place as
+  a miss. If a real case ever proves otherwise, the change is a person-led
+  load emitting the object with empty arrays and status 0 — additive, and
+  waiting on that case per the rule against speculative fixes.
 
 ## 6 Labels
 
@@ -128,8 +160,8 @@ with an address alongside each, and the exit status says what happened:
 | --- | --- |
 | 0 | one person, output emitted |
 | 1 | nobody matched |
-| 2 | the databases could not be opened |
-| 3 | more than one person matched |
+| 2 | the databases could not be opened or read, in whole or in part |
+| 3 | the answer is not unique — several people, or several values under a singular flag |
 
 The stdout discipline is what makes `$( … )` safe: an ambiguous name must
 produce an empty-and-failed substitution, never a wrong address spliced into
@@ -137,6 +169,24 @@ somebody else's command line. Ambiguity gets its own status because it is
 the branch scripts most need to take — "ask a human" rather than "give up".
 Exit 2 keeps its documented meaning unchanged. README and the Agent Skill
 document the contract in the shipping PR.
+
+Status 3 is ambiguity of either kind, deliberately one number: `--email` on
+a person with two addresses fails exactly as two people named Dana do, with
+the candidates on stderr saying which kind this was. Rejected: a separate
+status per kind — both recoveries end at a human or at the plural form, and
+a contract grows statuses more easily than it retires them.
+
+A partial Contacts load is an error here, not a quieter success. The loader
+skips an unreadable source, records the problem, and serves the rest —
+right for rendering names in a transcript, where best-effort beats blank,
+and wrong for an identity answer a script will act on: a "nobody matched"
+that is missing a source is not a fact, and neither is an "exactly one"
+whose duplicate might live in the database that failed to open. `resolve`
+with any load problem recorded exits 2 and names the failed source on
+stderr, even when a healthy source held a match. Rejected: carrying
+rendering's best-effort silence over to resolution. Tests pin both halves —
+the failed source forcing 2 over an otherwise-clean match, and a fully
+healthy load resolving normally.
 
 ## 8 Singular `--email` and `--phone` (DECIDED)
 
@@ -176,6 +226,16 @@ new request in the protocol, read-only, taking a term and returning the
 person object; it accepts no path from anyone, so it changes nothing about
 what the socket can be made to do.
 
+The wire has to carry the failure contract, not only the object. Today just
+`AccessDenied` and `SendDisabled` survive the socket typed; every other
+error lands as `Other`, which the CLI maps to status 1 — so daemon-mode
+ambiguity would exit 1 while the direct path exits 3, and §7 would hold or
+break depending on whether a daemon happened to be listening. The request's
+error path therefore carries ambiguity structurally — a code plus the
+candidate list — and the client maps it back to the same status and the
+same stderr shape as the direct path. One test drives `resolve` through a
+real socket and asserts the two paths agree on every row of §7's table.
+
 ## 11 Out of scope
 
 Query builders — `from:(a OR b)` for Gmail, or any per-tool formatting.
@@ -188,7 +248,7 @@ as conveniences rather than as part of the identity contract.
 ## 12 Shape of the work
 
 One PR is the likely right size: the person assembly in `contacts.rs` with
-existing consumers migrated, the subcommand with its four output modes, the
+existing consumers migrated, the subcommand with the §4 output modes, the
 protocol request, the tests — the one-resolver fixture of §3, the exit
 statuses, singular-flag failures, label extraction against a fixture
 database — and the README, skill, and list edits that ride every shipping
