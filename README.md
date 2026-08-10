@@ -401,6 +401,95 @@ Handles are resolved to contact names automatically, in rendered output and in
 `--json` alike. `--no-names` shows raw phone numbers and addresses, and skips
 reading Contacts altogether.
 
+### Resolving a person
+
+`msg contacts resolve` answers "who is Dana, and how do I reach her" — for
+you, or for any tool that needs an address rather than a transcript:
+
+```sh
+msg contacts resolve dana              # the person, whole
+msg contacts resolve dana --json       # the same, as one JSON object
+msg contacts resolve dana --emails     # every email address, one per line
+msg contacts resolve dana --email      # exactly one, or an error naming them
+msg contacts resolve dana --phones     # every phone number
+msg contacts resolve dana --phone      # exactly one
+```
+
+Resolution follows the same rules as naming a conversation: a name matches
+from the start of a word, an address given outright wins outright, a whole
+name settles the tie a fragment created, and two people are never guessed
+between. What differs is the domain — everyone in Contacts, whether or not
+you have ever messaged them — so a name that opens one conversation can
+still be ambiguous here, and the answer is to say which, by address.
+
+The exit status says what happened, and **stdout stays empty on every
+failure**, so a command substitution fails empty rather than splicing the
+wrong address into another command:
+
+| Status | Meaning |
+| --- | --- |
+| 0 | one person; the output is theirs |
+| 1 | nobody matched, or the person has none of what a singular flag asked for |
+| 2 | the Contacts databases could not be read, in whole or in part |
+| 3 | not unique: several people, or several values under `--email`/`--phone` |
+
+Candidates go to stderr, one per line with an address alongside each, which
+is what to disambiguate by:
+
+```
+$ msg contacts resolve dana --email
+2 email addresses for Dana Reyes:
+  dana@example.com (home)
+  dana@work.example (work)
+```
+
+Composing with another tool is a two-liner that stops when resolution does:
+
+```sh
+email=$(msg contacts resolve dana --email) &&
+gog gmail search "from:$email"
+```
+
+The JSON is one object, and the schema only ever grows:
+
+```json
+{
+  "id": "1ABC…:42",
+  "name": "Bob",
+  "filedAs": "Robert Chen",
+  "emails": [{ "value": "bob@example.com", "label": "home" }],
+  "phones": [{ "value": "+13105551234", "label": "mobile" }]
+}
+```
+
+`id` is opaque and not promised durable across Contacts resyncs. `emails`
+and `phones` are always present, even empty. `label` is absent when Contacts
+holds none; Apple's preset labels read as `home`, `work`, `mobile`, and a
+label somebody typed themselves is kept as typed. Phone numbers come out
+with their separators dropped — `+13105551234`, never `(310) 555-1234` — and
+a `+` is kept when stored but never invented, since a bare local number
+carries nothing to derive the country from. On one real database 64% of
+stored numbers carried a country code, so mixed shapes are a fact of the
+data rather than a bug here
+([contact-resolution.md §9](docs/projects/all/contact-resolution.md)).
+
+Two edges, stated rather than smoothed over. A record with no phone and no
+email never resolves — `msg` indexes Contacts by address, and someone with
+no way to reach them answers no question this command asks. And a partial
+Contacts read, one account's database unreadable, is status 2 even when a
+healthy account held a match: "nobody matched" and "exactly one" are claims
+about all of Contacts, and half the data cannot back either. Name rendering
+elsewhere stays best-effort; an identity answer does not.
+
+Records filed under one name are one person — the same unification Contacts
+itself shows as a single card when your accounts each hold a copy of
+somebody. A resolve answers with every card's addresses merged, and this
+holds in conversation resolution too, so `resolve` and `chat` cannot
+disagree about who somebody is. An address shared by records filed under
+*different* names is refused, naming both, because a parent and a child on
+one home line are two people, and picking between people is the thing this
+command never does.
+
 ### Machine-readable output
 
 Every read command accepts `--json`. `watch --json` emits newline-delimited
@@ -542,6 +631,8 @@ authentication, and why the daemon is a single executable rather than a copy of
 | `--interval <seconds>` | `watch` | poll frequency, without a daemon |
 | `-f, --file <path>` | `send` | send a file instead of text |
 | `--dry-run` | `send` | show without sending |
+| `--emails`, `--phones` | `contacts resolve` | every value of that kind, one per line |
+| `--email`, `--phone` | `contacts resolve` | exactly one value, or exit 3 naming the candidates |
 | `--json` | all read commands | machine-readable output |
 
 ### Environment
@@ -549,6 +640,7 @@ authentication, and why the daemon is a single executable rather than a copy of
 | Variable | Meaning |
 | --- | --- |
 | `MSG_DB` | path to an alternate `chat.db`, same as `--db` |
+| `MSG_ADDRESSBOOK` | an alternate AddressBook directory, `MSG_DB`'s idea for Contacts |
 | `MSG_CONTACTS_SOURCE` | UUID of the Contacts source whose names win |
 | `MSG_SOCKET` | where the daemon listens, default `~/.local/state/msg/msgd.sock` |
 | `MSG_STATE_DIR` | socket and log directory, default `~/.local/state/msg` |
@@ -557,16 +649,19 @@ authentication, and why the daemon is a single executable rather than a copy of
 
 `MSG_DB` steers the CLI, which reads that database itself rather than asking the
 daemon — the same as `--db`, so a fixture stays a fixture even with a daemon
-running.
+running. `MSG_ADDRESSBOOK` steers the same way, for the same reason: the daemon
+answers contact questions from its own AddressBook, and a fixture that only
+applied when no daemon was listening would be worse than none.
 
 `MSG_SOCKET`, `MSG_STATE_DIR`, `MSG_CONFIG` and `MSG_CONTACTS_SOURCE` are read by
 the daemon, and **a launchd job inherits nothing from your shell**. `msg daemon
 install` copies whichever of them are set into the agent and prints what it
 carried; changing one afterwards means installing again.
 
-`MSG_DB` is never carried into the agent, deliberately. It would outlive the
-shell that set it, leaving a daemon pinned to a fixture and a CLI with no way to
-know. To serve one, run `msgd` yourself with `MSG_DB` set.
+`MSG_DB` and `MSG_ADDRESSBOOK` are never carried into the agent, deliberately.
+Either would outlive the shell that set it, leaving a daemon pinned to a
+fixture and a CLI with no way to know. To serve one, run `msgd` yourself with
+the variable set.
 
 ## How it works
 

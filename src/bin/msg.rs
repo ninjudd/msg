@@ -134,12 +134,7 @@ enum Command {
         json: bool,
     },
     /// look up who somebody is, by name, nickname, or address
-    Contacts {
-        /// names, nicknames, phone numbers, or email addresses
-        handles: Vec<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    Contacts(ContactsArgs),
     /// send a message to a conversation
     Send(SendArgs),
     /// write an attachment to a directory, by the id shown beside it
@@ -160,6 +155,47 @@ enum Command {
         #[command(subcommand)]
         command: DaemonCommand,
     },
+}
+
+/// The lookup and the resolver share the word `contacts`, so `resolve`
+/// becomes a reserved first term — accepted in the plan, since the collision
+/// is somebody actually named Resolve (contact-resolution.md §4).
+#[derive(Args)]
+#[command(args_conflicts_with_subcommands = true)]
+struct ContactsArgs {
+    #[command(subcommand)]
+    command: Option<ContactsCommand>,
+    /// names, nicknames, phone numbers, or email addresses
+    handles: Vec<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Subcommand)]
+enum ContactsCommand {
+    /// one person from a name, and every address their record carries
+    Resolve(ResolveArgs),
+}
+
+#[derive(Args)]
+struct ResolveArgs {
+    /// a name, a nickname, or one of their addresses
+    term: String,
+    /// the whole person as JSON
+    #[arg(long, group = "mode")]
+    json: bool,
+    /// every email address, one per line
+    #[arg(long, group = "mode")]
+    emails: bool,
+    /// every phone number, one per line
+    #[arg(long, group = "mode")]
+    phones: bool,
+    /// exactly one email address, or an error naming the candidates
+    #[arg(long, group = "mode")]
+    email: bool,
+    /// exactly one phone number, or an error naming the candidates
+    #[arg(long, group = "mode")]
+    phone: bool,
 }
 
 #[derive(Args)]
@@ -223,12 +259,87 @@ fn positive_seconds(value: &str) -> Result<u64, String> {
     }
 }
 
-/// Exit 2 is the documented status for "the data is there, the grant is not".
+/// What `contacts resolve` prints, decided by the mode flags. The flags are
+/// mutually exclusive under clap, so the order here is a match, not a
+/// precedence.
+fn render_person(person: &msg::contacts::PersonRecord, ask: &ResolveArgs) -> msg::Result<String> {
+    if ask.json {
+        return Ok(to_json(person));
+    }
+    if ask.emails || ask.email {
+        return picked(
+            &person.emails,
+            ask.email,
+            &person.name,
+            "email address",
+            "email addresses",
+        );
+    }
+    if ask.phones || ask.phone {
+        return picked(
+            &person.phones,
+            ask.phone,
+            &person.name,
+            "phone number",
+            "phone numbers",
+        );
+    }
+    // The human block: the name line `contacts` prints, then one address per
+    // line with its label.
+    let mut out = match &person.filed_as {
+        Some(filed) => format!("{} ({filed})\n", person.name),
+        None => format!("{}\n", person.name),
+    };
+    for value in person.emails.iter().chain(&person.phones) {
+        match &value.label {
+            Some(label) => out.push_str(&format!("{}\t{label}\n", value.value)),
+            None => out.push_str(&format!("{}\n", value.value)),
+        }
+    }
+    Ok(out)
+}
+
+/// One value or all of them. Singular means exactly one: none is an ordinary
+/// error, several are status 3 naming the candidates, and stdout stays empty
+/// either way, so `$( … )` fails empty rather than splicing a wrong address
+/// into somebody else's command line (contact-resolution.md §8).
+fn picked(
+    values: &[msg::contacts::LabeledValue],
+    single: bool,
+    name: &str,
+    singular: &str,
+    plural: &str,
+) -> msg::Result<String> {
+    if !single {
+        return Ok(values.iter().map(|v| format!("{}\n", v.value)).collect());
+    }
+    match values {
+        [] => Err(Error::other(format!("{name} has no {singular}"))),
+        [one] => Ok(format!("{}\n", one.value)),
+        several => Err(Error::Ambiguous(format!(
+            "{} {plural} for {name}:\n{}",
+            several.len(),
+            several
+                .iter()
+                .map(|v| match &v.label {
+                    Some(label) => format!("  {} ({label})", v.value),
+                    None => format!("  {}", v.value),
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        ))),
+    }
+}
+
+/// Exit 2 is the documented status for "the data is there, the grant is not",
+/// and 3 for an answer that is not unique — several people, or several values
+/// under a singular flag — so a script lands on "ask a human" rather than
+/// "give up" (contact-resolution.md §7).
 fn status_for(error: &Error) -> ExitCode {
-    if matches!(error, Error::AccessDenied(_)) {
-        ExitCode::from(2)
-    } else {
-        ExitCode::FAILURE
+    match error {
+        Error::AccessDenied(_) => ExitCode::from(2),
+        Error::Ambiguous(_) => ExitCode::from(3),
+        _ => ExitCode::FAILURE,
     }
 }
 
@@ -419,7 +530,21 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
             )?;
         }
 
-        Command::Contacts { handles, json } => {
+        Command::Contacts(args) => {
+            if let Some(ContactsCommand::Resolve(ask)) = &args.command {
+                // `--no-names` promises Contacts stays unread, and resolving
+                // is nothing but reading Contacts — refusing beats silently
+                // doing the one thing the flag was passed to prevent.
+                if !cli.names() {
+                    return Err(Error::other(
+                        "contacts resolve reads Contacts to answer; it cannot run with --no-names",
+                    ));
+                }
+                let person = source.person(&ask.term)?;
+                print(&render_person(&person, ask)?);
+                return Ok(());
+            }
+            let (handles, json) = (&args.handles, &args.json);
             let reply = source.contacts(handles)?;
             if handles.is_empty() {
                 print(&format!("{} handles known from Contacts\n", reply.size));
@@ -621,6 +746,7 @@ fn daemon(cli: &Cli, command: &DaemonCommand) -> msg::Result<()> {
             let server = Daemon::new(DaemonOptions {
                 db_path: cli.db.clone(),
                 config_path: None,
+                addressbook: None,
             });
             let path = server.listen(None)?;
             eprintln!("msgd {VERSION} listening on {}", path.display());

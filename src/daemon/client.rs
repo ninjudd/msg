@@ -53,6 +53,7 @@ fn decode(line: &str) -> Result<Frame> {
 fn raise(code: ErrorCode, message: String) -> Error {
     match code {
         ErrorCode::AccessDenied => Error::AccessDenied(message),
+        ErrorCode::Ambiguous => Error::Ambiguous(message),
         ErrorCode::SendDisabled => Error::SendDisabled(message),
         ErrorCode::Error | ErrorCode::Version => Error::Other(message),
     }

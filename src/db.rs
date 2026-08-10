@@ -1965,18 +1965,22 @@ pub fn describe_target(chat: &Chat) -> String {
 
 /// Who an address belongs to, as a key two addresses can share.
 ///
-/// The Contacts record where there is one, because a phone number and an email
-/// address on one record are one person — that is the whole reason `--from
-/// <their email>` finds what they sent from their phone. The normalized handle
-/// otherwise, which is the most that can be said without a record to join them
-/// by: two shapes of one unknown number are still one person.
+/// The unified person where a Contacts record backs the handle — records
+/// filed under one name are one person, the same unification `contacts
+/// resolve` answers with and Contacts itself displays — because a phone
+/// number and an email address on one person's records are one person's
+/// addresses; that is the whole reason `--from <their email>` finds what they
+/// sent from their phone, even when the two live on cards in different
+/// accounts. The normalized handle otherwise, which is the most that can be
+/// said without a record to join them by: two shapes of one unknown number
+/// are still one person.
 ///
 /// Shared so that "the same person" means the same thing to everything that
 /// asks. A conversation and a search that disagreed about it would be a subtle
 /// and very confusing bug.
 fn person_identity(handle: &str, contact: Option<&Contact>) -> String {
     match contact {
-        Some(contact) => format!("contact:{}", contact.id),
+        Some(contact) => format!("contact:{}", contact.person_key()),
         None => format!(
             "handle:{}",
             crate::contacts::handle_key(handle).unwrap_or_else(|| handle.to_string())
@@ -2102,11 +2106,7 @@ fn people_matching(
 
     if people.len() > 1 {
         let exactly_named = |person: &Person| {
-            person.name.to_lowercase() == lowered
-                || person
-                    .filed_as
-                    .as_ref()
-                    .is_some_and(|filed| filed.to_lowercase() == lowered)
+            crate::contacts::exactly_named(&person.name, person.filed_as.as_deref(), &lowered)
         };
         if people
             .values()
@@ -3309,8 +3309,9 @@ mod tests {
             ("+13105551234", "source:7", "Robin Adeyemi"),
             ("someone@example.com", "source:7", "Robin Adeyemi"),
         ])
-        .nicknamed("+13105551234", "Rocket")
-        .nicknamed("someone@example.com", "Rocket");
+        // One call covers the record, as the loader would: the nickname is
+        // the record's, not one address's.
+        .nicknamed("+13105551234", "Rocket");
 
         for spec in ["rocket", "robin adeyemi"] {
             let person = resolve_person(&db, spec, &contacts).unwrap();
@@ -3464,8 +3465,9 @@ mod tests {
             ("+16175550147", "source:7", "Robin Adeyemi"),
             ("robin@example.com", "source:7", "Robin Adeyemi"),
         ])
-        .nicknamed("+16175550147", "Rocket")
-        .nicknamed("robin@example.com", "Rocket");
+        // One call covers the record, as the loader would: the nickname is
+        // the record's, not one address's.
+        .nicknamed("+16175550147", "Rocket");
 
         // A fragment too. Fewer letters does not make it two people, and a
         // substring is a documented way to name a chat, so it is how this
@@ -4124,11 +4126,10 @@ mod tests {
 
     /// Duplicate members are counted by identity, in both directions.
     ///
-    /// Rendered names get this wrong twice over: two records can carry one
-    /// name and are two people, and one person named once by address and once
-    /// by name renders as two different strings. The second is the dangerous
-    /// one — it leaves a single identity wanted, so a two-argument question
-    /// would quietly be answered with a one-to-one.
+    /// Identity now unifies records filed under one name
+    /// (contact-resolution.md §5), so naming two addresses that lead to one
+    /// filed name is naming one person twice, however many records hold
+    /// them — while two people with their own names still make a room.
     #[test]
     fn duplicate_members_are_counted_by_identity_not_by_name() {
         let db = fixture();
@@ -4137,11 +4138,26 @@ mod tests {
         room(&db, 20, &[4, 5]);
         let contacts = ContactIndex::for_test([
             ("+16175550147", "source:1", "Ana Duarte"),
-            // A second record that happens to carry the same name. Two people.
+            // A second record filed under the same name: the same person,
+            // on a card in another account.
             ("+16175550148", "source:2", "Ana Duarte"),
         ]);
 
-        // Two people who share a name are two people, so their room resolves.
+        let twice = resolve_conversations(
+            &db,
+            &["+16175550147".to_string(), "+16175550148".to_string()],
+            &contacts,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(twice.contains("same person named twice"), "{twice}");
+
+        // Distinct names are distinct people, and their room resolves.
+        let contacts = ContactIndex::for_test([
+            ("+16175550147", "source:1", "Ana Duarte"),
+            ("+16175550148", "source:2", "Sam Rivera"),
+        ]);
         let found = resolve_conversations(
             &db,
             &["+16175550147".to_string(), "+16175550148".to_string()],
@@ -4149,7 +4165,7 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(found[0].rowid, 20, "same name, different records");
+        assert_eq!(found[0].rowid, 20, "two names, one room");
     }
 
     /// One person named two ways is not a room.
@@ -4331,33 +4347,30 @@ mod tests {
         assert!(chat.is_group, "{chat:?}");
     }
 
-    /// The same shape, and the opposite answer, because these are two people.
-    ///
-    /// Collapsing by the rendered name rather than by the record would answer
-    /// with a stranger's conversation, which is the one outcome worse than
-    /// reporting the ambiguity.
+    /// The same shape, and since the unification correction, the same
+    /// answer: records filed under one name are one person
+    /// (contact-resolution.md §5). The first draft of this test asserted the
+    /// opposite — that two records agreeing on a name stay two people — and
+    /// a real database answered a real query with "4 people match", all four
+    /// one contact whose cards were split across accounts. The platform's
+    /// own unified cards collapse by the composed name, so refusing to was
+    /// not caution, it was disagreeing with what Contacts shows.
     #[test]
-    fn two_people_sharing_a_name_stay_ambiguous() {
+    fn records_filed_alike_are_one_person_whose_newest_thread_leads() {
         let db = fixture();
         let older = one_to_one(&db, 4, "+16175550147");
         let newer = one_to_one(&db, 5, "robin@example.com");
         message_in(&db, older, 10, 5);
         message_in(&db, newer, 11, 90);
 
-        // Two records that happen to agree on a name: an old entry and a new
-        // one, a father and a son.
+        // Two records that agree on a filed name: one person, two cards.
         let contacts = ContactIndex::for_test([
             ("+16175550147", "source:7", "Robin Adeyemi"),
             ("robin@example.com", "source:9", "Robin Adeyemi"),
         ]);
 
-        // Said as people, with the address that tells them apart — a list of
-        // chats would print one name twice and explain nothing.
-        let error = resolve_chat(&db, "Robin Adeyemi", &contacts)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("2 people match"), "{error}");
-        assert!(error.contains("+16175550147"), "{error}");
+        let chat = resolve_chat(&db, "Robin Adeyemi", &contacts).unwrap();
+        assert_eq!(chat.rowid, newer, "{chat:?}");
     }
 
     /// An error that shows six of fifty has to say so, or the list reads as the
@@ -4983,29 +4996,30 @@ mod tests {
 
     /// Two people can answer to one name, and a rendered name is not an identity.
     ///
-    /// Keying people by what they render as merges them, and a search then
-    /// quietly returns two people's messages as one person's. Reporting the
-    /// ambiguity is the least this can do; picking one silently is the thing it
-    /// must not.
+    /// Two records filed under one name are one person, and a person filter
+    /// built from either card covers both — which is the point of unifying:
+    /// `--from <their gmail>` has to find what they sent from the card their
+    /// phone number lives on (contact-resolution.md §5).
     #[test]
-    fn two_contacts_sharing_a_name_are_two_people() {
+    fn two_records_filed_alike_filter_as_one_person() {
         let db = fixture();
         let contacts = ContactIndex::for_test([
             ("+13105551234", "source:7", "Sam Rivera"),
             ("someone@example.com", "source:9", "Sam Rivera"),
         ]);
 
-        let error = resolve_person(&db, "Sam Rivera", &contacts)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("2 people match"), "{error}");
-        // Named twice over, so the addresses are what tell them apart.
-        assert!(error.contains("+13105551234"), "{error}");
-        assert!(error.contains("someone@example.com"), "{error}");
+        let person = resolve_person(&db, "Sam Rivera", &contacts).unwrap();
+        let mut handles = person.handles.clone();
+        handles.sort();
+        assert_eq!(
+            handles,
+            ["+13105551234", "someone@example.com"],
+            "{person:?}"
+        );
 
-        // Naming one address still reaches exactly one of them.
-        let person = resolve_person(&db, "someone@example.com", &contacts).unwrap();
-        assert_eq!(person.handles, ["someone@example.com"], "{person:?}");
+        // An address reaches the same whole person, not just its own card.
+        let by_address = resolve_person(&db, "someone@example.com", &contacts).unwrap();
+        assert_eq!(by_address.handle_ids.len(), 2, "{by_address:?}");
     }
 
     #[test]
@@ -5779,5 +5793,38 @@ mod tests {
         assert!(json.get("namedHandles").is_some());
         assert!(json.get("memberCount").is_some());
         assert!(json.get("lastDate").is_some());
+    }
+
+    /// The one-resolver guarantee, and the mixed-domain case it was refined
+    /// by (contact-resolution.md §3): the rules are shared, the domain is
+    /// each command's own. A name two Contacts records answer to, only one
+    /// of them ever messaged, resolves uniquely here — the Messages `handle`
+    /// table is this resolver's pool — and is an ambiguity to
+    /// `ContactIndex::person`, whose pool is all of Contacts. When both
+    /// answer uniquely, they must answer with the same person.
+    #[test]
+    fn the_two_resolvers_share_rules_and_differ_only_in_domain() {
+        let db = fixture();
+        let contacts = ContactIndex::for_test([
+            ("+13105551234", "a:1", "Dana Reyes"),
+            ("+19995550000", "a:2", "Dana Smith"),
+        ]);
+
+        let messaged = resolve_person(&db, "dana", &contacts).unwrap();
+        assert_eq!(messaged.name, "Dana Reyes");
+        assert!(matches!(
+            contacts.person("dana"),
+            Err(crate::Error::Ambiguous(_))
+        ));
+
+        let person = contacts.person("dana reyes").unwrap();
+        assert_eq!(person.id, "a:1");
+        for handle in &messaged.handles {
+            assert_eq!(
+                contacts.contact(Some(handle)).map(|c| c.id.as_str()),
+                Some(person.id.as_str()),
+                "the two resolvers named different people for {handle}"
+            );
+        }
     }
 }

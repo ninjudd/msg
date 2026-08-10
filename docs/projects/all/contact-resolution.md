@@ -1,7 +1,9 @@
 # Plan: Contact resolution as a public primitive
 
-**Status:** Designed, not started. The design was settled in discussion on
-2026-08-09; nothing is implemented, and §9's measurement has not been run.
+**Status:** Shipped, 2026-08-09, in one PR as §12 sized it. §9's measurement
+ran on a real database first and is recorded there; §5 gained the
+record-per-person note and §9 the separator rule during implementation, each
+marked in place.
 
 **Goal:** Expose the name → person stage of resolution as `msg contacts
 resolve` — stable JSON, shell-friendly output, explicit ambiguity — so other
@@ -142,6 +144,24 @@ Identifiers are objects from day one:
   a miss. If a real case ever proves otherwise, the change is a person-led
   load emitting the object with empty arrays and status 0 — additive, and
   waiting on that case per the rule against speculative fixes.
+- **Records filed under one name are one person** (corrected at
+  implementation, twice, and worth the history). The first version said one
+  *record* is one person and deferred any merging until a real complaint;
+  the complaint arrived the same day, from the first real query: a contact
+  whose cards were split across accounts answered "4 people match", all
+  four her. The databases hold no linkage to read — `ZLINKID` was empty on
+  every row measured and the unification-override table alongside it held
+  nothing — because the platform computes unified cards at query time,
+  keyed on the composed name. So `msg` unifies the same way: entries whose
+  *filed* name matches (case-insensitively; the filed name, so a nicknamed
+  card and a plain card for one person still meet) are one person, across
+  accounts and within them, in `resolve` and in conversation resolution
+  alike, since §3 forbids the two disagreeing. The cost, accepted with the
+  platform: two genuine strangers filed under identical full names merge
+  here exactly as Contacts merges them on screen. An address shared by
+  records filed under *different* names stays an ambiguity naming both —
+  the parent-and-child-on-one-line case no rule may pick from. The
+  published `id` is the preferred record's, still opaque and undurable.
 
 ## 6 Labels
 
@@ -216,6 +236,19 @@ implementation, measure what fraction of stored numbers carry one, on a real
 database, as an aggregate. If nearly all do, the honest rule is also the
 useful one and this section stands; if not, reopen it here rather than
 patching the behavior quietly.
+
+Measured at implementation (2026-08-09, through a probe running in the
+daemon): 64% of 874 stored numbers carried a `+`-prefixed country code, 36%
+did not, and `ZCOUNTRYCODE` — a column that looked like it might settle the
+derivation — was empty on every row. Not "nearly all", so this section
+reopened as promised, and the rule above was refined rather than replaced:
+**separators are dropped from every number**, the `+` is kept when stored
+and still never invented, and a value that is not digits after separator
+stripping — an extension, a word — passes through as stored. What it
+replaced: emitting the raw stored shape for CC-less numbers, which at 36%
+would have made a third of all output `(310) 555-1234`-shaped and pushed
+every consumer to write its own stripper. The no-invention half stands
+unchanged.
 
 ## 10 Through the daemon
 

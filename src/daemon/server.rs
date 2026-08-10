@@ -15,7 +15,7 @@ use base64::Engine;
 use rusqlite::Connection;
 
 use crate::apple::since_to_apple_date;
-use crate::contacts::{ContactIndex, load_contacts};
+use crate::contacts::{ContactIndex, load_contacts_from};
 use crate::daemon::config::{config_path, disabled_message, read_config};
 use crate::daemon::protocol::{
     AutomationReply, COMMANDS, ChatReply, ContactsReply, ErrorCode, Frame, PROTOCOL_VERSION,
@@ -99,11 +99,17 @@ pub struct DaemonOptions {
     /// Where the `send = true` gate is read from. `None` means the documented
     /// location, which is what the installed daemon uses.
     pub config_path: Option<PathBuf>,
+    /// The AddressBook directory to read contacts from. `None` means the real
+    /// one; the test harness passes a fixture here the way it passes
+    /// `db_path`, since an in-process daemon cannot take it from the
+    /// environment without racing the other tests in the binary.
+    pub addressbook: Option<PathBuf>,
 }
 
 struct Shared {
     db_path: Option<String>,
     config_path: Option<PathBuf>,
+    addressbook: Option<PathBuf>,
     db: Mutex<Option<Connection>>,
     contacts: Mutex<Option<Cached>>,
     watchers: Mutex<Vec<Watcher>>,
@@ -136,12 +142,16 @@ impl Shared {
             return empty_index();
         }
         let mut guard = self.contacts.lock().expect("contacts lock");
-        // A load that came back empty is retried soon rather than held for the
-        // full interval: the daemon runs before its grant exists, so the first
-        // attempt is expected to fail, and caching that failure makes names stay
-        // broken long after the grant is given.
+        // A load that came back empty or partial is retried soon rather than
+        // held for the full interval: the daemon runs before its grant
+        // exists, so the first attempt is expected to fail, and caching that
+        // failure makes names stay broken long after the grant is given. A
+        // partial load is the same case for `person`, which refuses to
+        // resolve from it — holding one for the long interval would keep
+        // `contacts resolve` exiting 2 for ten minutes after the source is
+        // repaired.
         let stale = guard.as_ref().is_none_or(|cached| {
-            let ttl = if cached.index.is_empty() {
+            let ttl = if cached.index.is_empty() || !cached.index.problems().is_empty() {
                 CONTACTS_RETRY
             } else {
                 CONTACTS_TTL
@@ -149,7 +159,7 @@ impl Shared {
             cached.loaded_at.elapsed() > ttl
         });
         if stale {
-            let index = load_contacts(None);
+            let index = load_contacts_from(self.addressbook.as_deref(), None);
             if !index.problems().is_empty() {
                 eprintln!("msgd contacts: {}", index.problems().join(" | "));
             }
@@ -181,6 +191,7 @@ impl Daemon {
             shared: Arc::new(Shared {
                 db_path: options.db_path,
                 config_path: options.config_path,
+                addressbook: options.addressbook,
                 db: Mutex::new(None),
                 contacts: Mutex::new(None),
                 watchers: Mutex::new(Vec::new()),
@@ -441,6 +452,12 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
             let contacts = shared.contacts(ask.names != Some(false));
             let chat = shared.with_db(|db| resolve_chat(db, &ask.chat, &contacts))?;
             Ok(serde_json::to_value(chat)?)
+        }
+        Request::Person(ask) => {
+            // Always with names: the index is the whole subject here, so
+            // there is no `--no-names` variant of this question.
+            let index = shared.contacts(true);
+            Ok(serde_json::to_value(index.person(&ask.term)?)?)
         }
         Request::Send(ask) => {
             // The config key is checked here rather than in the client, because
