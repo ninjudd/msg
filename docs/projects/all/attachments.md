@@ -1,3 +1,7 @@
+---
+status: Shipped
+---
+
 # Plan: Read attachments
 
 **Status:** All three slices done. A message that is only a photo says so and

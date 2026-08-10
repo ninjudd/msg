@@ -1,3 +1,7 @@
+---
+status: Shipped
+---
+
 # Plan: Make replies read as replies
 
 **Status:** Done. Slice 1 shipped — a reply says what it is answering, in

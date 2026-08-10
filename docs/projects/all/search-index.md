@@ -1,3 +1,7 @@
+---
+status: Draft
+---
+
 # Plan: Index message bodies ourselves
 
 **Status:** Written down, deliberately not being built. The correctness fix it

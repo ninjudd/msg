@@ -1,3 +1,7 @@
+---
+status: Shipped
+---
+
 # Plan: Rewrite `msg` in Rust
 
 **Status:** Done. Ported on the `rust-port` branch on 2026-08-07, on §7's second

@@ -1,3 +1,7 @@
+---
+status: Shipped
+---
+
 # Plan: Stop matching in the middle of a word
 
 **Status:** Shipped 2026-08-09 — names first, then the body half in #40 at

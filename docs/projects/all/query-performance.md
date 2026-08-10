@@ -1,3 +1,7 @@
+---
+status: Shipped
+---
+
 # Plan: Make the common commands stop taking two seconds
 
 **Status:** Done, in the sense that matters: the chat list went from ~2.1s to

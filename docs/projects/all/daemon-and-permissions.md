@@ -1,3 +1,7 @@
+---
+status: Shipped
+---
+
 # Plan: A daemon, so the terminal stops holding Full Disk Access
 
 **Status:** Shipped. The daemon reads and sends, and the CLI holds no grant of
