@@ -32,13 +32,14 @@ behaviour.
 
 ## 2 The dialog shows everything, then asks for a person (DECIDED)
 
-Two steps, in one helper. First an alert carrying the recipient as the dry
-run would describe them, the fire time when one is set, and the **entire
-message body** in a scrolling view — approved bytes have to be shown bytes,
-not a truncation. Then, on "Send…", the `LocalAuthentication` sheet:
-`deviceOwnerAuthentication`, which is Touch ID where it exists and falls back
-to the login password or an Apple Watch, so a clamshell Mac can still answer.
-The property is "a person at this machine", not "a finger on a sensor".
+Two steps, both drawn by the daemon's own signed code (§3). First an alert
+carrying the recipient as the dry run would describe them, the fire time when
+one is set, and the **entire message body** in a scrolling view — approved
+bytes have to be shown bytes, not a truncation. Then, on "Send…", the
+`LocalAuthentication` sheet: `deviceOwnerAuthentication`, which is Touch ID
+where it exists and falls back to the login password or an Apple Watch, so a
+clamshell Mac can still answer. The property is "a person at this machine", not
+"a finger on a sensor".
 
 Rejected: putting the message in the LAContext reason string alone — it is a
 sentence slot, and a real message clips long before it ends, which un-shows
@@ -68,10 +69,11 @@ from it, and does a Keychain item bound to the daemon's code identity read
 without a prompt (§14).
 
 The confirmation logic runs **inside `msgd`**, not in a helper trusted by its
-exit code. §48's finding is why this section changed: `~/.local/libexec/`
+exit code. The review's helper-authentication finding is why this section
+changed: `~/.local/libexec/`
 and everything in the bundle are user-writable, and the daemon investigation
 measured that modifying a bundle's resources breaks `codesign --verify`
-without invalidating the TCC grant (daemon-and-permissions.md §4), so a
+without invalidating the TCC grant (daemon-and-permissions.md §9), so a
 spawned child cannot be authenticated by the fact that its path sits inside a
 signed bundle. The daemon therefore links `LocalAuthentication` and AppKit
 directly — a Swift compilation unit built into `msgd` by `scripts/build.sh`,
@@ -91,18 +93,20 @@ same inspectability `msg daemon automation` gives the other gate.
 
 ## 4 Every failure refuses to send (DECIDED)
 
-A missing helper, a crashed helper, an unanswered dialog (two minutes), and a
-decline are all the same answer: no send, with a message naming which it was.
-Rejected: "confirm when possible", where a missing helper falls through to
-sending — that demotes the gate to advice exactly where it matters, since the
-likeliest reason the helper is missing is a build that predates it.
+A daemon built before the confirm surface existed, a dialog that fails to
+present, an unanswered dialog (two minutes), and a decline are all the same
+answer: no send, with a message naming which it was. Rejected: "confirm when
+possible", where a gate that cannot present falls through to sending — that
+demotes it to advice exactly where it matters, since the likeliest reason the
+surface is absent is a stale daemon predating it, and a stale daemon is the
+version constant's whole catalogue of quiet failures (§12).
 
 ## 5 The third gate can only tighten (DECIDED, corrected)
 
 This section's first draft said `confirm = true` was an ordinary config key
 and shrugged that "a process that rewrites the config can strip the question,
-which is why the Automation grant remains the outer wall." §85's finding is
-that this is false and fatal: Automation authorizes `msgd` *globally*, it
+which is why the Automation grant remains the outer wall." The review found
+that false, and fatal: Automation authorizes `msgd` *globally*, it
 does not restore per-message approval, so a same-uid process that flips
 `confirm = false` and sends has bypassed the whole feature while every gate
 still reads as granted. A gate the adversary can turn off is not a gate (§14).
@@ -135,17 +139,17 @@ dialog is necessary and not sufficient, which is §14's point.
 
 **A dialog can only vouch for what it renders.** The first draft said an
 attachment is "named in the dialog by filename and size", as if that were
-approval; §98's finding is that both are caller-controlled, so an agent can
-put sensitive or unrelated bytes behind an innocuous name and the person
-approves a label, not the content. So the dialog renders the attachment
-itself: a thumbnail for an image, the first lines for text — and a type it
-cannot preview cannot be agent-confirmed, so that send is refused with a note
-to send it by hand (fail closed, §14). Images are the overwhelming majority
-of what gets sent, so a thumbnail covers the real case; the unpreviewable
-tail fails safe rather than shipping unseen bytes. The bytes are still in the
-daemon's hands before the dialog opens, which is what lets it render them and
-what closes the post-approval swap — but rendering is the part that makes
-them *approved*.
+approval; the review's answer is that both are caller-controlled, so an agent
+can put sensitive or unrelated bytes behind an innocuous name and the person
+approves a label, not the content. So the dialog renders the attachment itself:
+a thumbnail for an image, the first lines for text — and a type it cannot
+preview cannot be agent-confirmed, so that send is refused with a note to send
+it by hand (fail closed, §14). Images are the overwhelming majority of what
+gets sent, so a thumbnail covers the real case; the unpreviewable tail fails
+safe rather than shipping unseen bytes. The bytes are still in the daemon's
+hands before the dialog opens, which is what lets it render them and what
+closes the post-approval swap — but rendering is the part that makes them
+*approved*.
 
 ## 7 What it changes for agents
 
@@ -187,7 +191,7 @@ resemblance will occur to a reviewer. The rest of this section is four
 corrections the review forced, all downstream of §14: the state directory is
 user-writable, so a queued row is data the adversary can read and edit.
 
-**Payloads live beside the queue, not in it (§134).** A row holds id, fire
+**Payloads live beside the queue, not in it.** A row holds id, fire
 time, pinned guid, described recipient, and the body; an attachment's bytes go
 in a separate daemon-owned file named by a daemon-chosen id, and the row keeps
 only that id and the metadata. The protocol already documents attachments up
@@ -196,7 +200,7 @@ whole-file-rewritten queue would push gigabytes through a temp copy on every
 enqueue and cancel, stalling the resident daemon. Small JSON rewrites; large
 bytes are written once and unlinked when their row leaves.
 
-**Rows are integrity-protected (§134).** Because the row is caller-editable at
+**Rows are integrity-protected.** Because the row is caller-editable at
 rest, pinning the guid and bytes before the dialog (§6) does not keep them
 pinned through persistence: a same-uid process can approve a benign row and
 then edit its guid, body, fire time, or payload id before it fires, and the
@@ -207,7 +211,7 @@ becomes a visible failure in `msg queue` (fail closed, §14). This is what
 actually preserves the approved-send invariant across time, and what makes
 §10's confirm-at-schedule sound rather than a hole.
 
-**An attempt is durable before Messages sees it (§142).** Dispatch is not
+**An attempt is durable before Messages sees it.** Dispatch is not
 atomic with the queue update: if the daemon crashed after Messages accepted
 the Apple Event but before the row was removed, a naive queue would resend on
 restart, breaking the no-retry rule below. So the sequence is: mark the row
@@ -224,12 +228,12 @@ Retry-with-backoff is a policy a real failure can argue for later. The gates
 hold at fire time too: `send = false`, or confirmation reverting to on per §5,
 disarms everything already queued, which is what a kill switch is for.
 
-**Lateness is bounded, and uninstall clears the queue (§134).** A machine
+**Lateness is bounded, and uninstall clears the queue.** A machine
 asleep at fire time fires on wake if the delay is small — late and saying so
 beats never — but a row overdue beyond a bounded window (a few hours) fires as
 an expired failure rather than sending, because a message the user expected
 hours ago is no longer the message they meant. That bound also closes the
-resurrection §134 found: `msg daemon uninstall` today leaves the state
+resurrection the review noticed: `msg daemon uninstall` today leaves the state
 directory and the Automation grant in place, so a pending row could fire —
 possibly instantly overdue — after a later reinstall, though the user had
 stopped the service. Uninstall therefore deletes the queue and its payload
@@ -303,7 +307,7 @@ every section above is a same-uid process. It can read and write
 `~/.config/msg/`, the daemon's whole state directory, and everything inside
 the user-writable `~/.local/libexec/msgd.app`. What it cannot do is forge a
 biometric, sign code with the `msg dev` certificate (that key lives in the
-login keychain and prompts on use, daemon-and-permissions.md §6), or make the
+login keychain and prompts on use, signing-identity.md), or make the
 daemon's own in-process code lie. Every correction below turns on that line
 between what the adversary can and cannot touch.
 
@@ -327,8 +331,8 @@ mandatory with no "off" at all (so no marker to protect), and a row that
 cannot be integrity-checked is simply re-confirmed or dropped rather than
 sent. Less convenient, never less safe.
 
-**The in-process consequence.** §48's finding — that a helper spawned from the
-writable bundle cannot be authenticated by its path — is the same line drawn
-again: the code that says "approved" has to be code the adversary cannot
-replace, which means the daemon's own signed process, not a child of it. §3
-records what that costs.
+**The in-process consequence.** The helper-authentication finding — that a
+helper spawned from the writable bundle cannot be authenticated by its
+path — is the same line drawn again: the code that says "approved" has to
+be code the adversary cannot replace, which means the daemon's own signed
+process, not a child of it. §3 records what that costs.
