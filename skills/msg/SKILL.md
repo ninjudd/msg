@@ -42,7 +42,7 @@ msg chat 1287                  # then open that row's id — no --unknown needed
 ```
 
 Reactions trail the message they react to (`works, see you then ← ❤️`), inline
-replies print a `↳ replying to` line above the reply, and attachments print as
+replies print a `↳ replying to` line below the reply, and attachments print as
 `[#48213 IMG_4821.HEIC, 3.2 MB]` in the place they occupy in the message.
 
 ## Naming a conversation

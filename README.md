@@ -197,12 +197,14 @@ An inline reply says what it is answering, so it stops reading as an unrelated
 remark that happens to come later:
 
 ```
+5:12 PM  Dana Reyes: what's a diffusion transformer?
 5:46 PM  Dana Reyes: Btw do you think we can find the inflator?
-         ↳ replying to me: Just read about it but not fully understanding it
 5:50 PM  me: It is the underlying model that generates music
+         ↳ replying to Dana Reyes: what's a diffusion transformer?
 ```
 
-Chronology is untouched — the quote sits above the reply rather than moving it.
+Chronology is untouched — the quote hangs below the reply rather than moving
+it.
 `--json` carries the same as a `replyTo` object with the answered message's
 rowid, sender, and excerpt. A reply whose original has been deleted still prints
 as an ordinary message.
