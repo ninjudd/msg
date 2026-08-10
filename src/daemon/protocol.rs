@@ -89,6 +89,14 @@ use crate::db::{Chat, Message};
 /// a daemon that does not know them ignores them and answers with bare hits, so
 /// `-C 3` would silently produce exactly what the flag was asked to change.
 ///
+/// 18 adds the `person` command — the contact resolver, answering a term with
+/// one person and every address their record carries — and the `ambiguous`
+/// error code that carries its refusals. The code is the load-bearing half: a
+/// new command against a stale daemon is already loud, but an old *client*
+/// receiving `ambiguous` from a new daemon would fail to parse the frame
+/// instead of exiting 3, and the resolve contract would depend on which side
+/// was older (contact-resolution.md §10).
+///
 /// 17 takes `tapbacks` back off the messages `watch` streams. 16 attached
 /// them everywhere, which on a stream meant a reaction appeared exactly when
 /// it happened to land before its target was emitted — a race, not a
@@ -157,7 +165,7 @@ use crate::db::{Chat, Message};
 /// saying so, which looks exactly like a person who only has one. The reply is
 /// not wrong in a way anything can see — it is simply missing half the
 /// conversation, which is the failure this number exists to make loud.
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";
@@ -261,6 +269,15 @@ pub struct ResolveRequest {
     pub names: Option<bool>,
 }
 
+/// One term for the contact resolver: a name, nickname, or address. Answered
+/// with a [`crate::contacts::PersonRecord`], which is the `--json` shape too,
+/// one struct so the wire and the output cannot disagree
+/// (contact-resolution.md §10).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonRequest {
+    pub term: String,
+}
+
 /// An attachment, as bytes rather than a path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Attachment {
@@ -341,6 +358,7 @@ pub enum Request {
     Search(SearchRequest),
     Watch(WatchRequest),
     Resolve(ResolveRequest),
+    Person(PersonRequest),
     Send(SendRequest),
     Contacts(ContactsRequest),
     Save(SaveRequest),
@@ -358,6 +376,7 @@ pub const COMMANDS: &[&str] = &[
     "search",
     "watch",
     "resolve",
+    "person",
     "send",
     "contacts",
     "save",
@@ -453,12 +472,16 @@ impl ChatReply {
     }
 }
 
-/// `access-denied` is the one code the CLI acts on, since it maps to the exit
-/// status the README documents.
+/// `access-denied` and `ambiguous` are the codes the CLI acts on, since each
+/// maps to an exit status the README documents. Without its own code an
+/// ambiguity would land as `Error` and exit 1, and the §7 contract would hold
+/// or break depending on whether a daemon happened to be listening
+/// (contact-resolution.md §10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ErrorCode {
     AccessDenied,
+    Ambiguous,
     SendDisabled,
     Error,
     Version,
@@ -495,6 +518,7 @@ impl Frame {
             // read it to resolve the rowid — and names a remedy that would not
             // touch a per-file refusal. `open_database` puts `DENIED` in itself.
             crate::Error::AccessDenied(message) => (ErrorCode::AccessDenied, message.clone()),
+            crate::Error::Ambiguous(message) => (ErrorCode::Ambiguous, message.clone()),
             crate::Error::SendDisabled(message) => (ErrorCode::SendDisabled, message.clone()),
             crate::Error::Other(message) => (ErrorCode::Error, message.clone()),
         };

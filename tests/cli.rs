@@ -582,3 +582,211 @@ fn an_explicit_zero_width_beats_the_shorthand() {
         "{text}"
     );
 }
+
+/// A fixture AddressBook: one source directory holding one database, in the
+/// real schema the loader reads — including `ZLABEL`, so what passes here is
+/// also the column names being right.
+fn addressbook() -> PathBuf {
+    use std::sync::OnceLock;
+    static BOOK: OnceLock<PathBuf> = OnceLock::new();
+    BOOK.get_or_init(|| {
+        let book = msg::db::temporary_directory("msg-cli-book-").unwrap();
+        let source = book.join("Sources/TEST-SOURCE");
+        std::fs::create_dir_all(&source).unwrap();
+        let db = Connection::open(source.join("AddressBook-v22.abcddb")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT,
+               ZLASTNAME TEXT, ZNICKNAME TEXT, ZORGANIZATION TEXT);
+             CREATE TABLE ZABCDPHONENUMBER (ZOWNER INTEGER, ZFULLNUMBER TEXT, ZLABEL TEXT);
+             CREATE TABLE ZABCDEMAILADDRESS (ZOWNER INTEGER, ZADDRESS TEXT, ZLABEL TEXT);
+             INSERT INTO ZABCDRECORD VALUES
+               (1, 'Dana', 'Reyes', NULL, NULL),
+               (2, 'Dana', 'Smith', NULL, NULL),
+               (3, 'Robert', 'Chen', 'Bob', NULL);
+             INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER, ZLABEL) VALUES
+               (1, '+1 (310) 555-1234', '_$!<Mobile>!$_'),
+               (2, '(415) 555-0000', NULL),
+               (3, '+14155559876', 'iPhone');
+             INSERT INTO ZABCDEMAILADDRESS (ZOWNER, ZADDRESS, ZLABEL) VALUES
+               (1, 'dana@example.com', '_$!<Home>!$_'),
+               (1, 'dana@work.example', '_$!<Work>!$_');",
+        )
+        .unwrap();
+        book
+    })
+    .clone()
+}
+
+/// [`msg`], with Contacts pointed at the fixture AddressBook.
+fn msg_resolving(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_msg"))
+        .args(args)
+        .env("MSG_SOCKET", "/tmp/msg-tests-nothing-here.sock")
+        .env("MSG_DB", fixture())
+        .env("MSG_ADDRESSBOOK", addressbook())
+        .output()
+        .expect("run msg")
+}
+
+#[test]
+fn resolve_prints_the_person_whole() {
+    let output = msg_resolving(&["contacts", "resolve", "Dana Reyes"]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = stdout(&output);
+    assert!(text.starts_with("Dana Reyes\n"), "{text}");
+    // One address per line with its label; separators dropped, `+` kept.
+    assert!(text.contains("dana@example.com\thome"), "{text}");
+    assert!(text.contains("dana@work.example\twork"), "{text}");
+    assert!(text.contains("+13105551234\tmobile"), "{text}");
+}
+
+#[test]
+fn resolve_emits_the_documented_json() {
+    let output = msg_resolving(&["contacts", "resolve", "bob", "--json"]);
+    assert_eq!(code(&output), 0);
+    let value: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(value["name"], serde_json::json!("Bob"));
+    assert_eq!(value["filedAs"], serde_json::json!("Robert Chen"));
+    // A custom label is kept as typed; Apple's constants unwrap (§6).
+    assert_eq!(value["phones"][0]["label"], serde_json::json!("iPhone"));
+    // Arrays are present even when empty, so a consumer never branches on a
+    // missing field (§5).
+    assert_eq!(value["emails"], serde_json::json!([]));
+    assert!(value["id"].is_string());
+}
+
+#[test]
+fn an_ambiguous_name_exits_three_with_nothing_on_stdout() {
+    let output = msg_resolving(&["contacts", "resolve", "dana"]);
+    assert_eq!(code(&output), 3);
+    // Empty stdout is the contract that makes `$( … )` safe (§7).
+    assert_eq!(stdout(&output), "");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("2 people match dana"), "{error}");
+    assert!(
+        error.contains("Dana Reyes") && error.contains("Dana Smith"),
+        "{error}"
+    );
+}
+
+#[test]
+fn nobody_matching_exits_one_with_nothing_on_stdout() {
+    let output = msg_resolving(&["contacts", "resolve", "zelda"]);
+    assert_eq!(code(&output), 1);
+    assert_eq!(stdout(&output), "");
+}
+
+#[test]
+fn plural_flags_emit_one_value_per_line() {
+    let output = msg_resolving(&["contacts", "resolve", "Dana Reyes", "--emails"]);
+    assert_eq!(code(&output), 0);
+    assert_eq!(stdout(&output), "dana@example.com\ndana@work.example\n");
+
+    let output = msg_resolving(&["contacts", "resolve", "Dana Reyes", "--phones"]);
+    assert_eq!(code(&output), 0);
+    assert_eq!(stdout(&output), "+13105551234\n");
+}
+
+#[test]
+fn singular_means_exactly_one() {
+    // Two email addresses: status 3, both named on stderr, stdout empty.
+    let output = msg_resolving(&["contacts", "resolve", "Dana Reyes", "--email"]);
+    assert_eq!(code(&output), 3);
+    assert_eq!(stdout(&output), "");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("2 email addresses for Dana Reyes"),
+        "{error}"
+    );
+    assert!(error.contains("dana@work.example (work)"), "{error}");
+
+    // Exactly one phone: the value, bare, ready for `$( … )`.
+    let output = msg_resolving(&["contacts", "resolve", "Dana Reyes", "--phone"]);
+    assert_eq!(code(&output), 0);
+    assert_eq!(stdout(&output), "+13105551234\n");
+
+    // None at all: an ordinary error, not an ambiguity.
+    let output = msg_resolving(&["contacts", "resolve", "bob", "--email"]);
+    assert_eq!(code(&output), 1);
+    assert_eq!(stdout(&output), "");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Bob has no email address"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn an_address_resolves_the_person_it_belongs_to() {
+    let output = msg_resolving(&["contacts", "resolve", "dana@work.example", "--phone"]);
+    assert_eq!(code(&output), 0);
+    assert_eq!(stdout(&output), "+13105551234\n");
+}
+
+#[test]
+fn the_mode_flags_are_mutually_exclusive() {
+    let output = msg_resolving(&["contacts", "resolve", "bob", "--json", "--email"]);
+    // A usage error, which exits 1 — never 2, which is reserved (README).
+    assert_eq!(code(&output), 1);
+}
+
+#[test]
+fn a_partial_contacts_load_exits_two_even_with_a_match_in_hand() {
+    // A second book: one healthy source holding Dana, and one database that
+    // is not a database at all.
+    let book = msg::db::temporary_directory("msg-cli-book-broken-").unwrap();
+    let healthy = book.join("Sources/GOOD");
+    std::fs::create_dir_all(&healthy).unwrap();
+    let db = Connection::open(healthy.join("AddressBook-v22.abcddb")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT,
+           ZLASTNAME TEXT, ZNICKNAME TEXT, ZORGANIZATION TEXT);
+         CREATE TABLE ZABCDPHONENUMBER (ZOWNER INTEGER, ZFULLNUMBER TEXT, ZLABEL TEXT);
+         CREATE TABLE ZABCDEMAILADDRESS (ZOWNER INTEGER, ZADDRESS TEXT, ZLABEL TEXT);
+         INSERT INTO ZABCDRECORD VALUES (1, 'Dana', 'Reyes', NULL, NULL);
+         INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER, ZLABEL)
+           VALUES (1, '+13105551234', NULL);",
+    )
+    .unwrap();
+    let broken = book.join("Sources/BROKEN");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join("AddressBook-v22.abcddb"), b"not a database").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_msg"))
+        .args(["contacts", "resolve", "dana"])
+        .env("MSG_SOCKET", "/tmp/msg-tests-nothing-here.sock")
+        .env("MSG_DB", fixture())
+        .env("MSG_ADDRESSBOOK", &book)
+        .output()
+        .expect("run msg");
+    assert_eq!(
+        code(&output),
+        2,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(stdout(&output), "");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("BROKEN"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn the_lookup_still_takes_a_leading_term_that_is_not_resolve() {
+    // `resolve` became a reserved first word; everything else still reaches
+    // the annotator, several answers and all.
+    let output = msg_resolving(&["contacts", "dana"]);
+    assert_eq!(code(&output), 0);
+    let text = stdout(&output);
+    assert!(
+        text.contains("Dana Reyes") && text.contains("Dana Smith"),
+        "{text}"
+    );
+}

@@ -1,7 +1,9 @@
 # Plan: Contact resolution as a public primitive
 
-**Status:** Designed, not started. The design was settled in discussion on
-2026-08-09; nothing is implemented, and §9's measurement has not been run.
+**Status:** Shipped, 2026-08-09, in one PR as §12 sized it. §9's measurement
+ran on a real database first and is recorded there; §5 gained the
+record-per-person note and §9 the separator rule during implementation, each
+marked in place.
 
 **Goal:** Expose the name → person stage of resolution as `msg contacts
 resolve` — stable JSON, shell-friendly output, explicit ambiguity — so other
@@ -142,6 +144,12 @@ Identifiers are objects from day one:
   a miss. If a real case ever proves otherwise, the change is a person-led
   load emitting the object with empty arrays and status 0 — additive, and
   waiting on that case per the rule against speculative fixes.
+- **One record is one person** (added at implementation). The same human
+  held in two accounts is two records, and where both answer a name,
+  `resolve` reports the tie rather than merging them — which is what
+  conversation resolution already does, so §3's guarantee requires it.
+  Merging across sources by shared address is future work waiting on a real
+  complaint, and it would have to move both resolvers together.
 
 ## 6 Labels
 
@@ -216,6 +224,19 @@ implementation, measure what fraction of stored numbers carry one, on a real
 database, as an aggregate. If nearly all do, the honest rule is also the
 useful one and this section stands; if not, reopen it here rather than
 patching the behavior quietly.
+
+Measured at implementation (2026-08-09, through a probe running in the
+daemon): 64% of 874 stored numbers carried a `+`-prefixed country code, 36%
+did not, and `ZCOUNTRYCODE` — a column that looked like it might settle the
+derivation — was empty on every row. Not "nearly all", so this section
+reopened as promised, and the rule above was refined rather than replaced:
+**separators are dropped from every number**, the `+` is kept when stored
+and still never invented, and a value that is not digits after separator
+stripping — an extension, a word — passes through as stored. What it
+replaced: emitting the raw stored shape for CC-less numbers, which at 36%
+would have made a third of all output `(310) 555-1234`-shaped and pushed
+every consumer to write its own stripper. The no-invention half stands
+unchanged.
 
 ## 10 Through the daemon
 

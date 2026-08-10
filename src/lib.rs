@@ -44,14 +44,19 @@ pub fn home() -> PathBuf {
     PathBuf::from(std::ffi::OsStr::from_bytes(&directory))
 }
 
-/// What went wrong, in the three shapes the wire protocol distinguishes.
+/// What went wrong, in the shapes the wire protocol distinguishes.
 ///
-/// `AccessDenied` is the one the CLI acts on, since it maps to the exit status
-/// the README documents.
+/// `AccessDenied` and `Ambiguous` are the ones the CLI acts on, since each
+/// maps to an exit status the README documents.
 #[derive(Debug)]
 pub enum Error {
     /// The data is there and the grant is not. Exit status 2.
     AccessDenied(String),
+    /// The answer is not unique — several people, or several values under a
+    /// singular flag. Exit status 3, with the candidates in the message, so
+    /// a script lands on "ask a human" rather than "give up"
+    /// (contact-resolution.md §7).
+    Ambiguous(String),
     /// Sending is switched off in the config, which is not a failure.
     SendDisabled(String),
     Other(String),
@@ -68,9 +73,10 @@ impl Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::AccessDenied(message) | Self::SendDisabled(message) | Self::Other(message) => {
-                f.write_str(message)
-            }
+            Self::AccessDenied(message)
+            | Self::Ambiguous(message)
+            | Self::SendDisabled(message)
+            | Self::Other(message) => f.write_str(message),
         }
     }
 }

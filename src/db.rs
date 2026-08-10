@@ -2102,11 +2102,7 @@ fn people_matching(
 
     if people.len() > 1 {
         let exactly_named = |person: &Person| {
-            person.name.to_lowercase() == lowered
-                || person
-                    .filed_as
-                    .as_ref()
-                    .is_some_and(|filed| filed.to_lowercase() == lowered)
+            crate::contacts::exactly_named(&person.name, person.filed_as.as_deref(), &lowered)
         };
         if people
             .values()
@@ -5779,5 +5775,38 @@ mod tests {
         assert!(json.get("namedHandles").is_some());
         assert!(json.get("memberCount").is_some());
         assert!(json.get("lastDate").is_some());
+    }
+
+    /// The one-resolver guarantee, and the mixed-domain case it was refined
+    /// by (contact-resolution.md §3): the rules are shared, the domain is
+    /// each command's own. A name two Contacts records answer to, only one
+    /// of them ever messaged, resolves uniquely here — the Messages `handle`
+    /// table is this resolver's pool — and is an ambiguity to
+    /// `ContactIndex::person`, whose pool is all of Contacts. When both
+    /// answer uniquely, they must answer with the same person.
+    #[test]
+    fn the_two_resolvers_share_rules_and_differ_only_in_domain() {
+        let db = fixture();
+        let contacts = ContactIndex::for_test([
+            ("+13105551234", "a:1", "Dana Reyes"),
+            ("+19995550000", "a:2", "Dana Smith"),
+        ]);
+
+        let messaged = resolve_person(&db, "dana", &contacts).unwrap();
+        assert_eq!(messaged.name, "Dana Reyes");
+        assert!(matches!(
+            contacts.person("dana"),
+            Err(crate::Error::Ambiguous(_))
+        ));
+
+        let person = contacts.person("dana reyes").unwrap();
+        assert_eq!(person.id, "a:1");
+        for handle in &messaged.handles {
+            assert_eq!(
+                contacts.contact(Some(handle)).map(|c| c.id.as_str()),
+                Some(person.id.as_str()),
+                "the two resolvers named different people for {handle}"
+            );
+        }
     }
 }

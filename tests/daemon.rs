@@ -1,9 +1,11 @@
 //! The daemon end to end, over a real unix socket, against a fixture database.
 //!
-//! Every request asks for `names: false`, so nothing here reads the Contacts or
-//! any other database belonging to whoever is running the tests. Sending stays
-//! switched off: the daemon is pointed at a config file that does not exist, and
-//! `sending_is_off_for_every_test_here` asserts that rather than assuming it.
+//! Every message request asks for `names: false`, and the daemon's Contacts
+//! are pointed at a fixture AddressBook — so nothing here reads a database
+//! belonging to whoever is running the tests, whatever grants their machine
+//! holds. Sending stays switched off: the daemon is pointed at a config file
+//! that does not exist, and `sending_is_off_for_every_test_here` asserts that
+//! rather than assuming it.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -15,8 +17,8 @@ use base64::Engine as _;
 use msg::apple::to_apple_date;
 use msg::daemon::client::{connect_daemon, connect_daemon_within, request};
 use msg::daemon::protocol::{
-    ChatRequest, ChatsRequest, ContactsRequest, Empty, PROTOCOL_VERSION, Request, ResolveRequest,
-    SavePart, SaveRequest, SearchRequest, SendRequest, WatchRequest, envelope,
+    ChatRequest, ChatsRequest, ContactsRequest, Empty, PROTOCOL_VERSION, PersonRequest, Request,
+    ResolveRequest, SavePart, SaveRequest, SearchRequest, SendRequest, WatchRequest, envelope,
 };
 use msg::daemon::server::{Daemon, DaemonOptions};
 use rusqlite::Connection;
@@ -62,6 +64,7 @@ struct Harness {
     database: PathBuf,
     socket: PathBuf,
     config: PathBuf,
+    book: PathBuf,
     _daemon: Daemon,
 }
 
@@ -76,10 +79,13 @@ fn harness() -> &'static Harness {
         // so would drive Messages for real.
         let config = directory.join("config-that-does-not-exist.toml");
         build_fixture(&database);
+        let book = directory.join("book");
+        build_addressbook(&book);
 
         let daemon = Daemon::new(DaemonOptions {
             db_path: Some(database.to_string_lossy().into_owned()),
             config_path: Some(config.clone()),
+            addressbook: Some(book.clone()),
         });
         daemon.listen(Some(socket.clone())).unwrap();
         Harness {
@@ -87,6 +93,7 @@ fn harness() -> &'static Harness {
             database,
             socket,
             config,
+            book,
             _daemon: daemon,
         }
     })
@@ -145,6 +152,30 @@ fn build_fixture(path: &Path) {
     // interleaving as a row.
     db.execute_batch("UPDATE message SET associated_message_guid = 'p:0/m2' WHERE rowid = 5;")
         .unwrap();
+}
+
+/// A fixture AddressBook, in the schema the loader reads. Dana Reyes carries
+/// the fixture database's main handle; Dana Smith exists to make `dana`
+/// ambiguous.
+fn build_addressbook(book: &Path) {
+    let source = book.join("Sources/TEST-SOURCE");
+    std::fs::create_dir_all(&source).unwrap();
+    let db = Connection::open(source.join("AddressBook-v22.abcddb")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT,
+           ZLASTNAME TEXT, ZNICKNAME TEXT, ZORGANIZATION TEXT);
+         CREATE TABLE ZABCDPHONENUMBER (ZOWNER INTEGER, ZFULLNUMBER TEXT, ZLABEL TEXT);
+         CREATE TABLE ZABCDEMAILADDRESS (ZOWNER INTEGER, ZADDRESS TEXT, ZLABEL TEXT);
+         INSERT INTO ZABCDRECORD VALUES
+           (1, 'Dana', 'Reyes', NULL, NULL),
+           (2, 'Dana', 'Smith', NULL, NULL);
+         INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER, ZLABEL) VALUES
+           (1, '+13105551234', '_$!<Mobile>!$_'),
+           (2, '(415) 555-0000', NULL);
+         INSERT INTO ZABCDEMAILADDRESS (ZOWNER, ZADDRESS, ZLABEL)
+           VALUES (1, 'dana@example.com', '_$!<Home>!$_');",
+    )
+    .unwrap();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -688,6 +719,9 @@ fn reports_the_database_it_is_reading() {
 
 #[test]
 fn resolves_handles_without_reading_the_testers_contacts() {
+    // The daemon's Contacts point at the harness book, so this answers with
+    // fixture names on any machine — including one whose terminal holds Full
+    // Disk Access, where an unpointed daemon would have read real contacts.
     let reply = ask(&Request::Contacts(ContactsRequest {
         handles: vec!["+13105551234".into()],
     }))
@@ -696,6 +730,46 @@ fn resolves_handles_without_reading_the_testers_contacts() {
         reply["resolved"][0]["handle"],
         serde_json::json!("+13105551234")
     );
+    assert_eq!(
+        reply["resolved"][0]["name"],
+        serde_json::json!("Dana Reyes")
+    );
+}
+
+/// The resolver over the socket, and §10's parity requirement: the wire
+/// carries ambiguity typed, so the daemon path and the direct path refuse
+/// with the same error and the same words — a client seeing them differ by
+/// which happened to answer is the failure the `ambiguous` code exists to
+/// prevent.
+#[test]
+fn resolves_a_person_and_keeps_ambiguity_typed_across_the_wire() {
+    let value = ask(&Request::Person(PersonRequest {
+        term: "dana reyes".into(),
+    }))
+    .unwrap();
+    assert_eq!(value["name"], serde_json::json!("Dana Reyes"));
+    assert_eq!(
+        value["phones"][0],
+        serde_json::json!({"value": "+13105551234", "label": "mobile"})
+    );
+    assert_eq!(
+        value["emails"][0],
+        serde_json::json!({"value": "dana@example.com", "label": "home"})
+    );
+
+    let over_socket = ask(&Request::Person(PersonRequest {
+        term: "dana".into(),
+    }))
+    .unwrap_err();
+    let direct = msg::contacts::load_contacts_from(Some(&harness().book), None)
+        .person("dana")
+        .unwrap_err();
+    match (over_socket, direct) {
+        (msg::Error::Ambiguous(wire), msg::Error::Ambiguous(local)) => {
+            assert_eq!(wire, local, "the two paths named different candidates");
+        }
+        other => panic!("expected ambiguity on both paths, got {other:?}"),
+    }
 }
 
 // ------------------------------------------------------------- protocol
@@ -1164,6 +1238,7 @@ fn a_daemon_that_cannot_read_the_database_says_so_in_its_own_words() {
     let daemon = Daemon::new(DaemonOptions {
         db_path: Some(database.to_string_lossy().into_owned()),
         config_path: Some(directory.join("config-that-does-not-exist.toml")),
+        addressbook: None,
     });
     daemon.listen(Some(socket.clone())).unwrap();
 

@@ -59,6 +59,32 @@ replies print a `↳ replying to` line above the reply, and attachments print as
 - Ambiguity is reported, never guessed: if `msg` lists candidates instead of
   answering, pick one (by rowid or address) rather than retrying the same name.
 
+## Resolving who someone is
+
+`msg contacts resolve` turns a name into identifiers for *other* tools —
+an email for Gmail, a number for anything that dials. Same naming rules as
+above, but it answers from all of Contacts, messaged or not, and it never
+guesses between two people:
+
+```sh
+msg contacts resolve dana --json     # {id, name, filedAs?, emails[], phones[]}
+msg contacts resolve dana --emails   # every email address, one per line
+msg contacts resolve dana --email    # exactly one, or exit 3 naming candidates
+msg contacts resolve dana --phone    # exactly one phone number
+```
+
+The exit status is the contract: 0 one person, 1 nobody (or none of the kind
+a singular flag asked for), 2 Contacts unreadable even in part, 3 not unique
+— several people, or several values under `--email`/`--phone`. stdout is
+empty on every failure, so gate the composition on the substitution:
+
+```sh
+email=$(msg contacts resolve dana --email) && gog gmail search "from:$email"
+```
+
+On exit 3 the candidates are on stderr, each with an address — re-run with
+that address (or the exact full name), not the same fragment again.
+
 ## Searching
 
 ```sh

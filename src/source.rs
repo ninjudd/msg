@@ -17,8 +17,8 @@ use crate::contacts::{ContactIndex, load_contacts};
 use crate::daemon::client::{connect_daemon, connect_daemon_within, request, save, watch};
 use crate::daemon::protocol::{
     AutomationReply, ChatReply, ChatRequest, ChatsRequest, ContactsReply, ContactsRequest, Empty,
-    Request, ResolveRequest, ResolvedHandle, SavePart, SaveRequest, SearchRequest, SendReply,
-    SendRequest, StatusReply, WatchRequest,
+    PersonRequest, Request, ResolveRequest, ResolvedHandle, SavePart, SaveRequest, SearchRequest,
+    SendReply, SendRequest, StatusReply, WatchRequest,
 };
 use crate::daemon::send::attachment_name;
 use crate::db::{
@@ -279,6 +279,21 @@ impl Source {
         let spec = chat.to_string();
         let (db, contacts) = self.parts(names)?;
         resolve_chat(db, &spec, contacts)
+    }
+
+    /// One person from a term, whole — `msg contacts resolve`.
+    ///
+    /// No chat.db on either path: the daemon answers from its index, and the
+    /// direct read loads a fresh one, so a machine can resolve people without
+    /// the Messages database ever being opened.
+    pub fn person(&mut self, term: &str) -> Result<crate::contacts::PersonRecord> {
+        if self.kind == Kind::Daemon {
+            let value = call(&Request::Person(PersonRequest {
+                term: term.to_string(),
+            }))?;
+            return Ok(serde_json::from_value(value)?);
+        }
+        load_contacts(None).person(term)
     }
 
     pub fn contacts(&mut self, handles: &[String]) -> Result<ContactsReply> {

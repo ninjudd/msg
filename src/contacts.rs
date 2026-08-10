@@ -5,12 +5,23 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use rusqlite::{Connection, OpenFlags};
+use serde::{Deserialize, Serialize};
+
+use crate::Error;
 
 /// Digits kept when matching phone numbers, which covers NANP numbers in full.
 const MATCH_DIGITS: usize = 10;
 
+/// `MSG_ADDRESSBOOK` points the loader at another AddressBook directory, the
+/// way `MSG_DB` points at another `chat.db` — a fixture stays a fixture. Like
+/// `MSG_DB` it is deliberately not carried into the installed daemon, which
+/// would pin a long-lived process to a directory that outlives the shell that
+/// named it.
 fn address_book() -> PathBuf {
-    crate::home().join("Library/Application Support/AddressBook")
+    match std::env::var("MSG_ADDRESSBOOK") {
+        Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => crate::home().join("Library/Application Support/AddressBook"),
+    }
 }
 
 /// One Contacts record: who it is, kept apart from what it renders as.
@@ -44,6 +55,10 @@ pub struct Contact {
     /// Kept so that the formal name still finds them. Both names reach the
     /// person; only one of them is shown.
     pub filed_as: Option<String>,
+    /// What Contacts calls this address: `mobile`, `home`, a custom string, or
+    /// nothing. Apple's `_$!<Mobile>!$_` constants are unwrapped and
+    /// lowercased; a label somebody typed themselves is kept as typed.
+    pub label: Option<String>,
 }
 
 impl Contact {
@@ -65,7 +80,7 @@ impl Contact {
     /// Whether one of those names is exactly `needle`, for breaking a tie
     /// between the people a fragment matched.
     pub fn is_named(&self, needle: &str) -> bool {
-        self.names().any(|name| name.to_lowercase() == needle)
+        exactly_named(&self.name, self.filed_as.as_deref(), needle)
     }
 
     /// Every name this contact can be found by, in its stored case — the
@@ -112,6 +127,7 @@ impl ContactIndex {
                         handle: handle.to_string(),
                         name: name.to_string(),
                         filed_as: None,
+                        label: None,
                     };
                     Some((handle_key(handle)?, contact))
                 })
@@ -132,6 +148,23 @@ impl ContactIndex {
         let key = handle_key(handle).expect("a handle to nickname");
         let contact = self.contacts.get_mut(&key).expect("a contact to nickname");
         contact.filed_as = Some(std::mem::replace(&mut contact.name, nickname.to_string()));
+        self
+    }
+
+    /// Give a handle's entry a label, the way the loader would have read one.
+    #[cfg(test)]
+    pub fn labeled(mut self, handle: &str, label: &str) -> Self {
+        let key = handle_key(handle).expect("a handle to label");
+        let contact = self.contacts.get_mut(&key).expect("a contact to label");
+        contact.label = Some(label.to_string());
+        self
+    }
+
+    /// An index that failed to read a source, for pinning what `person` does
+    /// about it.
+    #[cfg(test)]
+    pub fn with_problem(mut self, problem: &str) -> Self {
+        self.problems.push(problem.to_string());
         self
     }
 
@@ -190,6 +223,124 @@ impl ContactIndex {
         self.contacts.get(&key)
     }
 
+    /// One person from a term, assembled whole — the public resolver
+    /// (contact-resolution.md §3).
+    ///
+    /// The rules are the ones conversation resolution uses: an address given
+    /// outright wins outright, a name matches from the start of a word, and a
+    /// whole name settles the tie a fragment created. What differs is the
+    /// domain — everyone in Contacts rather than everyone in Messages — and
+    /// that several survivors are an error naming them, never a pick.
+    pub fn person(&self, term: &str) -> crate::Result<PersonRecord> {
+        // An identity answer built on a partial read is not an answer. A
+        // transcript renders names best-effort because a blank is better than
+        // no transcript; a resolver that said "nobody" while a database sat
+        // unread would state as fact what it did not check
+        // (contact-resolution.md §7).
+        if !self.problems.is_empty() {
+            return Err(Error::AccessDenied(format!(
+                "Contacts could not all be read:\n{}",
+                self.problems.join("\n")
+            )));
+        }
+        if let Some(exact) = self.contact(Some(term)) {
+            let id = exact.id.clone();
+            return Ok(self.assemble(&id));
+        }
+        let needle = term.trim().to_lowercase();
+        if needle.is_empty() {
+            return Err(Error::other("no one to resolve"));
+        }
+        // BTreeMap so candidates come out in one order however the underlying
+        // map hashed them; one representative entry per record is enough to
+        // name and to tie-break.
+        let mut people: std::collections::BTreeMap<&str, &Contact> =
+            std::collections::BTreeMap::new();
+        for contact in self.contacts.values() {
+            if contact.answers_to(&needle) {
+                people.entry(contact.id.as_str()).or_insert(contact);
+            }
+        }
+        if people.len() > 1 {
+            let exact: Vec<&str> = people
+                .iter()
+                .filter(|(_, contact)| contact.is_named(&needle))
+                .map(|(id, _)| *id)
+                .collect();
+            if exact.len() == 1 {
+                people.retain(|id, _| *id == exact[0]);
+            }
+        }
+        match people.len() {
+            0 => Err(Error::other(format!("no one matching {term}"))),
+            1 => {
+                let id = people.keys().next().expect("one match").to_string();
+                Ok(self.assemble(&id))
+            }
+            _ => Err(self.several(term, &people)),
+        }
+    }
+
+    /// The error for a term naming more than one person: one candidate per
+    /// line with an address alongside, which is what a caller disambiguates
+    /// by (contact-resolution.md §7).
+    fn several(&self, term: &str, people: &std::collections::BTreeMap<&str, &Contact>) -> Error {
+        const LISTED: usize = 12;
+        let mut lines: Vec<String> = people
+            .keys()
+            .take(LISTED)
+            .map(|id| {
+                let person = self.assemble(id);
+                let address = person
+                    .emails
+                    .first()
+                    .or_else(|| person.phones.first())
+                    .map(|entry| entry.value.clone())
+                    .unwrap_or_default();
+                format!("  {} ({address})", person.name)
+            })
+            .collect();
+        if people.len() > LISTED {
+            lines.push(format!("  … and {} more", people.len() - LISTED));
+        }
+        Error::Ambiguous(format!(
+            "{} people match {term}:\n{}",
+            people.len(),
+            lines.join("\n")
+        ))
+    }
+
+    /// Everything the index holds for one record, as the person it is.
+    fn assemble(&self, id: &str) -> PersonRecord {
+        let mut named: Option<(String, Option<String>)> = None;
+        let mut emails = Vec::new();
+        let mut phones = Vec::new();
+        for contact in self.contacts.values().filter(|contact| contact.id == id) {
+            named = Some((contact.name.clone(), contact.filed_as.clone()));
+            if contact.handle.contains('@') {
+                emails.push(LabeledValue {
+                    value: contact.handle.trim().to_string(),
+                    label: contact.label.clone(),
+                });
+            } else {
+                phones.push(LabeledValue {
+                    value: emit_phone(&contact.handle),
+                    label: contact.label.clone(),
+                });
+            }
+        }
+        let (name, filed_as) = named.expect("assemble called with a held record id");
+        emails.sort_by(|a, b| a.value.cmp(&b.value));
+        phones.sort_by(|a, b| a.value.cmp(&b.value));
+        PersonRecord {
+            id: id.to_string(),
+            name,
+            filed_as,
+            emails,
+            phones,
+        }
+    }
+
     /// Whether one of a conversation's `handles` — the comma-joined list the
     /// chat queries build — belongs to someone who answers to `needle`.
     ///
@@ -227,6 +378,69 @@ impl ContactIndex {
 
     pub fn problems(&self) -> &[String] {
         &self.problems
+    }
+}
+
+/// Whether `needle` — already lowercased — is exactly one of somebody's two
+/// names, whichever is shown. Shared between conversation resolution and
+/// `contacts resolve`, so "exactly named" cannot drift into meaning two
+/// different things (contact-resolution.md §3).
+pub fn exactly_named(name: &str, filed_as: Option<&str>, needle: &str) -> bool {
+    name.to_lowercase() == needle || filed_as.is_some_and(|filed| filed.to_lowercase() == needle)
+}
+
+/// One identifier and what Contacts calls it, the shape `resolve` publishes.
+///
+/// An object rather than a bare string from day one, because string → object
+/// is the one breaking change that was visible from the start; anything this
+/// grows later is additive (contact-resolution.md §5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LabeledValue {
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// A person assembled whole: one Contacts record and every address it
+/// carries. This is the `--json` shape and the wire shape, one struct so the
+/// two cannot disagree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonRecord {
+    /// Opaque, and not durable across resyncs: the source UUID plus the
+    /// record's Core Data primary key, unique for as long as anybody should
+    /// hold it (contact-resolution.md §5).
+    pub id: String,
+    /// What to call them: the nickname when Contacts holds one.
+    pub name: String,
+    /// The name the record is filed under, when a nickname displaced it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filed_as: Option<String>,
+    /// Always present, even empty, so a consumer never branches on a field
+    /// that is sometimes missing.
+    pub emails: Vec<LabeledValue>,
+    pub phones: Vec<LabeledValue>,
+}
+
+/// A phone number the way a script wants it: separators dropped, digits and a
+/// leading `+` kept, anything stranger passed through as stored.
+///
+/// The `+` is never invented. On a real database 64% of stored numbers
+/// carried a country code and 36% did not, and `ZCOUNTRYCODE` was empty on
+/// every row — so there is nothing to derive the missing ones from, and
+/// assuming a region would be silently wrong outside it
+/// (contact-resolution.md §9).
+pub fn emit_phone(stored: &str) -> String {
+    let trimmed = stored.trim();
+    let stripped: String = trimmed
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '(' | ')' | '-' | '.' | '/' | '\u{a0}'))
+        .collect();
+    let digits = stripped.strip_prefix('+').unwrap_or(&stripped);
+    if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+        stripped
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -284,8 +498,8 @@ fn source_id_of(path: &Path) -> Option<String> {
 /// path found nothing from inside the daemon while the very same files opened
 /// fine when reached by directory walk, and a lookup that silently finds no
 /// sources is indistinguishable from a machine with no contacts.
-fn source_databases(problems: &mut Vec<String>) -> Vec<PathBuf> {
-    let directory = address_book().join("Sources");
+fn source_databases(book: &Path, problems: &mut Vec<String>) -> Vec<PathBuf> {
+    let directory = book.join("Sources");
     let entries = match std::fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(error) => {
@@ -303,12 +517,12 @@ fn source_databases(problems: &mut Vec<String>) -> Vec<PathBuf> {
 }
 
 /// Every Contacts database: one per account, plus the legacy top-level one.
-fn contact_databases(problems: &mut Vec<String>) -> Vec<PathBuf> {
-    if !address_book().exists() {
+fn contact_databases(book: &Path, problems: &mut Vec<String>) -> Vec<PathBuf> {
+    if !book.exists() {
         return Vec::new();
     }
-    let mut all = source_databases(problems);
-    all.push(address_book().join("AddressBook-v22.abcddb"));
+    let mut all = source_databases(book, problems);
+    all.push(book.join("AddressBook-v22.abcddb"));
     all.retain(|path| path.exists());
     all
 }
@@ -318,8 +532,16 @@ fn contact_databases(problems: &mut Vec<String>) -> Vec<PathBuf> {
 /// A missing or unreadable database yields an empty index rather than an error,
 /// so reading messages still works without Contacts access.
 pub fn load_contacts(preferred_source: Option<&str>) -> ContactIndex {
+    load_contacts_from(None, preferred_source)
+}
+
+/// [`load_contacts`], from a named AddressBook directory instead of the real
+/// one. The daemon's test harness passes the directory here the way it passes
+/// `db_path` — an in-process daemon cannot be steered by an environment
+/// variable without racing every other test in the binary.
+pub fn load_contacts_from(book: Option<&Path>, preferred_source: Option<&str>) -> ContactIndex {
     let mut problems = Vec::new();
-    let book = address_book();
+    let book = book.map_or_else(address_book, Path::to_path_buf);
     if !book.exists() {
         problems.push(format!("no Contacts directory at {}", book.display()));
     }
@@ -335,7 +557,7 @@ pub fn load_contacts(preferred_source: Option<&str>) -> ContactIndex {
     // that read after saw none. Reading first costs nothing, since the
     // preference only decides which source wins a tie
     // (daemon-and-permissions.md §12).
-    let databases = contact_databases(&mut problems);
+    let databases = contact_databases(&book, &mut problems);
     if databases.is_empty() && problems.is_empty() {
         problems.push(format!("no Contacts databases under {}", book.display()));
     }
@@ -373,17 +595,34 @@ fn merge(into: &mut HashMap<String, Contact>, from: &HashMap<String, Contact>) {
     }
 }
 
-const PHONES_SQL: &str = "SELECT p.ZFULLNUMBER AS handle, r.Z_PK AS record,
+const PHONES_SQL: &str = "SELECT p.ZFULLNUMBER AS handle, p.ZLABEL AS label, r.Z_PK AS record,
                 r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
            FROM ZABCDPHONENUMBER p
            JOIN ZABCDRECORD r ON r.Z_PK = p.ZOWNER
           WHERE p.ZFULLNUMBER IS NOT NULL";
 
-const EMAILS_SQL: &str = "SELECT e.ZADDRESS AS handle, r.Z_PK AS record,
+const EMAILS_SQL: &str = "SELECT e.ZADDRESS AS handle, e.ZLABEL AS label, r.Z_PK AS record,
                 r.ZFIRSTNAME, r.ZLASTNAME, r.ZNICKNAME, r.ZORGANIZATION
            FROM ZABCDEMAILADDRESS e
            JOIN ZABCDRECORD r ON r.Z_PK = e.ZOWNER
           WHERE e.ZADDRESS IS NOT NULL";
+
+/// The label as the database stores it, made presentable. Apple's constants
+/// arrive as `_$!<Mobile>!$_` and unwrap to `mobile`; a label somebody typed
+/// themselves is kept as typed; empty and missing are the same absence. All
+/// three shapes were observed on a real database, alongside a large
+/// unlabeled bucket (contact-resolution.md §6).
+fn tidy_label(raw: Option<String>) -> Option<String> {
+    let label = raw?.trim().to_string();
+    match label
+        .strip_prefix("_$!<")
+        .and_then(|rest| rest.strip_suffix(">!$_"))
+    {
+        Some(constant) => Some(constant.to_lowercase()),
+        None if label.is_empty() => None,
+        None => Some(label),
+    }
+}
 
 /// Read one Contacts database. A source that cannot be opened is skipped; the
 /// others still count.
@@ -438,6 +677,7 @@ fn collect(
             handle,
             name,
             filed_as,
+            label: tidy_label(row.get::<_, Option<String>>("label").ok().flatten()),
         });
     }
     Ok(())
@@ -558,12 +798,12 @@ mod tests {
         db.execute_batch(
             "CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT,
                ZLASTNAME TEXT, ZNICKNAME TEXT, ZORGANIZATION TEXT);
-             CREATE TABLE ZABCDPHONENUMBER (ZOWNER INTEGER, ZFULLNUMBER TEXT);
+             CREATE TABLE ZABCDPHONENUMBER (ZOWNER INTEGER, ZFULLNUMBER TEXT, ZLABEL TEXT);
              INSERT INTO ZABCDRECORD VALUES
                (1, 'Robin', 'Adeyemi', 'Rocket', NULL),
                (2, NULL, NULL, 'Rocket', NULL);
-             INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER) VALUES
-               (1, '+13105551234'), (2, '(415) 555-9876');",
+             INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER, ZLABEL) VALUES
+               (1, '+13105551234', '_$!<Mobile>!$_'), (2, '(415) 555-9876', NULL);",
         )
         .unwrap();
 
@@ -578,6 +818,9 @@ mod tests {
         let named = index.contact(Some("+13105551234")).unwrap();
         assert_eq!(named.name, "Rocket");
         assert_eq!(named.filed_as.as_deref(), Some("Robin Adeyemi"));
+        // Apple's label constant is unwrapped on the way in; no label is none.
+        assert_eq!(named.label.as_deref(), Some("mobile"));
+        assert_eq!(index.contact(Some("+14155559876")).unwrap().label, None);
 
         // With no filed name there is only the nickname, and nothing left over.
         let unnamed = index.contact(Some("+14155559876")).unwrap();
@@ -708,5 +951,115 @@ mod tests {
             Some("+13105551234")
         );
         assert_eq!(empty.lookup(Some("+13105551234")), None);
+    }
+
+    #[test]
+    fn resolves_one_person_whole() {
+        let index = ContactIndex::for_test([
+            ("+1 (310) 555-1234", "a:1", "Dana Reyes"),
+            ("dana@example.com", "a:1", "Dana Reyes"),
+            ("+14155550000", "a:2", "Sam Oyelaran"),
+        ])
+        .labeled("+13105551234", "mobile");
+        let person = index.person("dana").unwrap();
+        assert_eq!(person.id, "a:1");
+        assert_eq!(person.name, "Dana Reyes");
+        assert_eq!(person.emails.len(), 1);
+        assert_eq!(person.emails[0].value, "dana@example.com");
+        // Separators drop on the way out; the stored `+` survives (§9).
+        assert_eq!(person.phones[0].value, "+13105551234");
+        assert_eq!(person.phones[0].label.as_deref(), Some("mobile"));
+    }
+
+    #[test]
+    fn several_people_are_an_error_naming_them() {
+        let index = ContactIndex::for_test([
+            ("+13105551234", "a:1", "Dana Reyes"),
+            ("+14155550000", "a:2", "Dana Smith"),
+        ]);
+        match index.person("dana") {
+            Err(crate::Error::Ambiguous(message)) => {
+                assert!(message.contains("2 people match dana"), "{message}");
+                assert!(
+                    message.contains("Dana Reyes") && message.contains("Dana Smith"),
+                    "{message}"
+                );
+                // An address beside each name, since it is what a caller
+                // disambiguates by.
+                assert!(message.contains("+13105551234"), "{message}");
+            }
+            other => panic!("expected ambiguity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_whole_name_settles_what_a_fragment_started() {
+        let index = ContactIndex::for_test([
+            ("+13105551234", "a:1", "Bob"),
+            ("+14155550000", "a:2", "Bobby Tables"),
+        ]);
+        assert_eq!(index.person("bob").unwrap().name, "Bob");
+        assert!(matches!(
+            index.person("bo"),
+            Err(crate::Error::Ambiguous(_))
+        ));
+    }
+
+    #[test]
+    fn an_address_wins_outright() {
+        let index = ContactIndex::for_test([
+            ("dana@example.com", "a:1", "Dana Reyes"),
+            ("+14155550000", "a:2", "Dana Smith"),
+        ]);
+        assert_eq!(index.person("dana@example.com").unwrap().id, "a:1");
+    }
+
+    #[test]
+    fn a_partial_load_refuses_to_resolve() {
+        let index = ContactIndex::for_test([("+13105551234", "a:1", "Dana Reyes")])
+            .with_problem("Sources/x/AddressBook-v22.abcddb: unable to open database file");
+        // The match is there and healthy, and that is not enough: an answer
+        // from a partial read states as fact what was not checked (§7).
+        match index.person("dana") {
+            Err(crate::Error::AccessDenied(message)) => {
+                assert!(message.contains("AddressBook-v22.abcddb"), "{message}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nobody_matching_is_an_ordinary_error() {
+        let index = ContactIndex::for_test([("+13105551234", "a:1", "Dana Reyes")]);
+        assert!(matches!(index.person("zelda"), Err(crate::Error::Other(_))));
+    }
+
+    #[test]
+    fn emit_phone_strips_separators_and_never_invents() {
+        assert_eq!(emit_phone("+1 (310) 555-1234"), "+13105551234");
+        assert_eq!(emit_phone("310.555.1234"), "3105551234");
+        assert_eq!(emit_phone("  22000 "), "22000");
+        // Anything stranger than separators passes through as stored.
+        assert_eq!(emit_phone("310-555-1234 x89"), "310-555-1234 x89");
+    }
+
+    /// The documented shape, byte for byte: camelCase `filedAs`, `label`
+    /// absent when there is none, and the arrays present even when empty
+    /// (contact-resolution.md §5).
+    #[test]
+    fn the_json_shape_is_the_documented_one() {
+        let index = ContactIndex::for_test([("+13105551234", "a:1", "Robert Chen")])
+            .nicknamed("+13105551234", "Bob");
+        let person = index.person("bob").unwrap();
+        assert_eq!(
+            serde_json::to_value(&person).unwrap(),
+            serde_json::json!({
+                "id": "a:1",
+                "name": "Bob",
+                "filedAs": "Robert Chen",
+                "emails": [],
+                "phones": [{"value": "+13105551234"}],
+            })
+        );
     }
 }
