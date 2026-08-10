@@ -159,93 +159,226 @@ fn spill(symbol: &str) -> &'static str {
     if symbol.contains('\u{fe0f}') { " " } else { "" }
 }
 
-pub fn render_messages(messages: &[Message], show_chat: bool, trail: Trail) -> String {
-    if messages.is_empty() {
-        return "no messages found\n".to_string();
+/// How a list of messages is rendered, named because three positional flags
+/// stopped reading at the call site.
+#[derive(Debug, Clone, Copy)]
+pub struct Render {
+    /// Prefix each line with its conversation, for output that interleaves
+    /// several — search and an unscoped watch.
+    pub show_chat: bool,
+    pub trail: Trail,
+    /// A day line when the local day changes — [`day_header`]'s shape,
+    /// `Today` through `Friday, July 7` — and only a time on each message:
+    /// what Messages does. The chat transcript and the watch stream: a
+    /// stream headers a day change too, since the header goes in front of
+    /// the new line and the last emitted day is all it takes — `Renderer`
+    /// holds that day across calls for exactly this. Search keeps its stamps
+    /// as they were — `format_timestamp`, a date except on today's — because
+    /// its results jump between days by construction.
+    pub day_headers: bool,
+    /// Wrap each date header in ANSI bold. Callers set this through
+    /// [`styling_allowed`], so a pipe still sees plain text, grep still works,
+    /// and a terminal that asked for plain gets it — the only control codes
+    /// this program writes, and only where a human is looking and has not
+    /// said no.
+    pub styled: bool,
+}
+
+/// The transcript's date line: relative words while they are unambiguous,
+/// then the date with its weekday, the year only when it is not this year —
+/// `Today`, `Yesterday`, a bare weekday inside the last week, then
+/// `Friday, July 7`, then `Friday, July 7, 2023`. English fixed, the same
+/// choice TIME and DATE_TIME already made. Pure in `now` so every branch is
+/// testable on any day the suite runs.
+fn day_header(date: DateTime<Local>, now: DateTime<Local>) -> String {
+    let days = (now.date_naive() - date.date_naive()).num_days();
+    match days {
+        0 => "Today".to_string(),
+        1 => "Yesterday".to_string(),
+        2..=6 => date.format("%A").to_string(),
+        _ if date.year() == now.year() => date.format("%A, %B %-d").to_string(),
+        _ => date.format("%A, %B %-d, %Y").to_string(),
     }
-    // Context was asked for exactly when the messages carry a run to belong to.
-    // Without it nothing below changes a byte of what this printed before.
-    let in_context = messages.iter().any(|message| message.group.is_some());
-    let mut out = String::new();
-    let mut run: Option<i64> = None;
-    for message in messages {
-        if in_context {
-            if let Some(group) = message.group
-                && run.is_some_and(|open| open != group)
-            {
-                // grep's separator, for grep's reason: a blank line would be
-                // ambiguous against a message whose body is empty.
-                out.push_str("--\n");
-            }
-            run = message.group;
+}
+
+/// Whether bold may be written: someone is looking, and nobody asked for
+/// plain. `NO_COLOR` present and non-empty refuses styling (no-color.org, and
+/// its constituency is real — screen readers, terminals that render SGR
+/// badly, a session teed to a file); `TERM=dumb` is the older form of the
+/// same request. Pure in its inputs so the rule is testable without touching
+/// the process environment, which parallel tests cannot safely do.
+pub fn styling_allowed(
+    no_color: Option<&std::ffi::OsStr>,
+    term: Option<&std::ffi::OsStr>,
+    is_tty: bool,
+) -> bool {
+    if no_color.is_some_and(|value| !value.is_empty()) {
+        return false;
+    }
+    if term.is_some_and(|value| value == "dumb") {
+        return false;
+    }
+    is_tty
+}
+
+/// Rendering with the day held between calls, so a stream that prints one
+/// message at a time still headers a day change. A batch caller uses
+/// [`render_messages`]; a stream constructs one of these and keeps it.
+pub struct Renderer {
+    options: Render,
+    last_day: Option<(i32, u32, u32)>,
+}
+
+/// One message, one line: a newline inside a body becomes a visible `↵`
+/// instead of breaking the transcript's line-per-message shape, which the
+/// context gutter, `-C` line counts, and grep over a transcript all rely on.
+/// Gray when styling is on, so the mark reads as structure rather than as
+/// text the sender typed; plain otherwise, and a pipe wants the one-line
+/// property most and the escape-free property just as much. A trailing
+/// newline run is trimmed rather than drawn — a mark that says only "the
+/// body ended" marks nothing.
+fn one_line(text: &str, styled: bool) -> String {
+    let unified = text.replace("\r\n", "\n").replace('\r', "\n");
+    let trimmed = unified.trim_end_matches('\n');
+    if styled {
+        trimmed.replace('\n', "\x1b[90m↵\x1b[0m")
+    } else {
+        trimmed.replace('\n', "↵")
+    }
+}
+
+pub fn render_messages(messages: &[Message], options: Render) -> String {
+    Renderer::new(options).render(messages)
+}
+
+impl Renderer {
+    pub fn new(options: Render) -> Self {
+        Self {
+            options,
+            last_day: None,
         }
-        // Two columns before the timestamp rather than colour, so a hit is still
-        // marked after the output has been piped, pasted, or grepped again —
-        // and so this program still writes no terminal control codes.
-        let gutter = match (in_context, message.matched) {
-            (false, _) => "",
-            (true, true) => "> ",
-            (true, false) => "  ",
-        };
-        let stamp = format_timestamp(message.date);
-        let where_ = match (show_chat, message.chat_name.as_deref()) {
-            (true, Some(name)) => format!("[{name}] "),
-            _ => String::new(),
-        };
-        let body = message.body.as_deref().unwrap_or("(no text)");
-        // What is being answered goes above the answer, indented to the width of
-        // a timestamp, so a reply reads as a reply without the transcript
-        // stopping being chronological.
-        if let Some(answering) = &message.reply_to {
-            let quoted = answering.excerpt.as_deref().unwrap_or("(no text)");
+    }
+
+    pub fn render(&mut self, messages: &[Message]) -> String {
+        let Render {
+            show_chat,
+            trail,
+            day_headers,
+            styled,
+        } = self.options;
+        if messages.is_empty() {
+            return "no messages found\n".to_string();
+        }
+        // Context was asked for exactly when the messages carry a run to belong to.
+        // Without it nothing below changes a byte of what this printed before.
+        let in_context = messages.iter().any(|message| message.group.is_some());
+        let mut out = String::new();
+        let mut run: Option<i64> = None;
+        for message in messages {
+            if in_context {
+                if let Some(group) = message.group
+                    && run.is_some_and(|open| open != group)
+                {
+                    // grep's separator, for grep's reason: a blank line would be
+                    // ambiguous against a message whose body is empty.
+                    out.push_str("--\n");
+                }
+                run = message.group;
+            }
+            // Two columns before the timestamp rather than colour, so a hit
+            // is still marked after the output has been piped, pasted, or
+            // grepped again. The bold on a date header and the gray on a
+            // folded `↵` are the styling exceptions this program makes, and
+            // only when a terminal is looking and not refusing — piped output
+            // still carries no control codes at all.
+            let gutter = match (in_context, message.matched) {
+                (false, _) => "",
+                (true, true) => "> ",
+                (true, false) => "  ",
+            };
+            if day_headers && let Some(date) = message.date.map(local) {
+                let day = (date.year(), date.month(), date.day());
+                if self.last_day != Some(day) {
+                    let header = day_header(date, Local::now());
+                    if styled {
+                        out.push_str(&format!("\x1b[1m{header}\x1b[0m\n"));
+                    } else {
+                        out.push_str(&format!("{header}\n"));
+                    }
+                    self.last_day = Some(day);
+                }
+            }
+            let stamp = if day_headers {
+                message
+                    .date
+                    .map(|date| local(date).format(TIME).to_string())
+                    .unwrap_or_default()
+            } else {
+                format_timestamp(message.date)
+            };
+            let where_ = match (show_chat, message.chat_name.as_deref()) {
+                (true, Some(name)) => format!("[{name}] "),
+                _ => String::new(),
+            };
+            let body = one_line(message.body.as_deref().unwrap_or("(no text)"), styled);
+            // What is being answered goes above the answer, indented to the width of
+            // a timestamp, so a reply reads as a reply without the transcript
+            // stopping being chronological.
+            if let Some(answering) = &message.reply_to {
+                // Not folded: `excerpt` already flattened every run of
+                // whitespace to one space, so there is no newline here to
+                // mark and a fold call would be a dead path wearing a live
+                // one's clothes.
+                let quoted = answering.excerpt.as_deref().unwrap_or("(no text)");
+                out.push_str(&format!(
+                    "{gutter}{:width$}  ↳ replying to {}: {quoted}\n",
+                    "",
+                    answering.sender,
+                    width = stamp.chars().count()
+                ));
+            }
+            // Reactions trail the message they answer after an arrow, oldest
+            // first, skipped entirely when there are none — so ordinary output is
+            // unchanged. An arrow rather than brackets, because brackets collided
+            // with the emoji: a double-width glyph overdraws `[` and `]` in real
+            // terminals, and the arrow needs nothing on the far side. `--who`
+            // names each sender beside its symbol, "me" for my own, the same
+            // name-then-handle precedence every sender line already uses.
+            let reactions = if trail == Trail::Off || message.tapbacks.is_empty() {
+                String::new()
+            } else if trail == Trail::Named {
+                let named: Vec<String> = message
+                    .tapbacks
+                    .iter()
+                    .map(|tapback| {
+                        let sender = if tapback.is_from_me {
+                            "me"
+                        } else {
+                            tapback
+                                .contact_name
+                                .as_deref()
+                                .or(tapback.handle.as_deref())
+                                .unwrap_or("unknown")
+                        };
+                        format!("{}{} {sender}", tapback.symbol, spill(&tapback.symbol))
+                    })
+                    .collect();
+                format!(" ← {}", named.join(", "))
+            } else {
+                let symbols: String = message
+                    .tapbacks
+                    .iter()
+                    .map(|tapback| format!("{}{}", tapback.symbol, spill(&tapback.symbol)))
+                    .collect::<String>();
+                format!(" ← {}", symbols.trim_end())
+            };
             out.push_str(&format!(
-                "{gutter}{:width$}  ↳ replying to {}: {quoted}\n",
-                "",
-                answering.sender,
-                width = stamp.chars().count()
+                "{gutter}{stamp}  {where_}{}: {body}{reactions}\n",
+                message.sender
             ));
         }
-        // Reactions trail the message they answer after an arrow, oldest
-        // first, skipped entirely when there are none — so ordinary output is
-        // unchanged. An arrow rather than brackets, because brackets collided
-        // with the emoji: a double-width glyph overdraws `[` and `]` in real
-        // terminals, and the arrow needs nothing on the far side. `--who`
-        // names each sender beside its symbol, "me" for my own, the same
-        // name-then-handle precedence every sender line already uses.
-        let reactions = if trail == Trail::Off || message.tapbacks.is_empty() {
-            String::new()
-        } else if trail == Trail::Named {
-            let named: Vec<String> = message
-                .tapbacks
-                .iter()
-                .map(|tapback| {
-                    let sender = if tapback.is_from_me {
-                        "me"
-                    } else {
-                        tapback
-                            .contact_name
-                            .as_deref()
-                            .or(tapback.handle.as_deref())
-                            .unwrap_or("unknown")
-                    };
-                    format!("{}{} {sender}", tapback.symbol, spill(&tapback.symbol))
-                })
-                .collect();
-            format!(" ← {}", named.join(", "))
-        } else {
-            let symbols: String = message
-                .tapbacks
-                .iter()
-                .map(|tapback| format!("{}{}", tapback.symbol, spill(&tapback.symbol)))
-                .collect::<String>();
-            format!(" ← {}", symbols.trim_end())
-        };
-        out.push_str(&format!(
-            "{gutter}{stamp}  {where_}{}: {body}{reactions}\n",
-            message.sender
-        ));
+        out
     }
-    out
 }
 
 pub fn to_json<T: serde::Serialize>(value: &T) -> String {
@@ -398,7 +531,15 @@ mod tests {
     fn an_empty_result_says_so_rather_than_printing_nothing() {
         assert_eq!(render_chats(&[]), "no chats found\n");
         assert_eq!(
-            render_messages(&[], false, Trail::Symbols),
+            render_messages(
+                &[],
+                Render {
+                    show_chat: false,
+                    trail: Trail::Symbols,
+                    day_headers: false,
+                    styled: false
+                }
+            ),
             "no messages found\n"
         );
     }
@@ -451,8 +592,12 @@ mod tests {
                 context(3, 1, "elsewhere"),
                 hit(4, 1, "the needle again"),
             ],
-            false,
-            Trail::Symbols,
+            Render {
+                show_chat: false,
+                trail: Trail::Symbols,
+                day_headers: false,
+                styled: false,
+            },
         );
 
         let lines: Vec<&str> = rendered.lines().collect();
@@ -469,7 +614,15 @@ mod tests {
     /// Every search that asks for no context prints exactly what it always did.
     #[test]
     fn without_context_nothing_gains_a_gutter() {
-        let rendered = render_messages(&[message(1, "Dana Reyes", "hello")], false, Trail::Symbols);
+        let rendered = render_messages(
+            &[message(1, "Dana Reyes", "hello")],
+            Render {
+                show_chat: false,
+                trail: Trail::Symbols,
+                day_headers: false,
+                styled: false,
+            },
+        );
         assert_eq!(rendered, "Jan 15, 9:30 AM  Dana Reyes: hello\n");
     }
 
@@ -485,8 +638,12 @@ mod tests {
         });
         let out = render_messages(
             &[message(1, "Dana Reyes", "are you around later"), reply],
-            false,
-            Trail::Symbols,
+            Render {
+                show_chat: false,
+                trail: Trail::Symbols,
+                day_headers: false,
+                styled: false,
+            },
         );
 
         let lines: Vec<&str> = out.lines().collect();
@@ -498,6 +655,154 @@ mod tests {
         // Indented to where the sender starts, not to column zero.
         assert!(lines[1].starts_with("       "), "{out}");
         assert!(lines[2].contains("me: yes, that works"), "{out}");
+    }
+
+    /// Every branch of the header, against one fixed clock — relative words
+    /// while they are unambiguous, weekday inside the week, then the full
+    /// date, the year only when foreign. 2026-07-10 is a Friday. Built in
+    /// local civil time, so the same calendar day means the same header in
+    /// every timezone the suite runs in.
+    #[test]
+    fn a_header_reads_relative_then_weekday_then_the_date() {
+        use chrono::TimeZone;
+        let civil = |y: i32, m: u32, d: u32| Local.with_ymd_and_hms(y, m, d, 12, 0, 0).unwrap();
+        let now = civil(2026, 7, 10);
+        let header = |y, m, d| day_header(civil(y, m, d), now);
+        assert_eq!(header(2026, 7, 10), "Today");
+        assert_eq!(header(2026, 7, 9), "Yesterday");
+        assert_eq!(header(2026, 7, 7), "Tuesday");
+        assert_eq!(header(2026, 7, 4), "Saturday");
+        // Seven days back is a week ago today: the bare weekday would be
+        // ambiguous with three days ago, so the full date takes over.
+        assert_eq!(header(2026, 7, 3), "Friday, July 3");
+        assert_eq!(header(2026, 6, 30), "Tuesday, June 30");
+        assert_eq!(header(2025, 12, 31), "Wednesday, December 31, 2025");
+    }
+
+    /// A body's newlines fold to a visible mark, so one message is one
+    /// transcript line however it was typed: `How are you doing?↵↵I'm fine.`
+    /// Gray wraps only the mark when styled, `\r\n` folds once, and a
+    /// trailing newline run is trimmed rather than drawn.
+    #[test]
+    fn a_newline_in_a_body_folds_to_a_visible_mark() {
+        assert_eq!(
+            one_line("How are you doing?\n\nI'm fine.", false),
+            "How are you doing?↵↵I'm fine."
+        );
+        assert_eq!(one_line("a\r\nb", false), "a↵b", "\\r\\n folds once");
+        assert_eq!(
+            one_line("ends here\n\n", false),
+            "ends here",
+            "trailing trimmed"
+        );
+        let styled = one_line("a\nb", true);
+        assert_eq!(styled, "a\x1b[90m↵\x1b[0mb");
+        assert!(
+            !styled.starts_with('\x1b') && !styled.ends_with('m'),
+            "{styled:?}"
+        );
+    }
+
+    /// Someone looking is necessary and not sufficient: NO_COLOR set and
+    /// non-empty refuses the bold, TERM=dumb refuses it the older way, and a
+    /// pipe never gets it whatever the environment says.
+    #[test]
+    fn styling_needs_a_terminal_and_no_refusal() {
+        use std::ffi::OsStr;
+        assert!(styling_allowed(None, None, true));
+        assert!(!styling_allowed(None, None, false), "a pipe");
+        assert!(
+            !styling_allowed(Some(OsStr::new("1")), None, true),
+            "NO_COLOR"
+        );
+        assert!(
+            styling_allowed(Some(OsStr::new("")), None, true),
+            "empty NO_COLOR does not count, per no-color.org"
+        );
+        assert!(
+            !styling_allowed(None, Some(OsStr::new("dumb")), true),
+            "TERM=dumb"
+        );
+        assert!(styling_allowed(
+            None,
+            Some(OsStr::new("xterm-256color")),
+            true
+        ));
+    }
+
+    /// A date header when the day changes and a bare time on every line —
+    /// and the day survives across calls, which is the stream's whole case:
+    /// one message per render, the header still lands exactly at the change.
+    #[test]
+    fn a_day_change_gets_a_header_and_messages_keep_only_a_time() {
+        // Mid-June of the current local year, so the dates sit in this year
+        // for any timezone and the no-year branch is the one under test — a
+        // fixed 2026 here would start failing on the next New Year's Day.
+        let year = Local::now().year();
+        let mut first = message(1, "Dana Reyes", "late one");
+        first.date = at(&format!("{year}-06-15T17:30:00Z"));
+        let mut second = message(2, "me", "early the next");
+        second.date = at(&format!("{year}-06-16T17:30:00Z"));
+
+        let options = Render {
+            show_chat: false,
+            trail: Trail::Symbols,
+            day_headers: true,
+            styled: false,
+        };
+        let out = render_messages(&[first.clone(), second.clone()], options);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 4, "{out}");
+        // The header text itself is day_header's, pinned exhaustively in its
+        // own test — here the contract is that the renderer emits exactly
+        // that, once per day, wherever in the calendar the suite runs.
+        let now = Local::now();
+        assert_eq!(
+            lines[0],
+            day_header(first.date.unwrap().with_timezone(&Local), now),
+            "{out}"
+        );
+        assert_eq!(
+            lines[2],
+            day_header(second.date.unwrap().with_timezone(&Local), now),
+            "{out}"
+        );
+        assert_ne!(lines[0], lines[2], "{out}");
+        // Message lines carry a time and never a date.
+        assert!(
+            lines[1].contains("late one") && !lines[1].contains("Jan"),
+            "{out}"
+        );
+
+        // Bold is opt-in and wraps exactly the header: the escapes never
+        // touch a message line, so a pipe that got bold by mistake would
+        // still grep its messages — but it must not get it by mistake, which
+        // the CLI test pins by asserting piped output is escape-free.
+        let bold = render_messages(
+            &[first.clone()],
+            Render {
+                styled: true,
+                ..options
+            },
+        );
+        let bold_lines: Vec<&str> = bold.lines().collect();
+        assert!(
+            bold_lines[0].starts_with("\x1b[1m") && bold_lines[0].ends_with("\x1b[0m"),
+            "{bold:?}"
+        );
+        assert!(!bold_lines[1].contains('\x1b'), "{bold:?}");
+
+        // The stream case: one message per call, same day state throughout.
+        let mut renderer = Renderer::new(options);
+        let one = renderer.render(std::slice::from_ref(&first));
+        let two = renderer.render(std::slice::from_ref(&second));
+        assert_eq!(one.lines().count(), 2, "{one}");
+        let mut third = message(3, "me", "still the sixteenth");
+        third.date = at(&format!("{year}-06-16T18:00:00Z"));
+        let three = renderer.render(std::slice::from_ref(&third));
+        assert_eq!(two.lines().count(), 2, "{two}");
+        // Same day as the last emission: no header, the state remembered it.
+        assert_eq!(three.lines().count(), 1, "{three}");
     }
 
     /// `--who` names each reaction's sender beside its symbol — "me" for my
@@ -524,9 +829,25 @@ mod tests {
                 contact_name: None,
             },
         ];
-        let named = render_messages(std::slice::from_ref(&reacted), false, Trail::Named);
+        let named = render_messages(
+            std::slice::from_ref(&reacted),
+            Render {
+                show_chat: false,
+                trail: Trail::Named,
+                day_headers: false,
+                styled: false,
+            },
+        );
         assert!(named.contains("green ← ❤️  Sam Oyelaran, 👍 me"), "{named}");
-        let bare = render_messages(std::slice::from_ref(&reacted), false, Trail::Symbols);
+        let bare = render_messages(
+            std::slice::from_ref(&reacted),
+            Render {
+                show_chat: false,
+                trail: Trail::Symbols,
+                day_headers: false,
+                styled: false,
+            },
+        );
         assert!(bare.contains("green ← ❤️ 👍"), "{bare}");
         assert!(!bare.contains("Sam"), "{bare}");
     }
@@ -535,7 +856,15 @@ mod tests {
     /// exactly as it did.
     #[test]
     fn a_message_that_is_not_a_reply_is_unchanged() {
-        let out = render_messages(&[message(1, "Dana Reyes", "hello")], false, Trail::Symbols);
+        let out = render_messages(
+            &[message(1, "Dana Reyes", "hello")],
+            Render {
+                show_chat: false,
+                trail: Trail::Symbols,
+                day_headers: false,
+                styled: false,
+            },
+        );
         assert_eq!(out.lines().count(), 1, "{out}");
         assert!(!out.contains("↳"), "{out}");
     }
@@ -548,7 +877,15 @@ mod tests {
             sender: "Dana Reyes".into(),
             excerpt: None,
         });
-        let out = render_messages(&[reply], false, Trail::Symbols);
+        let out = render_messages(
+            &[reply],
+            Render {
+                show_chat: false,
+                trail: Trail::Symbols,
+                day_headers: false,
+                styled: false,
+            },
+        );
         assert!(out.contains("↳ replying to Dana Reyes: (no text)"), "{out}");
     }
 }

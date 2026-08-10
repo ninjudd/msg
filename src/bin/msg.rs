@@ -17,7 +17,7 @@ use msg::daemon::install::{
 use msg::daemon::protocol::{Attachment, socket_path};
 use msg::daemon::server::{Daemon, DaemonOptions};
 use msg::db::human_bytes;
-use msg::format::{Trail, render_chats, render_messages, to_json};
+use msg::format::{Render, Renderer, Trail, render_chats, render_messages, to_json};
 use msg::source::{
     ChatQuery, ChatsQuery, SearchQuery, SendQuery, Source, WatchQuery, daemon_status,
     daemon_status_within, open_source,
@@ -232,6 +232,15 @@ fn status_for(error: &Error) -> ExitCode {
     }
 }
 
+/// [`styling_allowed`] against this process's actual environment and stdout.
+fn styled_now() -> bool {
+    msg::format::styling_allowed(
+        std::env::var_os("NO_COLOR").as_deref(),
+        std::env::var_os("TERM").as_deref(),
+        std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    )
+}
+
 fn print(text: &str) {
     print!("{text}");
     std::io::stdout().flush().ok();
@@ -308,11 +317,15 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                     reply.chat.name,
                     render_messages(
                         &reply.messages,
-                        false,
-                        match (*tapbacks, *who) {
-                            (true, _) => Trail::Off,
-                            (false, true) => Trail::Named,
-                            (false, false) => Trail::Symbols,
+                        Render {
+                            show_chat: false,
+                            trail: match (*tapbacks, *who) {
+                                (true, _) => Trail::Off,
+                                (false, true) => Trail::Named,
+                                (false, false) => Trail::Symbols,
+                            },
+                            day_headers: true,
+                            styled: styled_now(),
                         },
                     )
                 )
@@ -356,8 +369,12 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
             } else {
                 render_messages(
                     &messages,
-                    true,
-                    if *who { Trail::Named } else { Trail::Symbols },
+                    Render {
+                        show_chat: true,
+                        trail: if *who { Trail::Named } else { Trail::Symbols },
+                        day_headers: false,
+                        styled: styled_now(),
+                    },
                 )
             });
         }
@@ -370,6 +387,19 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
         } => {
             let show_chat = chat.is_none();
             let as_json = *json;
+            // One renderer for the whole stream, so a day change between
+            // emissions gets its header — the header goes in front of the new
+            // line, and the last emitted day is all it takes.
+            let mut renderer = Renderer::new(Render {
+                show_chat,
+                trail: if *tapbacks {
+                    Trail::Off
+                } else {
+                    Trail::Symbols
+                },
+                day_headers: true,
+                styled: styled_now(),
+            });
             source.watch(
                 &WatchQuery {
                     chat: chat.clone(),
@@ -382,15 +412,7 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
                     print(&if as_json {
                         format!("{}\n", serde_json::to_string(message)?)
                     } else {
-                        render_messages(
-                            std::slice::from_ref(message),
-                            show_chat,
-                            if *tapbacks {
-                                Trail::Off
-                            } else {
-                                Trail::Symbols
-                            },
-                        )
+                        renderer.render(std::slice::from_ref(message))
                     });
                     Ok(())
                 },

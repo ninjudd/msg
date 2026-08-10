@@ -64,6 +64,10 @@ fn build(path: &Path) {
                   'p:0/m4', NULL, 790000360000000000, 'iMessage'),
                  (8, 't8', NULL, 1, 1, 2006, 'm4', '🙏', 790000420000000000, 'iMessage'),
                  (9, 't9', NULL, 0, 2, 2001, 'bp:m6', NULL, 790000480000000000, 'iMessage');
+        INSERT INTO message (rowid, guid, text, is_from_me, handle_id, date, service)
+          VALUES (10, 'm10', 'two days on', 1, 1, 790172800000000000, 'iMessage'),
+                 (11, 'm11', 'How are you doing?' || char(10) || char(10) || 'I''m fine.',
+                  0, 1, 790172860000000000, 'iMessage');
         INSERT INTO chat_message_join (chat_id, message_id, message_date)
           VALUES (1, 1, 790000000000000000),
                  (1, 2, 790000060000000000),
@@ -73,7 +77,9 @@ fn build(path: &Path) {
                  (3, 6, 790000300000000000),
                  (3, 7, 790000360000000000),
                  (3, 8, 790000420000000000),
-                 (3, 9, 790000480000000000);
+                 (3, 9, 790000480000000000),
+                 (1, 10, 790172800000000000),
+                 (1, 11, 790172860000000000);
         ",
     )
     .unwrap();
@@ -112,7 +118,25 @@ fn it_lists_conversations() {
 fn it_reads_a_conversation() {
     let output = msg(&["--no-names", "chat", "1"]);
     assert_eq!(code(&output), 0);
-    assert!(stdout(&output).contains("are you around later"));
+    let text = stdout(&output);
+    assert!(text.contains("are you around later"));
+    // The transcript spans two days, so it carries two date headers — the
+    // weekday-and-date form, since the fixture is long past the relative
+    // window — and every message line shows only a time.
+    let headers = text.lines().filter(|line| line.contains("January")).count();
+    assert_eq!(headers, 2, "{text}");
+    assert!(
+        !text
+            .lines()
+            .any(|line| line.contains("January") && line.contains(":")),
+        "a message line still carries a date: {text}"
+    );
+    // A multi-line body is one transcript line, its newlines folded to ↵.
+    assert!(text.contains("How are you doing?↵↵I'm fine."), "{text}");
+    // Styling is for terminals; this output is piped, so it must carry no
+    // control codes at all — every escape this program writes is gated on a
+    // tty, the ↵'s gray included.
+    assert!(!text.contains('\x1b'), "{text:?}");
 }
 
 #[test]

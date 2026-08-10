@@ -152,6 +152,15 @@ msg chat dana --tapbacks       # reactions as their own rows, not trailing
 `--since` accepts a duration (`30m`, `2h`, `7d`, `4w`), an ISO date like
 `2026-01-15`, or a full timestamp. A bare date means midnight UTC.
 
+A transcript carries a day line whenever the day changes — `Today`,
+`Yesterday`, a bare weekday inside the last week, then `Friday, July 7`, the
+year only when it is not this year — bold when writing to a terminal,
+honouring `NO_COLOR` and `TERM=dumb`. Each message shows only its time, the
+same shape Messages uses. `watch` does the
+same across its stream. `search` keeps its stamps as they always were — a date
+on every line except today's, which shows only a time — since its results jump
+between days by construction.
+
 **A name reads the person; a rowid reads the thread.** Messages keeps a separate
 conversation for every address someone has, so a person you reach at a phone
 number and an email address has two — and naming them shows both as one
