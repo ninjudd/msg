@@ -11,9 +11,10 @@ are not.
 
 ## 1 The complaint
 
-Two real queries, minutes apart, on the day `contacts resolve` shipped. The
-first — one contact answered as "4 people match", her cards split across
-accounts — was a modeling bug, fixed by unifying records filed under one
+Two real queries, minutes apart, on the day `contacts resolve` was built
+(#54, in review as this is written — none of it is on main yet). The first —
+one contact answered as "4 people match", her cards split across accounts —
+was a modeling bug, fixed on that branch by unifying records filed under one
 name (contact-resolution.md §5). The second survived that fix: a resolve
 listed a card under a prank name, sharing a real person's email address,
 from a set of contacts that belong to a family member and appear nowhere in
@@ -25,21 +26,21 @@ is behaving correctly, and `msg` is over-enumerating databases.
 All on one machine, 2026-08-09, through probes running in the daemon (the
 established pattern: patch a log line in, build, install, read
 `msgd.log`, revert). Four AddressBook databases exist: three under
-`Sources/` — call them `98E5…` (605 records), `FB13…` (241), `B0CE…` (2) —
-plus the legacy top-level one.
+`Sources/` — call them `SOURCE-A` (605 records), `SOURCE-B` (241), and
+`SOURCE-C` (2) — plus the legacy top-level one.
 
 - **`CNContactStore.containers(matching: nil)` names the user-visible
-  universe**, and it lists exactly two: `98E5…:ABAccount` and `_local`. The
+  universe**, and it lists exactly two: `SOURCE-A:ABAccount` and `_local`. The
   identifier is the source directory's UUID plus an `:ABAccount` suffix;
-  `_local` is the legacy top-level database. `FB13…` and `B0CE…` are not
+  `_local` is the legacy top-level database. `SOURCE-B` and `SOURCE-C` are not
   containers at all.
-- **`FB13…` is live but auxiliary.** Its account exists in the Accounts
+- **`SOURCE-B` is live but auxiliary.** Its account exists in the Accounts
   store and its database syncs actively — but the account is owned by
   `ZOWNINGBUNDLEID = com.apple.AddressBookSourceSync` with a *CardDAV*
   parent account, where the user's real source is owned by `mbuseragent`
   with an Apple ID parent. It is some subsystem's derived database —
   plausibly family or child account infrastructure — not a user container.
-- **`B0CE…` is dead.** Its account identifier appears nowhere in the
+- **`SOURCE-C` is dead.** Its account identifier appears nowhere in the
   Accounts store, and its database was last touched months ago. An orphaned
   directory outliving its account.
 - **Nothing simpler discriminates.** `ZLINKID` and the unification-override
@@ -66,10 +67,14 @@ helper, and splits what remains into the two options below.
 
 ## 4 Option A: filter on the measured disk signatures, plus knobs
 
-No prompt, no framework, files the daemon already reads. Auto-exclude a
+No prompt and no framework, but not quite "files the daemon already
+reads": the Accounts store is a new protected input, read for account
+identifiers, types, and owning bundles and never the credential tables —
+a real scope expansion, named here because the daemon's privileged-data
+footprint is part of choosing between these options. Auto-exclude a
 `Sources/` database when the Accounts store says its account is gone (the
-`B0CE…` case) or names `com.apple.AddressBookSourceSync` as the owning
-bundle (the `FB13…` signature); read everything else as today. Add
+`SOURCE-C` case) or names `com.apple.AddressBookSourceSync` as the owning
+bundle (the `SOURCE-B` signature); read everything else as today. Add
 `contacts_exclude` and `contacts_include` keys to the config as the
 override in both directions, honored by daemon and direct paths alike, and
 `msg contacts sources` listing each source's UUID, record count, owning
@@ -81,10 +86,9 @@ work.
 The honest caveat: the signatures are one machine's measurements. Whether
 `AddressBookSourceSync` ever owns a source a user *does* see — a
 Google-contacts mirror, say — is unmeasured, which is exactly what the
-include knob and the listing are for. The daemon also starts reading the
-Accounts store routinely, a scope expansion to name in
-daemon-and-permissions.md: account identifiers, types, and owning bundles,
-never the credential tables.
+include knob and the listing are for. The scope expansion above also gets a
+section in daemon-and-permissions.md when this ships, since that document
+is where the daemon's reads are enumerated.
 
 ## 5 Option B: contacts through the platform's API, behind its own permission
 
@@ -92,9 +96,12 @@ The deeper fix, floated by the user the same evening: perhaps reading
 contacts *should* cost the Contacts permission. Today `msgd` reads
 contacts under Full Disk Access, a blunt grant that never says the word
 "contacts"; a `CNContactStore`-based reader behind the real permission
-would name what it does, land the prompt on `msgd` once (revocable with
-`tccutil reset AddressBook com.ninjudd.msgd`), and make the OS enforce what
-is currently only architecture.
+would name what it does and make the OS enforce what is currently only
+architecture — *if* the prompt presents from launchd-agent context at all,
+which is unmeasured and is the spike this option waits on. If it does, the
+grant lands on `msgd` once and is revocable with
+`tccutil reset AddressBook com.ninjudd.msgd`; if it does not, Option B
+needs a different shape entirely.
 
 What makes this more than permission theater: **the permission is real only
 if the file-reading stops.** CN becomes the contacts source; FDA shrinks in
@@ -106,11 +113,11 @@ labels, and immunity to the next abcddb schema drift.
 The costs, plainly: a Swift surface, either a bundle helper (user-writable,
 so its answers are only as trustworthy as the bundle — acceptable for a
 read path, but the swapped-helper-runs-with-msgd's-attribution channel
-must be written down) or a linked framework, for which
-confirmed-and-delayed-send.md §3 is already opening the door and building
-the machinery; the unmeasured question of whether the Contacts prompt
-presents from launchd-agent context, which is the same spike that plan
-must run for `LAContext`; and the daemonless CLI, which cannot use CN
+must be written down) or a linked framework, for which the
+confirmed-and-delayed-send plan (#53, also in review) is already opening
+the door and building the machinery; the unmeasured question of whether
+the Contacts prompt presents from launchd-agent context, which is the same
+spike #53's plan must run for `LAContext`; and the daemonless CLI, which cannot use CN
 (terminal attribution) and either keeps raw file reads under terminal FDA
 as a documented fallback or loses names.
 
@@ -125,7 +132,7 @@ ended on; choosing is tomorrow's first job.
 
 ## 7 Interim
 
-Until either ships: the unification fix already answers split-card
-contacts correctly, an exact full name resolves past the auxiliary
-pollution, and the auxiliary source's presence is at least now understood
-rather than mysterious.
+Until either option ships, and once #54 lands: the unification fix
+answers split-card contacts correctly, an exact full name resolves past the
+auxiliary pollution, and the auxiliary source's presence is at least now
+understood rather than mysterious.
