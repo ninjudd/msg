@@ -410,6 +410,26 @@ JSON, one object per message, suitable for streaming into another process.
 msg search "invoice" --json | jq '.[] | {date, sender, body}'
 ```
 
+## Agents
+
+[`skills/msg/SKILL.md`](skills/msg/SKILL.md) is an
+[Agent Skill](https://agentskills.io) that teaches Claude Code, Codex, and
+anything else speaking that format how to drive `msg`: which command answers
+which question, how names resolve, that nothing is sent without an explicit
+ask and a `--dry-run` first — and that [sending](#sending) stays off unless
+the user twice confirms they want it on, since most people only ever read and
+search. Install it like the binary, with a symlink, so it tracks the checkout:
+
+```sh
+mkdir -p ~/.claude/skills && ln -s "$PWD/skills/msg" ~/.claude/skills/msg   # Claude Code
+mkdir -p ~/.codex/skills  && ln -s "$PWD/skills/msg" ~/.codex/skills/msg    # Codex
+```
+
+Skills are discovered at startup, so restart a session that was already open.
+The skill grants nothing: the agent's own permission prompts still stand in
+front of every command it runs, and sending stays behind
+[the same two gates](#sending) no matter who is typing.
+
 ## The daemon
 
 `msg` can read the Messages database itself, but that means granting Full Disk
