@@ -75,9 +75,12 @@ recognise which message is being answered without reprinting it. The excerpt has
 to be built from the same decoded body everything else uses, so an attachment in
 the originator shows as its description rather than as an invisible character.
 
-Rendered, a reply says what it answers before saying itself. In `--json` the same
-thing arrives structured, so a consumer can rebuild the thread rather than parse
-prose.
+Rendered, a reply says what it answers after saying itself — corrected from
+"before" once real use showed the quote gluing itself to the preceding message,
+because an indented line in a terminal attaches to the line above it, and a
+reply right after its original rendered as that original replying to itself. In
+`--json` the same thing arrives structured, so a consumer can rebuild the
+thread rather than parse prose.
 
 ## 5 Slices
 
