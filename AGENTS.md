@@ -7,6 +7,11 @@ there is no `docs/` overview, because [README.md](README.md) plays that role —
 it describes how `msg` works today, for someone using it. The work itself is in
 [`docs/projects/`](docs/projects/README.md).
 
+[skills/msg/SKILL.md](skills/msg/SKILL.md) is user-facing documentation too —
+the Agent Skill that teaches Claude, Codex, and anything else speaking the
+format to drive `msg`. A behaviour change that touches the README's usage
+sections probably touches the skill as well; keep the two telling one story.
+
 ## Never send a message you did not mean to send
 
 `msg send` texts real people. Treat it the way you would treat a production
