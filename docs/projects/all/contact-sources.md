@@ -117,9 +117,9 @@ must be written down) or a linked framework, for which the
 confirmed-and-delayed-send plan (#53, also in review) is already opening
 the door and building the machinery; the unmeasured question of whether
 the Contacts prompt presents from launchd-agent context, which is the same
-spike #53's plan must run for `LAContext`; and the daemonless CLI, which cannot use CN
-(terminal attribution) and either keeps raw file reads under terminal FDA
-as a documented fallback or loses names.
+spike #53's plan must run for `LAContext`; and the daemonless CLI, which
+cannot use CN (terminal attribution) and either keeps raw file reads under
+terminal FDA as a documented fallback or loses names.
 
 ## 6 How the options relate
 
