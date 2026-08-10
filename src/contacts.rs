@@ -83,6 +83,25 @@ impl Contact {
         exactly_named(&self.name, self.filed_as.as_deref(), needle)
     }
 
+    /// Who this entry belongs to: records filed under one name are one
+    /// person, across accounts and within them.
+    ///
+    /// This is the unification Contacts itself displays. The databases do
+    /// not store it — `ZLINKID` was empty on every row measured, and the
+    /// override table alongside it held nothing — because the framework
+    /// computes unified cards at query time, keyed on the composed name. A
+    /// resolver that ignored it answered a real query with "4 people match",
+    /// all four one human with her cards split across accounts
+    /// (contact-resolution.md §5). The filed name, not the nickname: a
+    /// nicknamed card and a plain card for the same person share the filed
+    /// name, which is exactly the pair that must unify.
+    pub fn person_key(&self) -> String {
+        self.filed_as
+            .as_deref()
+            .unwrap_or(&self.name)
+            .to_lowercase()
+    }
+
     /// Every name this contact can be found by, in its stored case — the
     /// predicate folds per character, and reads word boundaries from the
     /// unfolded name.
@@ -285,45 +304,27 @@ impl ContactIndex {
             )));
         }
         if let Some(key) = handle_key(term) {
-            let mut ids: Vec<&str> = Vec::new();
+            // Grouped by person, not by record: several records holding one
+            // address unify when they are filed as one name, so what remains
+            // plural here is genuinely plural — a parent and a child on one
+            // home line — and picking between people is the thing this
+            // command must never do.
+            let mut people: std::collections::BTreeMap<String, &Contact> =
+                std::collections::BTreeMap::new();
             for contact in &self.entries {
-                if handle_key(&contact.handle).as_deref() == Some(key.as_str())
-                    && !ids.contains(&contact.id.as_str())
-                {
-                    ids.push(contact.id.as_str());
+                if handle_key(&contact.handle).as_deref() == Some(key.as_str()) {
+                    people.entry(contact.person_key()).or_insert(contact);
                 }
             }
-            match ids.len() {
+            match people.len() {
                 // Not an address the index holds — a digit-carrying name like
                 // R2D2 keys too, so fall through and read it as a name.
                 0 => {}
-                1 => return Ok(self.assemble(ids[0])),
-                _ => {
-                    // Several records hold this address. One human synced
-                    // into several accounts is not an ambiguity: when every
-                    // record renders the same name, the entry the handle map
-                    // retained answers, which is the source-preference rule
-                    // rendering already follows ("Accounts disagree" in the
-                    // README). Different names are different people — a
-                    // parent and a child on one home line — and picking
-                    // between people is the thing this command must never do.
-                    let named: std::collections::BTreeSet<String> = ids
-                        .iter()
-                        .map(|id| self.assemble(id).name.to_lowercase())
-                        .collect();
-                    if named.len() == 1 {
-                        let retained = self.contacts.get(&key).expect("keyed from entries");
-                        let id = retained.id.clone();
-                        return Ok(self.assemble(&id));
-                    }
-                    let people: std::collections::BTreeMap<&str, &Contact> = self
-                        .entries
-                        .iter()
-                        .filter(|contact| ids.contains(&contact.id.as_str()))
-                        .map(|contact| (contact.id.as_str(), contact))
-                        .collect();
-                    return Err(self.several(term, &people));
+                1 => {
+                    let person = people.keys().next().expect("one match").clone();
+                    return Ok(self.assemble(&person));
                 }
+                _ => return Err(self.several(term, &people)),
             }
         }
         let needle = term.trim().to_lowercase();
@@ -331,30 +332,30 @@ impl ContactIndex {
             return Err(Error::other("no one to resolve"));
         }
         // BTreeMap so candidates come out in one order however the underlying
-        // storage ordered them; one representative entry per record is enough
+        // storage ordered them; one representative entry per person is enough
         // to name and to tie-break.
-        let mut people: std::collections::BTreeMap<&str, &Contact> =
+        let mut people: std::collections::BTreeMap<String, &Contact> =
             std::collections::BTreeMap::new();
         for contact in &self.entries {
             if contact.answers_to(&needle) {
-                people.entry(contact.id.as_str()).or_insert(contact);
+                people.entry(contact.person_key()).or_insert(contact);
             }
         }
         if people.len() > 1 {
-            let exact: Vec<&str> = people
+            let exact: Vec<String> = people
                 .iter()
                 .filter(|(_, contact)| contact.is_named(&needle))
-                .map(|(id, _)| *id)
+                .map(|(person, _)| person.clone())
                 .collect();
             if exact.len() == 1 {
-                people.retain(|id, _| *id == exact[0]);
+                people.retain(|person, _| *person == exact[0]);
             }
         }
         match people.len() {
             0 => Err(Error::other(format!("no one matching {term}"))),
             1 => {
-                let id = people.keys().next().expect("one match").to_string();
-                Ok(self.assemble(&id))
+                let person = people.keys().next().expect("one match").clone();
+                Ok(self.assemble(&person))
             }
             _ => Err(self.several(term, &people)),
         }
@@ -363,13 +364,13 @@ impl ContactIndex {
     /// The error for a term naming more than one person: one candidate per
     /// line with an address alongside, which is what a caller disambiguates
     /// by (contact-resolution.md §7).
-    fn several(&self, term: &str, people: &std::collections::BTreeMap<&str, &Contact>) -> Error {
+    fn several(&self, term: &str, people: &std::collections::BTreeMap<String, &Contact>) -> Error {
         const LISTED: usize = 12;
         let mut lines: Vec<String> = people
             .keys()
             .take(LISTED)
-            .map(|id| {
-                let person = self.assemble(id);
+            .map(|key| {
+                let person = self.assemble(key);
                 let address = person
                     .emails
                     .first()
@@ -389,17 +390,35 @@ impl ContactIndex {
         ))
     }
 
-    /// Everything the index holds for one record, as the person it is.
+    /// Everything the index holds for one person, whole.
     ///
-    /// Assembled from `entries`, not from the handle map: an address this
-    /// record shares with another still belongs to this person, even when the
-    /// map's slot for it went to somebody else.
-    fn assemble(&self, id: &str) -> PersonRecord {
-        let mut named: Option<(String, Option<String>)> = None;
+    /// Assembled from `entries` across every record filed under the person's
+    /// name, so a contact whose cards are split over accounts answers with
+    /// all of their addresses — the same unified card Contacts shows. One
+    /// address held by two of those records is one value, kept in the shape
+    /// the preferred source stored; the display name and the published `id`
+    /// are the preferred record's, since entries arrive preference-first.
+    fn assemble(&self, person: &str) -> PersonRecord {
+        let mut named: Option<(String, Option<String>, String)> = None;
+        let mut keys_seen = std::collections::HashSet::new();
         let mut emails = Vec::new();
         let mut phones = Vec::new();
-        for contact in self.entries.iter().filter(|contact| contact.id == id) {
-            named = Some((contact.name.clone(), contact.filed_as.clone()));
+        for contact in &self.entries {
+            if contact.person_key() != person {
+                continue;
+            }
+            if named.is_none() {
+                named = Some((
+                    contact.name.clone(),
+                    contact.filed_as.clone(),
+                    contact.id.clone(),
+                ));
+            }
+            if let Some(key) = handle_key(&contact.handle)
+                && !keys_seen.insert(key)
+            {
+                continue;
+            }
             if contact.handle.contains('@') {
                 emails.push(LabeledValue {
                     value: contact.handle.trim().to_string(),
@@ -412,11 +431,11 @@ impl ContactIndex {
                 });
             }
         }
-        let (name, filed_as) = named.expect("assemble called with a held record id");
+        let (name, filed_as, id) = named.expect("assemble called with a held person");
         emails.sort_by(|a, b| a.value.cmp(&b.value));
         phones.sort_by(|a, b| a.value.cmp(&b.value));
         PersonRecord {
-            id: id.to_string(),
+            id,
             name,
             filed_as,
             emails,
@@ -1179,19 +1198,26 @@ mod tests {
         assert_eq!(person.emails[0].value, "dana@example.com");
     }
 
-    /// Sharing a name is not sharing an address. By name, two records named
-    /// exactly alike stay two people — the address is what tells a father
-    /// from a son, so only an address collapses the question.
+    /// Records filed under one name are one person, across accounts and
+    /// within them — the unification Contacts itself displays, adopted after
+    /// a real database answered a real query with "4 people match", all four
+    /// one contact split across cards (contact-resolution.md §5). The
+    /// answer carries every card's addresses, and the published id is the
+    /// preferred record's.
     #[test]
-    fn two_records_named_alike_stay_two_people_by_name() {
+    fn records_filed_alike_are_one_person_with_every_card_answering() {
         let index = ContactIndex::for_test([
-            ("+13105551234", "a:1", "Dana Reyes"),
-            ("+14155550000", "a:2", "Dana Reyes"),
+            ("claire@example.com", "g:1", "Claire Duarte"),
+            ("claire@school.example", "g:2", "Claire Duarte"),
+            ("claire@icloud.example", "i:3", "Claire Duarte"),
+            ("+13105551236", "i:4", "Claire Duarte"),
         ]);
-        assert!(matches!(
-            index.person("dana reyes"),
-            Err(crate::Error::Ambiguous(_))
-        ));
+        let person = index.person("claire").unwrap();
+        assert_eq!(person.id, "g:1");
+        assert_eq!(person.emails.len(), 3, "{person:?}");
+        assert_eq!(person.phones.len(), 1, "{person:?}");
+        // Any single card's address answers with the whole person.
+        assert_eq!(index.person("+13105551236").unwrap().id, "g:1");
     }
 
     /// A source directory the read cannot see is a recorded problem, never a

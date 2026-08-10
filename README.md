@@ -481,11 +481,14 @@ healthy account held a match: "nobody matched" and "exactly one" are claims
 about all of Contacts, and half the data cannot back either. Name rendering
 elsewhere stays best-effort; an identity answer does not.
 
-An address two records share is answered by whichever record the preferred
-account holds when both render the same name — one person synced into two
-accounts is not an ambiguity — and refused when the names differ, because a
-parent and a child on one home line are two people, and picking between
-people is the thing this command never does.
+Records filed under one name are one person — the same unification Contacts
+itself shows as a single card when your accounts each hold a copy of
+somebody. A resolve answers with every card's addresses merged, and this
+holds in conversation resolution too, so `resolve` and `chat` cannot
+disagree about who somebody is. An address shared by records filed under
+*different* names is refused, naming both, because a parent and a child on
+one home line are two people, and picking between people is the thing this
+command never does.
 
 ### Machine-readable output
 

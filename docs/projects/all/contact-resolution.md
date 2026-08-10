@@ -144,17 +144,24 @@ Identifiers are objects from day one:
   a miss. If a real case ever proves otherwise, the change is a person-led
   load emitting the object with empty arrays and status 0 — additive, and
   waiting on that case per the rule against speculative fixes.
-- **One record is one person** (added at implementation). The same human
-  held in two accounts is two records, and where both answer a name,
-  `resolve` reports the tie rather than merging them — which is what
-  conversation resolution already does, so §3's guarantee requires it.
-  Merging across sources by shared address is future work waiting on a real
-  complaint, and it would have to move both resolvers together. One carve-out
-  (added when review caught the map suppressing shared addresses): an
-  *address* held by several records answers with the source-preferred record
-  when every holder renders one name, since one human synced twice is not
-  two people — and stays an ambiguity when the names differ, which is the
-  parent-and-child-on-one-line case no rule may pick from.
+- **Records filed under one name are one person** (corrected at
+  implementation, twice, and worth the history). The first version said one
+  *record* is one person and deferred any merging until a real complaint;
+  the complaint arrived the same day, from the first real query: a contact
+  whose cards were split across accounts answered "4 people match", all
+  four her. The databases hold no linkage to read — `ZLINKID` was empty on
+  every row measured and the unification-override table alongside it held
+  nothing — because the platform computes unified cards at query time,
+  keyed on the composed name. So `msg` unifies the same way: entries whose
+  *filed* name matches (case-insensitively; the filed name, so a nicknamed
+  card and a plain card for one person still meet) are one person, across
+  accounts and within them, in `resolve` and in conversation resolution
+  alike, since §3 forbids the two disagreeing. The cost, accepted with the
+  platform: two genuine strangers filed under identical full names merge
+  here exactly as Contacts merges them on screen. An address shared by
+  records filed under *different* names stays an ambiguity naming both —
+  the parent-and-child-on-one-line case no rule may pick from. The
+  published `id` is the preferred record's, still opaque and undurable.
 
 ## 6 Labels
 
