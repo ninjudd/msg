@@ -98,8 +98,16 @@ impl Contact {
 /// Contacts is best-effort — messages still read without it — but silently
 /// best-effort is how an empty index went unnoticed until names stopped
 /// resolving with no explanation anywhere.
+///
+/// Two views of one load. `entries` is every (record, address) pair the
+/// databases held; `contacts` keeps one entry per normalized key — the first,
+/// which source ordering makes the preferred account's — and is what
+/// rendering reads. Resolution reads `entries`, because two records can share
+/// an address, and a resolver that saw only the map's survivor would answer
+/// with one of two people and never say so (contact-resolution.md §3).
 #[derive(Debug, Default, Clone)]
 pub struct ContactIndex {
+    entries: Vec<Contact>,
     contacts: HashMap<String, Contact>,
     problems: Vec<String>,
 }
@@ -110,6 +118,23 @@ impl ContactIndex {
         Self::default()
     }
 
+    /// Both views from the entry list: the map keeps the first entry per key,
+    /// so the order of `entries` — preferred source first, database order
+    /// within one — is what decides every tie the map settles.
+    fn index_from(entries: Vec<Contact>, problems: Vec<String>) -> Self {
+        let mut contacts = HashMap::new();
+        for contact in &entries {
+            if let Some(key) = handle_key(&contact.handle) {
+                contacts.entry(key).or_insert_with(|| contact.clone());
+            }
+        }
+        Self {
+            entries,
+            contacts,
+            problems,
+        }
+    }
+
     /// An index built from `(handle, record id, name)`, for tests.
     ///
     /// Keyed through [`handle_key`] like the real loader, so a test that writes
@@ -118,22 +143,20 @@ impl ContactIndex {
     /// name, so a test can hand two different people the same name.
     #[cfg(test)]
     pub fn for_test<'a>(records: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>) -> Self {
-        Self {
-            contacts: records
+        Self::index_from(
+            records
                 .into_iter()
-                .filter_map(|(handle, id, name)| {
-                    let contact = Contact {
-                        id: id.to_string(),
-                        handle: handle.to_string(),
-                        name: name.to_string(),
-                        filed_as: None,
-                        label: None,
-                    };
-                    Some((handle_key(handle)?, contact))
+                .filter(|(handle, _, _)| handle_key(handle).is_some())
+                .map(|(handle, id, name)| Contact {
+                    id: id.to_string(),
+                    handle: handle.to_string(),
+                    name: name.to_string(),
+                    filed_as: None,
+                    label: None,
                 })
                 .collect(),
-            problems: Vec::new(),
-        }
+            Vec::new(),
+        )
     }
 
     /// Give a handle's contact a nickname, which takes over as what they are
@@ -146,18 +169,36 @@ impl ContactIndex {
     #[cfg(test)]
     pub fn nicknamed(mut self, handle: &str, nickname: &str) -> Self {
         let key = handle_key(handle).expect("a handle to nickname");
-        let contact = self.contacts.get_mut(&key).expect("a contact to nickname");
-        contact.filed_as = Some(std::mem::replace(&mut contact.name, nickname.to_string()));
-        self
+        // Displaced on every entry of the record, since the loader reads the
+        // nickname off the record and applies it to each of its addresses.
+        let id = self
+            .entries
+            .iter()
+            .find(|contact| handle_key(&contact.handle).as_deref() == Some(&key))
+            .expect("a contact to nickname")
+            .id
+            .clone();
+        for contact in &mut self.entries {
+            if contact.id == id {
+                contact.filed_as = Some(std::mem::replace(&mut contact.name, nickname.to_string()));
+            }
+        }
+        Self::index_from(self.entries, self.problems)
     }
 
     /// Give a handle's entry a label, the way the loader would have read one.
     #[cfg(test)]
     pub fn labeled(mut self, handle: &str, label: &str) -> Self {
         let key = handle_key(handle).expect("a handle to label");
-        let contact = self.contacts.get_mut(&key).expect("a contact to label");
-        contact.label = Some(label.to_string());
-        self
+        let mut found = false;
+        for contact in &mut self.entries {
+            if handle_key(&contact.handle).as_deref() == Some(&key) {
+                contact.label = Some(label.to_string());
+                found = true;
+            }
+        }
+        assert!(found, "a contact to label");
+        Self::index_from(self.entries, self.problems)
     }
 
     /// An index that failed to read a source, for pinning what `person` does
@@ -243,20 +284,58 @@ impl ContactIndex {
                 self.problems.join("\n")
             )));
         }
-        if let Some(exact) = self.contact(Some(term)) {
-            let id = exact.id.clone();
-            return Ok(self.assemble(&id));
+        if let Some(key) = handle_key(term) {
+            let mut ids: Vec<&str> = Vec::new();
+            for contact in &self.entries {
+                if handle_key(&contact.handle).as_deref() == Some(key.as_str())
+                    && !ids.contains(&contact.id.as_str())
+                {
+                    ids.push(contact.id.as_str());
+                }
+            }
+            match ids.len() {
+                // Not an address the index holds — a digit-carrying name like
+                // R2D2 keys too, so fall through and read it as a name.
+                0 => {}
+                1 => return Ok(self.assemble(ids[0])),
+                _ => {
+                    // Several records hold this address. One human synced
+                    // into several accounts is not an ambiguity: when every
+                    // record renders the same name, the entry the handle map
+                    // retained answers, which is the source-preference rule
+                    // rendering already follows ("Accounts disagree" in the
+                    // README). Different names are different people — a
+                    // parent and a child on one home line — and picking
+                    // between people is the thing this command must never do.
+                    let named: std::collections::BTreeSet<String> = ids
+                        .iter()
+                        .map(|id| self.assemble(id).name.to_lowercase())
+                        .collect();
+                    if named.len() == 1 {
+                        let retained = self.contacts.get(&key).expect("keyed from entries");
+                        let id = retained.id.clone();
+                        return Ok(self.assemble(&id));
+                    }
+                    let people: std::collections::BTreeMap<&str, &Contact> = self
+                        .entries
+                        .iter()
+                        .filter(|contact| ids.contains(&contact.id.as_str()))
+                        .map(|contact| (contact.id.as_str(), contact))
+                        .collect();
+                    return Err(self.several(term, &people));
+                }
+            }
         }
         let needle = term.trim().to_lowercase();
         if needle.is_empty() {
             return Err(Error::other("no one to resolve"));
         }
         // BTreeMap so candidates come out in one order however the underlying
-        // map hashed them; one representative entry per record is enough to
-        // name and to tie-break.
+        // storage ordered them; one representative entry per record is enough
+        // to name and to tie-break.
         let mut people: std::collections::BTreeMap<&str, &Contact> =
             std::collections::BTreeMap::new();
-        for contact in self.contacts.values() {
+        for contact in &self.entries {
             if contact.answers_to(&needle) {
                 people.entry(contact.id.as_str()).or_insert(contact);
             }
@@ -311,11 +390,15 @@ impl ContactIndex {
     }
 
     /// Everything the index holds for one record, as the person it is.
+    ///
+    /// Assembled from `entries`, not from the handle map: an address this
+    /// record shares with another still belongs to this person, even when the
+    /// map's slot for it went to somebody else.
     fn assemble(&self, id: &str) -> PersonRecord {
         let mut named: Option<(String, Option<String>)> = None;
         let mut emails = Vec::new();
         let mut phones = Vec::new();
-        for contact in self.contacts.values().filter(|contact| contact.id == id) {
+        for contact in self.entries.iter().filter(|contact| contact.id == id) {
             named = Some((contact.name.clone(), contact.filed_as.clone()));
             if contact.handle.contains('@') {
                 emails.push(LabeledValue {
@@ -507,11 +590,25 @@ fn source_databases(book: &Path, problems: &mut Vec<String>) -> Vec<PathBuf> {
             return Vec::new();
         }
     };
-    let mut found: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path().join("AddressBook-v22.abcddb"))
-        .filter(|path| path.exists())
-        .collect();
+    let mut found = Vec::new();
+    for entry in entries {
+        // An entry or metadata error is a source this read cannot see, and
+        // resolution promises completeness — so the failure is recorded
+        // rather than skipped, and `person` refuses instead of answering
+        // from what remains (contact-resolution.md §7). Only a plainly
+        // missing database is an ordinary absence.
+        match entry {
+            Ok(entry) => {
+                let path = entry.path().join("AddressBook-v22.abcddb");
+                match std::fs::metadata(&path) {
+                    Ok(_) => found.push(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => problems.push(format!("{}: {error}", path.display())),
+                }
+            }
+            Err(error) => problems.push(format!("{}: {error}", directory.display())),
+        }
+    }
     found.sort();
     found
 }
@@ -522,8 +619,12 @@ fn contact_databases(book: &Path, problems: &mut Vec<String>) -> Vec<PathBuf> {
         return Vec::new();
     }
     let mut all = source_databases(book, problems);
-    all.push(book.join("AddressBook-v22.abcddb"));
-    all.retain(|path| path.exists());
+    let legacy = book.join("AddressBook-v22.abcddb");
+    match std::fs::metadata(&legacy) {
+        Ok(_) => all.push(legacy),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => problems.push(format!("{}: {error}", legacy.display())),
+    }
     all
 }
 
@@ -561,7 +662,7 @@ pub fn load_contacts_from(book: Option<&Path>, preferred_source: Option<&str>) -
     if databases.is_empty() && problems.is_empty() {
         problems.push(format!("no Contacts databases under {}", book.display()));
     }
-    let sources: Vec<(PathBuf, HashMap<String, Contact>)> = databases
+    let sources: Vec<(PathBuf, Vec<Contact>)> = databases
         .into_iter()
         .map(|path| {
             let contacts = read_source(&path, &mut problems);
@@ -574,25 +675,19 @@ pub fn load_contacts_from(book: Option<&Path>, preferred_source: Option<&str>) -
         .or_else(|| std::env::var("MSG_CONTACTS_SOURCE").ok())
         .or_else(default_source_id);
 
-    // The preferred source is merged first, so its name for a handle wins. When
-    // macOS names no default source both sides of this comparison are `None`,
-    // which makes the legacy top-level database the preferred one — the same
-    // tie-break the TypeScript `===` produced.
+    // The preferred source goes first, so its name for a handle wins the
+    // derived map. When macOS names no default source both sides of this
+    // comparison are `None`, which makes the legacy top-level database the
+    // preferred one — the same tie-break the TypeScript `===` produced.
     let matches_preferred = |path: &Path| source_id_of(path) == preferred;
-    let mut contacts = HashMap::new();
     let first = sources.iter().filter(|(path, _)| matches_preferred(path));
     let rest = sources.iter().filter(|(path, _)| !matches_preferred(path));
-    for (_, source) in first.chain(rest) {
-        merge(&mut contacts, source);
-    }
+    let entries: Vec<Contact> = first
+        .chain(rest)
+        .flat_map(|(_, entries)| entries.iter().cloned())
+        .collect();
 
-    ContactIndex { contacts, problems }
-}
-
-fn merge(into: &mut HashMap<String, Contact>, from: &HashMap<String, Contact>) {
-    for (key, contact) in from {
-        into.entry(key.clone()).or_insert_with(|| contact.clone());
-    }
+    ContactIndex::index_from(entries, problems)
 }
 
 const PHONES_SQL: &str = "SELECT p.ZFULLNUMBER AS handle, p.ZLABEL AS label, r.Z_PK AS record,
@@ -624,15 +719,15 @@ fn tidy_label(raw: Option<String>) -> Option<String> {
     }
 }
 
-/// Read one Contacts database. A source that cannot be opened is skipped; the
-/// others still count.
-fn read_source(path: &Path, problems: &mut Vec<String>) -> HashMap<String, Contact> {
-    let mut contacts = HashMap::new();
+/// Read one Contacts database into its entry list. A source that cannot be
+/// opened is skipped; the others still count.
+fn read_source(path: &Path, problems: &mut Vec<String>) -> Vec<Contact> {
+    let mut entries = Vec::new();
     let db = match Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
         Ok(db) => db,
         Err(error) => {
             problems.push(format!("{}: {error}", path.display()));
-            return contacts;
+            return entries;
         }
     };
 
@@ -641,19 +736,21 @@ fn read_source(path: &Path, problems: &mut Vec<String>) -> HashMap<String, Conta
     // directory to name it, and calling that one `local` is enough to keep it
     // from colliding with an account's.
     let source = source_id_of(path).unwrap_or_else(|| "local".to_string());
+    let mut seen = std::collections::HashSet::new();
     for sql in [PHONES_SQL, EMAILS_SQL] {
-        if let Err(error) = collect(&db, sql, &source, &mut contacts) {
+        if let Err(error) = collect(&db, sql, &source, &mut entries, &mut seen) {
             problems.push(format!("{}: {error}", path.display()));
         }
     }
-    contacts
+    entries
 }
 
 fn collect(
     db: &Connection,
     sql: &str,
     source: &str,
-    contacts: &mut HashMap<String, Contact>,
+    entries: &mut Vec<Contact>,
+    seen: &mut std::collections::HashSet<(i64, String)>,
 ) -> rusqlite::Result<()> {
     let mut statement = db.prepare(sql)?;
     let mut rows = statement.query([])?;
@@ -670,9 +767,13 @@ fn collect(
         let Some((name, filed_as)) = person_names(row) else {
             continue;
         };
-        // Sources are visited primary first, so the first name for a handle is
-        // the one from the account the user actually maintains.
-        contacts.entry(key).or_insert(Contact {
+        // Every (record, address) pair is kept — the same address on two
+        // records is two entries, since suppressing one would hide a person.
+        // Within one record, one number typed in two shapes is one entry.
+        if !seen.insert((record, key)) {
+            continue;
+        }
+        entries.push(Contact {
             id: format!("{source}:{record}"),
             handle,
             name,
@@ -807,12 +908,10 @@ mod tests {
         )
         .unwrap();
 
-        let mut contacts = HashMap::new();
-        collect(&db, PHONES_SQL, "test", &mut contacts).unwrap();
-        let index = ContactIndex {
-            contacts,
-            problems: Vec::new(),
-        };
+        let mut entries = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        collect(&db, PHONES_SQL, "test", &mut entries, &mut seen).unwrap();
+        let index = ContactIndex::index_from(entries, Vec::new());
 
         // The nickname is what shows; the filed name is kept to be found by.
         let named = index.contact(Some("+13105551234")).unwrap();
@@ -1041,6 +1140,96 @@ mod tests {
         assert_eq!(emit_phone("  22000 "), "22000");
         // Anything stranger than separators passes through as stored.
         assert_eq!(emit_phone("310-555-1234 x89"), "310-555-1234 x89");
+    }
+
+    /// Two records sharing one normalized address: different names are two
+    /// people and an ambiguity; the same name is one person synced twice,
+    /// answered by the record the handle map retained — the same source
+    /// preference rendering follows; and the record that lost the map slot
+    /// is still whole, findable by name with its shared address included.
+    #[test]
+    fn a_shared_address_is_two_people_unless_it_is_one() {
+        let index = ContactIndex::for_test([
+            ("+13105551234", "a:1", "Marge Chen"),
+            ("+13105551234", "a:2", "Robert Chen"),
+            ("robert@example.com", "a:2", "Robert Chen"),
+        ]);
+        match index.person("+13105551234") {
+            Err(crate::Error::Ambiguous(message)) => {
+                assert!(
+                    message.contains("Marge Chen") && message.contains("Robert Chen"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected two people, got {other:?}"),
+        }
+        // The record the map slot passed over is still a whole person.
+        let robert = index.person("robert").unwrap();
+        assert_eq!(robert.id, "a:2");
+        assert_eq!(robert.phones[0].value, "+13105551234");
+        assert_eq!(robert.emails[0].value, "robert@example.com");
+
+        let synced = ContactIndex::for_test([
+            ("+14155550000", "icloud:9", "Dana Reyes"),
+            ("dana@example.com", "icloud:9", "Dana Reyes"),
+            ("+14155550000", "google:3", "Dana Reyes"),
+        ]);
+        let person = synced.person("+14155550000").unwrap();
+        assert_eq!(person.id, "icloud:9");
+        assert_eq!(person.emails[0].value, "dana@example.com");
+    }
+
+    /// Sharing a name is not sharing an address. By name, two records named
+    /// exactly alike stay two people — the address is what tells a father
+    /// from a son, so only an address collapses the question.
+    #[test]
+    fn two_records_named_alike_stay_two_people_by_name() {
+        let index = ContactIndex::for_test([
+            ("+13105551234", "a:1", "Dana Reyes"),
+            ("+14155550000", "a:2", "Dana Reyes"),
+        ]);
+        assert!(matches!(
+            index.person("dana reyes"),
+            Err(crate::Error::Ambiguous(_))
+        ));
+    }
+
+    /// A source directory the read cannot see is a recorded problem, never a
+    /// silent gap — the completeness `person` promises depends on it.
+    #[test]
+    fn an_unreadable_source_is_a_problem_not_a_gap() {
+        use std::os::unix::fs::PermissionsExt;
+        let book = crate::db::temporary_directory("msg-contacts-book-").unwrap();
+        let healthy = book.join("Sources/GOOD");
+        std::fs::create_dir_all(&healthy).unwrap();
+        let db = Connection::open(healthy.join("AddressBook-v22.abcddb")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT,
+               ZLASTNAME TEXT, ZNICKNAME TEXT, ZORGANIZATION TEXT);
+             CREATE TABLE ZABCDPHONENUMBER (ZOWNER INTEGER, ZFULLNUMBER TEXT, ZLABEL TEXT);
+             CREATE TABLE ZABCDEMAILADDRESS (ZOWNER INTEGER, ZADDRESS TEXT, ZLABEL TEXT);
+             INSERT INTO ZABCDRECORD VALUES (1, 'Dana', 'Reyes', NULL, NULL);
+             INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER, ZLABEL)
+               VALUES (1, '+13105551234', NULL);",
+        )
+        .unwrap();
+        let dark = book.join("Sources/DARK");
+        std::fs::create_dir_all(&dark).unwrap();
+        std::fs::set_permissions(&dark, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let index = load_contacts_from(Some(&book), None);
+        std::fs::set_permissions(&dark, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            index.problems().iter().any(|p| p.contains("DARK")),
+            "{:?}",
+            index.problems()
+        );
+        // The healthy source held a match, and that is not enough (§7).
+        assert!(matches!(
+            index.person("dana"),
+            Err(crate::Error::AccessDenied(_))
+        ));
     }
 
     /// The documented shape, byte for byte: camelCase `filedAs`, `label`

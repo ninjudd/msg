@@ -149,7 +149,12 @@ Identifiers are objects from day one:
   `resolve` reports the tie rather than merging them — which is what
   conversation resolution already does, so §3's guarantee requires it.
   Merging across sources by shared address is future work waiting on a real
-  complaint, and it would have to move both resolvers together.
+  complaint, and it would have to move both resolvers together. One carve-out
+  (added when review caught the map suppressing shared addresses): an
+  *address* held by several records answers with the source-preferred record
+  when every holder renders one name, since one human synced twice is not
+  two people — and stays an ambiguity when the names differ, which is the
+  parent-and-child-on-one-line case no rule may pick from.
 
 ## 6 Labels
 

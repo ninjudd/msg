@@ -790,3 +790,15 @@ fn the_lookup_still_takes_a_leading_term_that_is_not_resolve() {
         "{text}"
     );
 }
+
+#[test]
+fn resolve_refuses_no_names_rather_than_reading_contacts() {
+    let output = msg_resolving(&["--no-names", "contacts", "resolve", "bob"]);
+    assert_eq!(code(&output), 1);
+    assert_eq!(stdout(&output), "");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--no-names"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

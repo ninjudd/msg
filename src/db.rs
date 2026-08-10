@@ -3305,8 +3305,9 @@ mod tests {
             ("+13105551234", "source:7", "Robin Adeyemi"),
             ("someone@example.com", "source:7", "Robin Adeyemi"),
         ])
-        .nicknamed("+13105551234", "Rocket")
-        .nicknamed("someone@example.com", "Rocket");
+        // One call covers the record, as the loader would: the nickname is
+        // the record's, not one address's.
+        .nicknamed("+13105551234", "Rocket");
 
         for spec in ["rocket", "robin adeyemi"] {
             let person = resolve_person(&db, spec, &contacts).unwrap();
@@ -3460,8 +3461,9 @@ mod tests {
             ("+16175550147", "source:7", "Robin Adeyemi"),
             ("robin@example.com", "source:7", "Robin Adeyemi"),
         ])
-        .nicknamed("+16175550147", "Rocket")
-        .nicknamed("robin@example.com", "Rocket");
+        // One call covers the record, as the loader would: the nickname is
+        // the record's, not one address's.
+        .nicknamed("+16175550147", "Rocket");
 
         // A fragment too. Fewer letters does not make it two people, and a
         // substring is a documented way to name a chat, so it is how this

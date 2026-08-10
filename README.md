@@ -481,6 +481,12 @@ healthy account held a match: "nobody matched" and "exactly one" are claims
 about all of Contacts, and half the data cannot back either. Name rendering
 elsewhere stays best-effort; an identity answer does not.
 
+An address two records share is answered by whichever record the preferred
+account holds when both render the same name — one person synced into two
+accounts is not an ambiguity — and refused when the names differ, because a
+parent and a child on one home line are two people, and picking between
+people is the thing this command never does.
+
 ### Machine-readable output
 
 Every read command accepts `--json`. `watch --json` emits newline-delimited

@@ -142,12 +142,16 @@ impl Shared {
             return empty_index();
         }
         let mut guard = self.contacts.lock().expect("contacts lock");
-        // A load that came back empty is retried soon rather than held for the
-        // full interval: the daemon runs before its grant exists, so the first
-        // attempt is expected to fail, and caching that failure makes names stay
-        // broken long after the grant is given.
+        // A load that came back empty or partial is retried soon rather than
+        // held for the full interval: the daemon runs before its grant
+        // exists, so the first attempt is expected to fail, and caching that
+        // failure makes names stay broken long after the grant is given. A
+        // partial load is the same case for `person`, which refuses to
+        // resolve from it — holding one for the long interval would keep
+        // `contacts resolve` exiting 2 for ten minutes after the source is
+        // repaired.
         let stale = guard.as_ref().is_none_or(|cached| {
-            let ttl = if cached.index.is_empty() {
+            let ttl = if cached.index.is_empty() || !cached.index.problems().is_empty() {
                 CONTACTS_RETRY
             } else {
                 CONTACTS_TTL

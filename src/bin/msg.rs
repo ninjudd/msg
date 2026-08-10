@@ -532,6 +532,14 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
 
         Command::Contacts(args) => {
             if let Some(ContactsCommand::Resolve(ask)) = &args.command {
+                // `--no-names` promises Contacts stays unread, and resolving
+                // is nothing but reading Contacts — refusing beats silently
+                // doing the one thing the flag was passed to prevent.
+                if !cli.names() {
+                    return Err(Error::other(
+                        "contacts resolve reads Contacts to answer; it cannot run with --no-names",
+                    ));
+                }
                 let person = source.person(&ask.term)?;
                 print(&render_person(&person, ask)?);
                 return Ok(());
