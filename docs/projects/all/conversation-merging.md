@@ -1,3 +1,7 @@
+---
+status: Shipped
+---
+
 # Plan: One person, one conversation
 
 **Status:** Shipped. Slice one in #30 — `msg chat <name>` merges every

@@ -1,3 +1,7 @@
+---
+status: Shipped
+---
+
 # Plan: Resolve the person before matching chat rows
 
 **Status:** Shipped 2026-08-09, in two slices. The windowed intersection came

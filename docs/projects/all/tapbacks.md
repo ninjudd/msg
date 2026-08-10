@@ -1,3 +1,7 @@
+---
+status: Shipped
+---
+
 # Plan: Put a reaction on the message it reacted to
 
 **Status:** Shipped whole, 2026-08-09. Slice 1 as #43 at protocol 17 with its

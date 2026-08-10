@@ -1,3 +1,7 @@
+---
+status: Shipped
+---
+
 # Plan: Contact resolution as a public primitive
 
 **Status:** Shipped, 2026-08-09, in one PR as §12 sized it. §9's measurement

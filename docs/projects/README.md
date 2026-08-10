@@ -41,9 +41,14 @@ grep -rn "daemon-and-permissions.md §" src docs
 
 ## What goes in a document
 
-A `# Title`, then a `**Status:**` line, then a `**Goal:**` line:
+Frontmatter first — `status:` between two `---` lines — then a `# Title`, then
+a `**Status:**` line, then a `**Goal:**` line:
 
 ```markdown
+---
+status: Draft
+---
+
 # Plan: A daemon, so the terminal stops holding Full Disk Access
 
 **Status:** Designed, not started. `msg` currently requires Full Disk Access on
@@ -53,10 +58,24 @@ the terminal, which is what this replaces.
 Access on its own.
 ```
 
-The status line is prose rather than a keyword, because the useful thing to say
-is what has landed and what is left. Keep it to the state, and update it when
-that changes — a plan whose status says "Designed" a month after shipping is
-worse than no status at all.
+`status:` is one keyword from a fixed set shared across repos (adopted from
+`triangle/app`; see ninjudd/agent-config#15): `Draft` (written, implementation
+not started), `Active` (in progress), `Blocked` (waiting on a dependency or
+decision), `Stalled` (lost momentum, not formally dropped), `Shipped`,
+`Superseded`, `Abandoned`, `Reference` (a standing document with no build
+lifecycle). No `owner:` field here — this repo has one person to ask.
+
+The keyword does not replace the prose status line, because the useful thing to
+say is still what has landed and what is left, and a keyword cannot say it. The
+frontmatter carries the claim and the prose carries the story; keep both
+current when the state changes — a plan whose status says "Designed" a month
+after shipping is worse than no status at all, and a stale keyword is worse
+again, because reviews read it.
+
+`Draft` is load-bearing: it declares the plan is not yet claiming to be
+executable, so open questions in a Draft plan do not block its pull requests
+from merging. The pull request that flips a plan out of Draft is making the
+readiness claim, and it answers for every question still open at that moment.
 
 Then write what the work needs. Two habits worth keeping:
 

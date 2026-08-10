@@ -1,3 +1,7 @@
+---
+status: Draft
+---
+
 # Plan: What the signing identity costs, and what to fix before this is public
 
 **Status:** Partly acted on. The two cheapest options in §6 have since landed —
