@@ -12,9 +12,9 @@ are not.
 ## 1 The complaint
 
 Two real queries, minutes apart, on the day `contacts resolve` was built
-(#54, in review as this is written — none of it is on main yet). The first —
+(#54, since merged). The first —
 one contact answered as "4 people match", her cards split across accounts —
-was a modeling bug, fixed on that branch by unifying records filed under one
+was a modeling bug, fixed in #54 by unifying records filed under one
 name (contact-resolution.md §5). The second survived that fix: a resolve
 listed a card under a prank name, sharing a real person's email address,
 from a set of contacts that belong to a family member and appear nowhere in
@@ -114,7 +114,7 @@ The costs, plainly: a Swift surface, either a bundle helper (user-writable,
 so its answers are only as trustworthy as the bundle — acceptable for a
 read path, but the swapped-helper-runs-with-msgd's-attribution channel
 must be written down) or a linked framework, for which the
-confirmed-and-delayed-send plan (#53, also in review) is already opening
+confirmed-and-delayed-send plan (#53, since merged) is already opening
 the door and building the machinery; the unmeasured question of whether
 the Contacts prompt presents from launchd-agent context, which is the same
 spike #53's plan must run for `LAContext`; and the daemonless CLI, which
@@ -132,7 +132,7 @@ ended on; choosing is tomorrow's first job.
 
 ## 7 Interim
 
-Until either option ships, and once #54 lands: the unification fix
-answers split-card contacts correctly, an exact full name resolves past the
+Until either option ships: #54's unification fix already answers
+split-card contacts correctly, an exact full name resolves past the
 auxiliary pollution, and the auxiliary source's presence is at least now
 understood rather than mysterious.
