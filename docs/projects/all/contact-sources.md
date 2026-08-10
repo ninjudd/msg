@@ -1,8 +1,9 @@
 # Plan: Read only the user-visible Contacts universe
 
-**Status:** Investigated 2026-08-09; the findings are settled and measured,
-two options are written up below, and neither is chosen yet. The decision is
-the next step, not more investigation.
+**Status:** Written up, not started. The findings were measured 2026-08-09
+and two options are recorded below, neither chosen — this document puts the
+thinking down, and more investigation comes before either option is picked
+up. The decision belongs to that later session, not to this write-up.
 
 **Goal:** Stop `msg` answering with contacts macOS itself does not show.
 Every database under `~/Library/Application Support/AddressBook/Sources/` is
@@ -128,7 +129,8 @@ signatures retire if CN ever names the containers, while the knobs and the
 `sources` listing stay useful under any future. B waits, at minimum, on
 the delayed-send spike answering the launchd-UI question both plans share.
 Doing A now and keeping B on the list is the sequencing the discussion
-ended on; choosing is tomorrow's first job.
+ended on, recorded as a leaning rather than a choice: more investigation
+comes before either option is started, and the decision lands then.
 
 ## 7 Interim
 
