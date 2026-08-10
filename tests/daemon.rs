@@ -1262,3 +1262,43 @@ fn a_daemon_that_cannot_read_the_database_says_so_in_its_own_words() {
     )
     .unwrap();
 }
+
+/// `MSG_ADDRESSBOOK` steers the CLI onto the direct path the way `MSG_DB`
+/// does, and for the same reason: with a daemon listening, a fixture book
+/// that did not steer would be silently ignored in favor of the daemon's
+/// AddressBook — the opposite of what pointing at a fixture is for.
+#[test]
+fn an_addressbook_fixture_steers_past_the_daemon() {
+    let book = harness().directory.join("book-b");
+    let source = book.join("Sources/OTHER-SOURCE");
+    std::fs::create_dir_all(&source).unwrap();
+    let db = Connection::open(source.join("AddressBook-v22.abcddb")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT,
+           ZLASTNAME TEXT, ZNICKNAME TEXT, ZORGANIZATION TEXT);
+         CREATE TABLE IF NOT EXISTS ZABCDPHONENUMBER (ZOWNER INTEGER, ZFULLNUMBER TEXT, ZLABEL TEXT);
+         CREATE TABLE IF NOT EXISTS ZABCDEMAILADDRESS (ZOWNER INTEGER, ZADDRESS TEXT, ZLABEL TEXT);
+         DELETE FROM ZABCDRECORD; DELETE FROM ZABCDPHONENUMBER;
+         INSERT INTO ZABCDRECORD VALUES (1, 'Zed', 'Fixture', NULL, NULL);
+         INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER, ZLABEL)
+           VALUES (1, '+16665550001', NULL);",
+    )
+    .unwrap();
+
+    // Zed exists only in this second book. The daemon, whose book is the
+    // harness one, answers "no one matching zed"; only the direct path,
+    // reading the fixture, can find him.
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_msg"))
+        .args(["contacts", "resolve", "zed", "--phone"])
+        .env("MSG_SOCKET", &harness().socket)
+        .env("MSG_ADDRESSBOOK", &book)
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "+16665550001\n");
+}

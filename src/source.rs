@@ -104,10 +104,14 @@ pub struct Source {
 /// (§6). `MSG_DB` is documented as `--db` by another name, so it has to steer
 /// the same way: without this, pointing it at a fixture while a daemon is
 /// listening would read the real database instead, the opposite of what it is
-/// for.
+/// for. `MSG_ADDRESSBOOK` steers identically for the same reason — the daemon
+/// answers contact questions from its own AddressBook, so a fixture book that
+/// did not force the direct path would be silently ignored whenever a daemon
+/// happened to be listening.
 pub fn open_source(db: Option<String>) -> Source {
     let db_path = db.or_else(|| std::env::var("MSG_DB").ok().filter(|v| !v.is_empty()));
-    let kind = if db_path.is_some() {
+    let fixture_book = std::env::var("MSG_ADDRESSBOOK").is_ok_and(|v| !v.is_empty());
+    let kind = if db_path.is_some() || fixture_book {
         Kind::Direct
     } else if connect_daemon(None).is_some() {
         Kind::Daemon

@@ -640,7 +640,9 @@ authentication, and why the daemon is a single executable rather than a copy of
 
 `MSG_DB` steers the CLI, which reads that database itself rather than asking the
 daemon — the same as `--db`, so a fixture stays a fixture even with a daemon
-running.
+running. `MSG_ADDRESSBOOK` steers the same way, for the same reason: the daemon
+answers contact questions from its own AddressBook, and a fixture that only
+applied when no daemon was listening would be worse than none.
 
 `MSG_SOCKET`, `MSG_STATE_DIR`, `MSG_CONFIG` and `MSG_CONTACTS_SOURCE` are read by
 the daemon, and **a launchd job inherits nothing from your shell**. `msg daemon
