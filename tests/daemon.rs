@@ -17,8 +17,9 @@ use base64::Engine as _;
 use msg::apple::to_apple_date;
 use msg::daemon::client::{connect_daemon, connect_daemon_within, request};
 use msg::daemon::protocol::{
-    ChatRequest, ChatsRequest, ContactsRequest, Empty, PROTOCOL_VERSION, PersonRequest, Request,
-    ResolveRequest, SavePart, SaveRequest, SearchRequest, SendRequest, WatchRequest, envelope,
+    ChatRequest, ChatsRequest, ContactsRequest, Empty, PROTOCOL_VERSION, PersonAddRequest,
+    PersonRequest, PersonUpdateRequest, Request, ResolveRequest, SavePart, SaveRequest,
+    SearchRequest, SendRequest, WatchRequest, envelope,
 };
 use msg::daemon::server::{Daemon, DaemonOptions};
 use rusqlite::Connection;
@@ -65,7 +66,77 @@ struct Harness {
     socket: PathBuf,
     config: PathBuf,
     book: PathBuf,
+    store: std::sync::Arc<FakeContacts>,
     _daemon: Daemon,
+}
+
+/// The Contacts.app the write tests talk to, so no test here writes the
+/// contacts of whoever runs them — the same line the fixture AddressBook
+/// draws for reads. It holds the app half of the fixture book's people:
+/// Dana Reyes's card, with her number stored in a shape `handle_key` has to
+/// see through.
+#[derive(Default)]
+struct FakeContacts {
+    log: Mutex<Vec<String>>,
+}
+
+impl FakeContacts {
+    fn saw(&self) -> Vec<String> {
+        self.log.lock().unwrap().clone()
+    }
+
+    fn record(&self, line: String) {
+        self.log.lock().unwrap().push(line);
+    }
+}
+
+impl msg::daemon::contacts_app::ContactStore for FakeContacts {
+    fn find(&self, name: &str) -> msg::Result<Vec<String>> {
+        self.record(format!("find {name}"));
+        Ok(match name {
+            "Dana Reyes" => vec!["fake-card-dana".into()],
+            _ => Vec::new(),
+        })
+    }
+
+    fn create(&self, first: &str, last: &str) -> msg::Result<String> {
+        self.record(format!("create {first}|{last}"));
+        Ok(format!("fake-card-{}", first.to_lowercase()))
+    }
+
+    fn values(
+        &self,
+        id: &str,
+        field: msg::daemon::contacts_app::ValueField,
+    ) -> msg::Result<Vec<String>> {
+        self.record(format!("values {id} {field:?}"));
+        Ok(match (id, field) {
+            ("fake-card-dana", msg::daemon::contacts_app::ValueField::Phone) => {
+                vec!["(310) 555-1234".into()]
+            }
+            _ => Vec::new(),
+        })
+    }
+
+    fn append(
+        &self,
+        id: &str,
+        field: msg::daemon::contacts_app::ValueField,
+        value: &str,
+    ) -> msg::Result<()> {
+        self.record(format!("append {id} {field:?} {value}"));
+        Ok(())
+    }
+
+    fn set(
+        &self,
+        id: &str,
+        field: msg::daemon::contacts_app::TextField,
+        value: &str,
+    ) -> msg::Result<()> {
+        self.record(format!("set {id} {field:?} {value}"));
+        Ok(())
+    }
 }
 
 /// One daemon for the whole file, like the TypeScript `beforeAll`.
@@ -82,10 +153,12 @@ fn harness() -> &'static Harness {
         let book = directory.join("book");
         build_addressbook(&book);
 
+        let store = std::sync::Arc::new(FakeContacts::default());
         let daemon = Daemon::new(DaemonOptions {
             db_path: Some(database.to_string_lossy().into_owned()),
             config_path: Some(config.clone()),
             addressbook: Some(book.clone()),
+            contacts_store: Some(store.clone()),
         });
         daemon.listen(Some(socket.clone())).unwrap();
         Harness {
@@ -94,6 +167,7 @@ fn harness() -> &'static Harness {
             socket,
             config,
             book,
+            store,
             _daemon: daemon,
         }
     })
@@ -649,6 +723,76 @@ fn reports_a_name_that_matches_nothing_rather_than_guessing() {
     .unwrap_err()
     .to_string();
     assert!(error.contains("no chat matching"), "{error}");
+}
+
+// ------------------------------------------------------- contact writes
+//
+// Every write lands in the harness's fake store, never in Contacts.app —
+// the injection the store option exists for (contact-writing.md §6).
+
+#[test]
+fn adds_a_person_through_the_store() {
+    let value = ask(&Request::PersonAdd(PersonAddRequest {
+        name: "Robin Adeyemi".into(),
+        phones: vec!["+13105559876".into()],
+        title: Some("Principal Engineer".into()),
+        ..Default::default()
+    }))
+    .unwrap();
+    assert_eq!(value["created"], serde_json::json!(true));
+    assert_eq!(value["id"], serde_json::json!("fake-card-robin"));
+    assert_eq!(
+        value["changed"],
+        serde_json::json!(["phone +13105559876", "title Principal Engineer"])
+    );
+    let saw = harness().store.saw();
+    assert!(saw.contains(&"create Robin|Adeyemi".to_string()), "{saw:?}");
+}
+
+#[test]
+fn refuses_to_add_a_name_the_app_already_holds() {
+    let error = ask(&Request::PersonAdd(PersonAddRequest {
+        name: "Dana Reyes".into(),
+        ..Default::default()
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("--duplicate"), "{error}");
+}
+
+#[test]
+fn updates_the_card_and_skips_what_it_already_carries() {
+    // The card stores the number as `(310) 555-1234`; retyped here in
+    // another shape, it must read as the same number, not become a second
+    // phone.
+    let value = ask(&Request::PersonUpdate(PersonUpdateRequest {
+        term: "dana reyes".into(),
+        phones: vec!["310-555-1234".into()],
+        note: Some("moved to Lisbon".into()),
+        ..Default::default()
+    }))
+    .unwrap();
+    assert_eq!(value["created"], serde_json::json!(false));
+    assert_eq!(value["id"], serde_json::json!("fake-card-dana"));
+    assert_eq!(
+        value["changed"],
+        serde_json::json!(["note moved to Lisbon"])
+    );
+    assert_eq!(
+        value["unchanged"],
+        serde_json::json!(["phone 310-555-1234"])
+    );
+}
+
+/// The resolve contract holds on the write path: a term two people answer to
+/// comes back as the `ambiguous` code, so the CLI exits 3 naming them.
+#[test]
+fn an_ambiguous_update_term_answers_the_ambiguous_code() {
+    let frame = raw(&format!(
+        "{{\"cmd\":\"person-update\",\"v\":{PROTOCOL_VERSION},\"term\":\"dana\",\"title\":\"x\"}}\n"
+    ));
+    assert_eq!(frame["type"], serde_json::json!("error"));
+    assert_eq!(frame["code"], serde_json::json!("ambiguous"));
 }
 
 // ----------------------------------------------------------------- send
@@ -1239,6 +1383,7 @@ fn a_daemon_that_cannot_read_the_database_says_so_in_its_own_words() {
         db_path: Some(database.to_string_lossy().into_owned()),
         config_path: Some(directory.join("config-that-does-not-exist.toml")),
         addressbook: None,
+        contacts_store: None,
     });
     daemon.listen(Some(socket.clone())).unwrap();
 
