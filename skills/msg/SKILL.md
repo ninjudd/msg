@@ -4,7 +4,8 @@ description: >-
   Read, search, and send iMessages on this Mac with the msg CLI. Use when the
   user asks about their text messages or iMessage conversations — what someone
   said, finding or summarizing a conversation, following new messages, looking
-  up a contact, saving an attachment they were sent — or asks to send a text.
+  up a contact, saving an attachment they were sent — or asks to send a text
+  or to add or update someone in their contacts.
 ---
 
 # msg — iMessages from the command line
@@ -84,6 +85,32 @@ email=$(msg contacts resolve dana --email) && gog gmail search "from:$email"
 
 On exit 3 the candidates are on stderr, each with an address — re-run with
 that address (or the exact full name), not the same fragment again.
+
+## Writing a contact
+
+`msg` puts people *into* Contacts too. Contacts is the user's data: create
+or change a card only when the user asked for exactly that, and relay what
+each command prints — one line per field — as the confirmation of what
+changed.
+
+```sh
+msg contacts add "Dana Reyes" --phone 3105551234 --email dana@example.com \
+    --title "Principal Engineer" --org "Example Corp"
+msg contacts update dana --title "Staff Engineer" --phone 3105556789
+msg contacts update dana --note ""   # --title/--org/--note replace; "" clears
+```
+
+- `add` refuses a name Contacts already holds and points at `update`; pass
+  `--duplicate` only when the user confirms two people really share the
+  name.
+- `update` resolves its term the way `resolve` does, exit statuses
+  included — on 3, pick by address rather than retrying the fragment.
+- `--phone`/`--email` repeat and append. A value the card already carries,
+  whatever shape it was typed in, is skipped and reported `(already
+  there)`, so re-running a command is safe.
+- Writes need the daemon, and macOS asks once — a prompt naming msgd and
+  Contacts — which is the user's to answer, never yours to work around. A
+  refusal exits 2 naming the switch that reopens it.
 
 ## Searching
 

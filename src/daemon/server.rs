@@ -17,6 +17,7 @@ use rusqlite::Connection;
 use crate::apple::since_to_apple_date;
 use crate::contacts::{ContactIndex, load_contacts_from};
 use crate::daemon::config::{config_path, disabled_message, read_config};
+use crate::daemon::contacts_app::{ContactStore, ContactsApp};
 use crate::daemon::protocol::{
     AutomationReply, COMMANDS, ChatReply, ContactsReply, ErrorCode, Frame, PROTOCOL_VERSION,
     Request, ResolvedHandle, SavePart, SaveReply, SendReply, StatusReply, WatchRequest, encode,
@@ -93,7 +94,7 @@ struct Cached {
 /// Both fields come from the daemon's own environment or its test harness, and
 /// never from the wire — a client that could name either would be naming a
 /// filesystem path, which is the one thing the protocol refuses (§6).
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct DaemonOptions {
     pub db_path: Option<String>,
     /// Where the `send = true` gate is read from. `None` means the documented
@@ -104,12 +105,33 @@ pub struct DaemonOptions {
     /// `db_path`, since an in-process daemon cannot take it from the
     /// environment without racing the other tests in the binary.
     pub addressbook: Option<PathBuf>,
+    /// Where contact writes go. `None` means Contacts.app; the test harness
+    /// injects a fake here so `cargo test` writes nobody's contacts
+    /// (contact-writing.md §6).
+    pub contacts_store: Option<Arc<dyn ContactStore>>,
+}
+
+/// By hand because a `dyn` store has no `Debug` of its own, and what a reader
+/// wants to know is only whether one was injected.
+impl std::fmt::Debug for DaemonOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DaemonOptions")
+            .field("db_path", &self.db_path)
+            .field("config_path", &self.config_path)
+            .field("addressbook", &self.addressbook)
+            .field(
+                "contacts_store",
+                &self.contacts_store.as_ref().map(|_| ".."),
+            )
+            .finish()
+    }
 }
 
 struct Shared {
     db_path: Option<String>,
     config_path: Option<PathBuf>,
     addressbook: Option<PathBuf>,
+    contacts_store: Arc<dyn ContactStore>,
     db: Mutex<Option<Connection>>,
     contacts: Mutex<Option<Cached>>,
     watchers: Mutex<Vec<Watcher>>,
@@ -171,6 +193,12 @@ impl Shared {
         guard.as_ref().expect("just loaded").index.clone()
     }
 
+    /// Drop the cached index after a write, so the next resolve reads what
+    /// Contacts now holds rather than waiting out the interval.
+    fn forget_contacts(&self) {
+        *self.contacts.lock().expect("contacts lock") = None;
+    }
+
     fn watcher_count(&self) -> usize {
         self.watchers.lock().expect("watchers lock").len()
     }
@@ -192,6 +220,9 @@ impl Daemon {
                 db_path: options.db_path,
                 config_path: options.config_path,
                 addressbook: options.addressbook,
+                contacts_store: options
+                    .contacts_store
+                    .unwrap_or_else(|| Arc::new(ContactsApp)),
                 db: Mutex::new(None),
                 contacts: Mutex::new(None),
                 watchers: Mutex::new(Vec::new()),
@@ -458,6 +489,18 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
             // there is no `--no-names` variant of this question.
             let index = shared.contacts(true);
             Ok(serde_json::to_value(index.person(&ask.term)?)?)
+        }
+        Request::PersonAdd(ask) => {
+            let reply = crate::daemon::contacts_app::add(shared.contacts_store.as_ref(), &ask)?;
+            shared.forget_contacts();
+            Ok(serde_json::to_value(reply)?)
+        }
+        Request::PersonUpdate(ask) => {
+            let index = shared.contacts(true);
+            let reply =
+                crate::daemon::contacts_app::update(&index, shared.contacts_store.as_ref(), &ask)?;
+            shared.forget_contacts();
+            Ok(serde_json::to_value(reply)?)
         }
         Request::Send(ask) => {
             // The config key is checked here rather than in the client, because

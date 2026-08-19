@@ -490,6 +490,45 @@ disagree about who somebody is. An address shared by records filed under
 one home line are two people, and picking between people is the thing this
 command never does.
 
+### Adding and updating a person
+
+`msg contacts add` puts a new person in Contacts, and `msg contacts update`
+changes what Contacts holds for one:
+
+```sh
+msg contacts add "Dana Reyes" --phone 3105551234 --email dana@example.com \
+    --title "Principal Engineer" --org "Example Corp"
+msg contacts update dana --title "Staff Engineer" --phone 3105556789
+msg contacts update dana --note ""     # replace the note with nothing
+```
+
+Both need [the daemon](#the-daemon): writes drive Contacts.app over Apple
+Events, and the Automation permission that authorizes them belongs to `msgd`
+rather than to your terminal. The first write asks — allow msgd to control
+Contacts and the grant sticks, revocable any time under System Settings >
+Privacy & Security > Automation.
+
+`add` takes the full name — the first word is the first name, the rest the
+last — and refuses a name that is already in Contacts, since the likely
+intent is `update`; pass `--duplicate` when you really do mean a second
+person with the same name. `update` resolves its term exactly as
+[`resolve`](#resolving-a-person) does, ambiguity and exit statuses included.
+
+`--phone` and `--email` repeat, and on update they append — except that a
+value the card already carries, in any shape, is reported as already there
+rather than added again, so re-running a command never duplicates a number.
+`--title`, `--org`, and `--note` replace their field outright; an empty
+value clears it. Values land under the `other` label.
+
+Each write says what it did, one field per line, and takes `--json`:
+
+```
+$ msg contacts update dana --title "Staff Engineer" --phone 3105551234
+updated Dana Reyes
+  title Staff Engineer
+  phone 3105551234 (already there)
+```
+
 ### Machine-readable output
 
 Every read command accepts `--json`. `watch --json` emits newline-delimited
@@ -591,9 +630,11 @@ security delete-identity -c "msg dev"             # remove the one msg created
 **What it changes.** `watch` stops polling — the daemon tails the write-ahead log
 and pushes to every watcher, so one process does the work no matter how many
 terminals are following. Contact names are resolved by the daemon too, so
-Contacts needs no permission of its own. And [sending](#sending) runs from the
-daemon, which is what makes "may this tool text people?" an operating system
-permission rather than a flag a program honours about itself.
+Contacts needs no permission of its own. And [sending](#sending) and
+[contact writing](#adding-and-updating-a-person) run from the daemon, which
+is what makes "may this tool text people?" — and "may it edit my
+contacts?" — an operating system permission rather than a flag a program
+honours about itself.
 
 The two permissions are independent. Granting Full Disk Access does not let
 `msgd` send, granting Automation does not let it read, and each is a separate
@@ -605,7 +646,7 @@ script, because they are keyed to the bundle identifier:
 
 ```sh
 tccutil reset SystemPolicyAllFiles com.ninjudd.msgd   # stop it reading
-tccutil reset AppleEvents com.ninjudd.msgd            # stop it sending
+tccutil reset AppleEvents com.ninjudd.msgd   # stop it driving Messages and Contacts
 ```
 
 The reasoning behind the design — including why the socket carries no

@@ -32,6 +32,16 @@ write.
   Neither gate is a substitute for the flag: on a machine where both are open,
   a missing `--dry-run` texts someone.
 
+## Writing contacts is a production write too
+
+`msg contacts add`/`update` edit the user's address book through the daemon
+([contact-writing.md](docs/projects/all/contact-writing.md)). There is no
+dry-run; the write is the command. Run one only when the task is exactly that
+write. In tests, the daemon takes a fake `ContactStore` through
+`DaemonOptions` — a test that reaches the real store edits a real card on
+whoever runs the suite, so every test injects the fake, and the AppleScript
+layer is exercised live, on purpose, with values the user asked for.
+
 ## This repository is public
 
 `github.com/ninjudd/msg` is public. Nothing derived from the author's own data

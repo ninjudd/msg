@@ -89,6 +89,13 @@ use crate::db::{Chat, Message};
 /// a daemon that does not know them ignores them and answers with bare hits, so
 /// `-C 3` would silently produce exactly what the flag was asked to change.
 ///
+/// 19 adds `person-add` and `person-update` — contact writing, driving
+/// Contacts.app over Apple Events the way `send` drives Messages
+/// (contact-writing.md §5). New commands are the loud kind of skew: a stale
+/// daemon fails the version gate, and the `COMMANDS` check behind it names
+/// the command it does not know. The bump is what turns either report into
+/// "reinstall the daemon" rather than a puzzle about which side is behind.
+///
 /// 18 adds the `person` command — the contact resolver, answering a term with
 /// one person and every address their record carries — and the `ambiguous`
 /// error code that carries its refusals. The code is the load-bearing half: a
@@ -165,7 +172,7 @@ use crate::db::{Chat, Message};
 /// saying so, which looks exactly like a person who only has one. The reply is
 /// not wrong in a way anything can see — it is simply missing half the
 /// conversation, which is the failure this number exists to make loud.
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";
@@ -278,6 +285,64 @@ pub struct PersonRequest {
     pub term: String,
 }
 
+/// Creating a person in Contacts. Every field is a value that lands on the
+/// card — nothing here names a file, so §6 is untouched.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PersonAddRequest {
+    /// The full name: first word is the first name, the rest the last.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phones: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub emails: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Create even though somebody already has exactly this name — the
+    /// father-and-son case, said on purpose rather than fallen into.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate: Option<bool>,
+}
+
+/// Changing what Contacts holds for one person. `term` resolves the way
+/// `person` resolves — a name, a nickname, or an address — and the fields
+/// mean what they mean on [`PersonAddRequest`]: phones and emails append
+/// (skipping values the card already carries), the rest replace.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PersonUpdateRequest {
+    pub term: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phones: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub emails: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// What a write did. `changed` and `unchanged` are printable lines —
+/// `phone 3105551234`, `title Principal Engineer` — one per field the
+/// request named, so the CLI prints them as they are and `--json` hands
+/// them over as two lists rather than a format to parse.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonWriteReply {
+    /// The Contacts record id of the card that was written.
+    pub id: String,
+    /// What to call them, for the confirmation line.
+    pub name: String,
+    pub created: bool,
+    pub changed: Vec<String>,
+    /// Values the card already carried, skipped rather than duplicated.
+    pub unchanged: Vec<String>,
+}
+
 /// An attachment, as bytes rather than a path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Attachment {
@@ -359,6 +424,12 @@ pub enum Request {
     Watch(WatchRequest),
     Resolve(ResolveRequest),
     Person(PersonRequest),
+    /// Contact writing, behind the daemon's Automation grant for Contacts
+    /// (contact-writing.md §2).
+    #[serde(rename = "person-add")]
+    PersonAdd(PersonAddRequest),
+    #[serde(rename = "person-update")]
+    PersonUpdate(PersonUpdateRequest),
     Send(SendRequest),
     Contacts(ContactsRequest),
     Save(SaveRequest),
@@ -377,6 +448,8 @@ pub const COMMANDS: &[&str] = &[
     "watch",
     "resolve",
     "person",
+    "person-add",
+    "person-update",
     "send",
     "contacts",
     "save",
@@ -716,6 +789,15 @@ mod tests {
             Request::Watch(WatchRequest::default()),
             Request::Resolve(ResolveRequest {
                 chat: "1".into(),
+                ..Default::default()
+            }),
+            Request::Person(PersonRequest { term: "x".into() }),
+            Request::PersonAdd(PersonAddRequest {
+                name: "Dana Reyes".into(),
+                ..Default::default()
+            }),
+            Request::PersonUpdate(PersonUpdateRequest {
+                term: "dana".into(),
                 ..Default::default()
             }),
             Request::Send(SendRequest {

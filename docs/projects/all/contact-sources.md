@@ -138,3 +138,15 @@ Until either option ships: #54's unification fix already answers
 split-card contacts correctly, an exact full name resolves past the
 auxiliary pollution, and the auxiliary source's presence is at least now
 understood rather than mysterious.
+
+## 8 What contact writing measured (2026-08-19)
+
+Contact *writes* shipped separately (contact-writing.md) and chose Apple
+Events over `CNContactStore`, for a reason writes own — the note field
+needs a restricted entitlement no self-signed bundle can carry — so nothing
+there forecloses Option B for reads. What it did answer is a piece of §5's
+spike: a TCC prompt raised from launchd-agent context presents on screen
+and lands its grant on `msgd` — measured with the Automation prompt for a
+new target app, Contacts. Whether the Contacts *permission* prompt behaves
+the same is still unmeasured, but the mechanism it rides is now known to
+work from that context.
