@@ -1,6 +1,8 @@
 ---
-status: Shipped
+status: done
 ---
+
+**Outcome:** Shipped.
 
 # Plan: Rewrite `msg` in Rust
 
@@ -38,7 +40,7 @@ matter of degree.
 
 **Fewer primitives after a compromise.** Anything that got code execution inside
 the daemon today lands in a process with a full interpreter: `child_process`,
-`fs`, sockets, `eval`. [§4](daemon-and-permissions.md) removed the *script
+`fs`, sockets, `eval`. [§4](../daemon-and-permissions/readme.md) removed the *script
 argument* problem by embedding the code in the signed binary, but the
 interpreter is still in there.
 
@@ -51,7 +53,7 @@ any language.
 This argument used to lead with `src/macho.ts` disappearing — 200 lines of
 load-command arithmetic pinned to node's binary layout, replaced in Rust by a
 `-Wl,-sectcreate` link flag. That was true and is now moot:
-[daemon-and-permissions.md §13](daemon-and-permissions.md) deleted the module
+[daemon-and-permissions.md §13](../daemon-and-permissions/readme.md) deleted the module
 outright. The daemon ships as an app bundle so its TCC grants can be revoked,
 and a bundle carries a real `Contents/Info.plist`, so nothing needs injecting
 into the executable at all. **The bundle layout, the `Info.plist`, and the
@@ -83,7 +85,7 @@ memory-safe code either way.
 **Anything against the threat the design actually names.** §5 and §6 are about
 hostile code running as the user, which does not need to exploit the daemon: it
 can talk to the socket, run `msg`, or sign its own binary with the key in
-[signing-identity.md](signing-identity.md). A rewrite shrinks a surface that is
+[signing-identity.md](../signing-identity/readme.md). A rewrite shrinks a surface that is
 not currently the likely one. Worth doing, but it does not reorder the risks.
 
 ## 3 What it costs
@@ -114,7 +116,7 @@ and vice versa, one end at a time, with the protocol tests as the contract.
 1. `apple.ts` — epoch conversion and the typedstream decoder, tests first.
 2. `db.ts` — the queries, against the same fixture the daemon tests build.
 3. `contacts.ts`, including the access ordering in
-   [§12](daemon-and-permissions.md).
+   [§12](../daemon-and-permissions/readme.md).
 4. The protocol and the socket, checked against the TypeScript client while both
    exist.
 5. `format.ts` and the CLI — rendering, then `clap` in place of commander.
@@ -132,7 +134,7 @@ and vice versa, one end at a time, with the protocol tests as the contract.
   costs another re-grant.
 - How `msg` gets distributed once it is a binary, and whether that pulls in
   notarisation — which would end the self-signed certificate in
-  [signing-identity.md](signing-identity.md) and its trade.
+  [signing-identity.md](../signing-identity/readme.md) and its trade.
 
 ## 7 When to do it
 
@@ -399,7 +401,7 @@ the slowest thing in the program by two orders of magnitude. This section first
 blamed `CHATS_SQL` alone; measuring properly afterwards showed `read`, `send`,
 and `search` are just as slow, three of them because `resolve_chat` is built on
 `fetch_chats` and one for an unrelated reason.
-[query-performance.md](query-performance.md) has the numbers and the diagnosis.
+[query-performance.md](../query-performance/readme.md) has the numbers and the diagnosis.
 
 **Coverage lost.** `parseIdentities` had three tests; its replacement is a
 `grep -q` inside `scripts/build.sh` and has none. The shell script as a whole is
@@ -410,5 +412,5 @@ should stay there until there is a reason to move: the subprocess is simpler and
 it works. Hardened runtime is now *possible* — there is no JIT to grant
 exceptions for — but adopting it changes the code requirement, which is exactly
 the thing the grant is anchored to, so it costs a re-grant and belongs in
-[signing-identity.md](signing-identity.md) rather than here. Distribution is
+[signing-identity.md](../signing-identity/readme.md) rather than here. Distribution is
 untouched and still the reason notarisation may eventually matter.

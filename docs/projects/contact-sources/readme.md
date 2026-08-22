@@ -1,5 +1,5 @@
 ---
-status: Draft
+status: next
 ---
 
 # Plan: Read only the user-visible Contacts universe

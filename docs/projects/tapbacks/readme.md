@@ -1,6 +1,8 @@
 ---
-status: Shipped
+status: done
 ---
+
+**Outcome:** Shipped.
 
 # Plan: Put a reaction on the message it reacted to
 
@@ -203,7 +205,7 @@ count Love separately from a heart emoji, should not have to re-derive it from a
 string this program chose.
 
 The protocol version bumps. When this paragraph was written it shared the next
-number with [search-context](search-context.md), still unmerged then, and told
+number with [search-context](../search-context/readme.md), still unmerged then, and told
 both not to assume 7; search-context landed long ago (9), the constant has
 moved six more times since, and the instruction survives only in its general
 form — take whatever `PROTOCOL_VERSION` says next, not a number this plan

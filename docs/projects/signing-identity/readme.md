@@ -1,5 +1,5 @@
 ---
-status: Draft
+status: later
 ---
 
 # Plan: What the signing identity costs, and what to fix before this is public
@@ -26,7 +26,7 @@ signing identity anchors TCC's requirement to a certificate instead, and the
 grant survives rebuilds. That is the whole of the benefit, and it is a real one:
 without it, iterating on the daemon means a trip to System Settings per build.
 
-See [daemon-and-permissions.md §4](daemon-and-permissions.md).
+See [daemon-and-permissions.md §4](../daemon-and-permissions/readme.md).
 
 ## 2 The key is a way to re-grant, silently
 
@@ -41,7 +41,7 @@ replace the daemon with its own and inherit Full Disk Access without a prompt.
 | Daemon signed by a key it can use freely | the whole disk, by signing its own |
 
 That second row is the scope reduction in
-[daemon-and-permissions.md §6](daemon-and-permissions.md) being handed back. It
+[daemon-and-permissions.md §6](../daemon-and-permissions/readme.md) being handed back. It
 is worth stating plainly, because the benefit in §1 and the cost here are the
 same mechanism seen from two sides.
 
@@ -49,7 +49,7 @@ same mechanism seen from two sides.
 `codesign` and *without* `security set-key-partition-list`, so macOS asks before
 each use. Answering that prompt with "Always Allow" — or setting the partition
 list — trades the property away for a quieter build. This is the same conclusion
-[§5](daemon-and-permissions.md) reached for the socket: against an attacker
+[§5](../daemon-and-permissions/readme.md) reached for the socket: against an attacker
 already running as the user, user presence is the only barrier that survives.
 
 The uncomfortable part is that the convenience knob and the security knob are
@@ -91,7 +91,7 @@ Ranked by how likely it is to come up, and how much it would sting:
    not stop anyone saying it.
 2. ~~**Hand-patching a Mach-O to inject `__TEXT,__info_plist` into a copy of
    node.**~~ Gone as of
-   [daemon-and-permissions.md §13](daemon-and-permissions.md): the daemon ships
+   [daemon-and-permissions.md §13](../daemon-and-permissions/readme.md): the daemon ships
    as an app bundle, which carries a real `Contents/Info.plist`. What replaces it
    in this list is milder and more defensible — **an app bundle in
    `~/.local/libexec` that nothing ever launches** — and the answer is the
@@ -109,7 +109,7 @@ Ranked by how likely it is to come up, and how much it would sting:
 5. **Someone derives §2 independently.** The sharpest reader works out that the
    signing key re-widens the grant. Having written it down first turns that from
    a gotcha into a nod — which is the same reason
-   [daemon-and-permissions.md §5](daemon-and-permissions.md) records why the
+   [daemon-and-permissions.md §5](../daemon-and-permissions/readme.md) records why the
    socket is deliberately unauthenticated.
 
 The pattern across all five: the things that get mocked are the things that are
@@ -142,7 +142,7 @@ Not decided. Roughly in order of how much they cost:
   binary and survived eight rebuild-and-reinstall cycles without being touched
   again, including builds that changed the embedded `Info.plist` and the code.
   Full Disk Access kept answering throughout. The earlier measurement in
-  [§9](daemon-and-permissions.md) used an Apple Development identity; this one
+  [§9](../daemon-and-permissions/readme.md) used an Apple Development identity; this one
   used the certificate the build actually creates.
 - The exact requirement TCC stored. The behaviour — cdhash changes, grant holds
   — is measured; the `csreq` blob itself has never been dumped, so "anchored to

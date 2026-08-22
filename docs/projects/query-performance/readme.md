@@ -1,13 +1,15 @@
 ---
-status: Shipped
+status: done
 ---
+
+**Outcome:** Shipped.
 
 # Plan: Make the common commands stop taking two seconds
 
 **Status:** Done, in the sense that matters: the chat list went from ~2.1s to
 ~150ms, and `search` was found to have never worked at all and now does. Search
 costs a couple of seconds unscoped and 236ms scoped to a person, which was
-judged fast enough to stop here — §9 and [search-index.md](search-index.md)
+judged fast enough to stop here — §9 and [search-index.md](../search-index/readme.md)
 record the two ways to go faster, and neither is being built.
 
 §1 to §4 are the diagnosis as it was written, before any of it was acted on. §6
@@ -18,7 +20,7 @@ not actually searching message bodies.** Read it before trusting any number
 above. §11 is the limit bug that fixing the predicate exposed, and §12 is the
 case folding it got wrong for anything outside ASCII.
 
-Nothing here was a regression from [the Rust rewrite](rust-rewrite.md): the same
+Nothing here was a regression from [the Rust rewrite](../rust-rewrite/readme.md): the same
 numbers came out of the TypeScript build, and that work simply removed
 everything else that was slow, which left this as the only thing to look at.
 
@@ -271,7 +273,7 @@ predicate now reads whole blobs rather than 41 bytes of each:
 That last row is the shape of the answer. A person filter rejects rows on an
 integer before the blob is ever read, and it is ten times faster than the
 unscoped search as a result. Narrowing before scanning is what works; §9 does it
-by date, and [search-index.md](search-index.md) removes the scan entirely.
+by date, and [search-index.md](../search-index/readme.md) removes the scan entirely.
 
 ## 11 The limit was under-delivering, not truncating
 
@@ -331,5 +333,5 @@ not get slower. A needle outside ASCII costs roughly twice that, and only
 searches that need decoding pay it. Left there deliberately: the exact
 alternative is a reverse fold table, and an approximate one is a second predicate
 that disagrees with the first, which is the bug this section is about. If that
-4.15s ever matters, [search-index.md §7](search-index.md) is the decision to
+4.15s ever matters, [search-index.md §7](../search-index/readme.md) is the decision to
 revisit rather than this scan to sharpen.

@@ -235,7 +235,7 @@ pub fn database_path(over: Option<&str>) -> PathBuf {
 
 /// Two ways out, and the daemon is the better one: it holds the grant instead of
 /// the terminal, so nothing else run from that shell inherits it. See
-/// docs/projects/all/daemon-and-permissions.md §1.
+/// docs/projects/daemon-and-permissions/readme.md §1.
 fn denied_message(location: &Path) -> String {
     format!(
         "cannot read {}\n\n\

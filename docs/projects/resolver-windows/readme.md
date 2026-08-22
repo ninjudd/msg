@@ -1,6 +1,8 @@
 ---
-status: Shipped
+status: done
 ---
+
+**Outcome:** Shipped.
 
 # Plan: Resolve the person before matching chat rows
 

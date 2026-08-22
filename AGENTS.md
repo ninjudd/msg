@@ -2,7 +2,7 @@
 
 ## Docs
 
-This repo follows the global `docs/projects/` convention, with one difference:
+This repo follows the Projector `docs/projects/` convention, with one difference:
 there is no `docs/` overview, because [README.md](README.md) plays that role —
 it describes how `msg` works today, for someone using it. The work itself is in
 [`docs/projects/`](docs/projects/README.md).
@@ -28,7 +28,7 @@ write.
   revoked.
 - Sending now runs in the daemon, off unless `send = true` is in
   `~/.config/msg/config.toml` *and* macOS has granted `msgd` Automation
-  ([daemon-and-permissions.md §7](docs/projects/all/daemon-and-permissions.md)).
+  ([daemon-and-permissions.md §7](docs/projects/daemon-and-permissions/readme.md)).
   Neither gate is a substitute for the flag: on a machine where both are open,
   a missing `--dry-run` texts someone.
 
@@ -75,7 +75,7 @@ than by reasoning. Assume there are more.
   `defaults read com.apple.AddressBook` before opening the AddressBook databases
   makes TCC refuse them with `EPERM` for the rest of the process, even with Full
   Disk Access. Read the databases first
-  ([daemon-and-permissions.md §12](docs/projects/all/daemon-and-permissions.md)).
+  ([daemon-and-permissions.md §12](docs/projects/daemon-and-permissions/readme.md)).
   Full Disk Access is a property of each access, not of the process.
 
 Verify a schema assumption against the database before building on it. Column
@@ -94,7 +94,7 @@ insurance. Add it back with a failing case attached if one ever appears.
 Rust, edition 2024. Four dependencies — `rusqlite`, `clap`, `serde`, `chrono` —
 and the reasons each was chosen, along with the two that were refused (`regex`
 and `tokio`), are in
-[rust-rewrite.md §8](docs/projects/all/rust-rewrite.md). The typedstream decoder
+[rust-rewrite.md §8](docs/projects/rust-rewrite/readme.md). The typedstream decoder
 is hand-written because nothing else decodes it.
 
 ```sh
@@ -119,7 +119,7 @@ the lint is wrong here.
 ## Permissions
 
 Reading requires Full Disk Access, held either by
-[the daemon](docs/projects/all/daemon-and-permissions.md) or by the terminal.
+[the daemon](docs/projects/daemon-and-permissions/readme.md) or by the terminal.
 TCC attributes access to the responsible process, so granting it to a
 CLI-spawned child does nothing; a launchd job is its own responsible process,
 which is why `msgd` exists.

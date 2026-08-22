@@ -4,7 +4,7 @@
 //! There is no API for granting Full Disk Access — `tccutil` only removes — so
 //! the install ends by telling the user what to switch on, and the daemon's
 //! first failed read is what puts it in the list to be switched
-//! (docs/projects/all/daemon-and-permissions.md §9).
+//! (docs/projects/daemon-and-permissions/readme.md §9).
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;

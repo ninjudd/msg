@@ -1,6 +1,8 @@
 ---
-status: Shipped
+status: done
 ---
+
+**Outcome:** Shipped.
 
 # Plan: Show what was said around a search hit
 

@@ -1,6 +1,8 @@
 ---
-status: Shipped
+status: done
 ---
+
+**Outcome:** Shipped.
 
 # Plan: Name a conversation by who is in it
 

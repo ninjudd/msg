@@ -5,7 +5,7 @@
 # This is not part of the build. The .icns is committed and `./scripts/build.sh`
 # only copies it; run this by hand after editing the SVG. That split is
 # deliberate — an icon pipeline that ran during the build would be the one thing
-# still requiring a runtime after docs/projects/all/rust-rewrite.md, so this uses
+# still requiring a runtime after docs/projects/rust-rewrite/readme.md, so this uses
 # nothing but what ships with macOS.
 #
 # `qlmanage` is the rasterizer. Nothing else here can do it: this machine has no
