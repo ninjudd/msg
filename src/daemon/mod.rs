@@ -4,7 +4,7 @@
 //! process: granting Full Disk Access to a terminal grants it to everything
 //! started from that terminal, while a launchd agent is its own responsible
 //! process and can hold the grant alone. See
-//! docs/projects/all/daemon-and-permissions.md.
+//! docs/projects/daemon-and-permissions/readme.md.
 
 pub mod client;
 pub mod config;

@@ -1,5 +1,5 @@
 ---
-status: Draft
+status: next
 ---
 
 # Plan: A person confirms every send, and a send can wait

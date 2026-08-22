@@ -1,5 +1,5 @@
 ---
-status: Draft
+status: later
 ---
 
 # Plan: Index message bodies ourselves
@@ -8,7 +8,7 @@ status: Draft
 would have sat on top of has landed — search reads the whole blob now rather than
 the first 41 bytes of it — and the resulting speed was judged good enough, so
 this is on hold rather than in progress. §7 records that decision and what would
-reverse it. See [query-performance.md §10](query-performance.md) for the fix and
+reverse it. See [query-performance.md §10](../query-performance/readme.md) for the fix and
 what it cost.
 
 **Goal:** Make `msg search` answer in the tens of milliseconds, without writing
@@ -39,14 +39,14 @@ message GUIDs; `chat.db` is then read only to hydrate them. That is a good desig
 for a bridge and the wrong one here. Injecting into Messages.app needs SIP and
 library validation weakened, and this program's entire architecture exists to
 make the permission surface smaller — see
-[daemon-and-permissions.md §1](daemon-and-permissions.md). Trading SIP for a
+[daemon-and-permissions.md §1](../daemon-and-permissions/readme.md). Trading SIP for a
 faster search would be the largest possible step backwards.
 
 So the index has to be ours.
 
 ## 2 Where it goes, and why that is not §4 of query-performance
 
-[query-performance.md §4](query-performance.md) says not to reach for FTS,
+[query-performance.md §4](../query-performance/readme.md) says not to reach for FTS,
 because it would mean writing to a database this program opens read-only. That
 objection is about `chat.db`, and it still stands — nothing here writes there.
 
@@ -85,7 +85,7 @@ row: the *oldest* `message.rowid` the backfill has reached. The newest end needs
 no marker, because the daemon is already watching it. The only gap there is
 between its last tick and now, and a date-bounded scan of that is trivially
 cheap — 87ms buys a whole year
-([query-performance.md §8](query-performance.md)).
+([query-performance.md §8](../query-performance/readme.md)).
 
 ## 4 Shape
 
@@ -124,7 +124,7 @@ cheap — 87ms buys a whole year
 ## 6 What this is not
 
 Not a reason to delay [searching backwards through
-time](query-performance.md), which is worth doing on its own — and worth more
+time](../query-performance/readme.md), which is worth doing on its own — and worth more
 alongside this, not less. §3 leaves the oldest history unindexed longest, and
 that is precisely the range a windowed search keeps from costing a full scan.
 
@@ -142,7 +142,7 @@ exists to keep that grant on one small daemon instead of on a terminal. An index
 in `~/.local/state/msg/` has none of that. It is 0700 in a home directory, which
 stops other users and stops nothing else — every process running as this user can
 read it, with no grant and no prompt. That is the scope reduction in
-[daemon-and-permissions.md §6](daemon-and-permissions.md) being handed back, and
+[daemon-and-permissions.md §6](../daemon-and-permissions/readme.md) being handed back, and
 for a search that is already fast enough to use.
 
 The rest is ordinary cost, and it is all recurring rather than one-off: staleness

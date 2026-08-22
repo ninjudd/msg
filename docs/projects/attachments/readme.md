@@ -1,6 +1,8 @@
 ---
-status: Shipped
+status: done
 ---
+
+**Outcome:** Shipped.
 
 # Plan: Read attachments
 
@@ -87,7 +89,7 @@ daemon never opens a path a caller named. Reading is the reverse and it does not
 get to reuse that shape. The file is inside the grant, the caller has no grant,
 and only the daemon can open it.
 
-[daemon-and-permissions.md §6](daemon-and-permissions.md) already settled how:
+[daemon-and-permissions.md §6](../daemon-and-permissions/readme.md) already settled how:
 **attachments are addressed by rowid, never by path.** The caller names a row in
 `chat.db`; the daemon resolves the filename itself and never accepts one. That
 keeps the daemon from becoming a general-purpose reader with Full Disk Access

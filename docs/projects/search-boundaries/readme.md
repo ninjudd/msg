@@ -1,6 +1,8 @@
 ---
-status: Shipped
+status: done
 ---
+
+**Outcome:** Shipped.
 
 # Plan: Stop matching in the middle of a word
 
@@ -9,7 +11,7 @@ protocol 15. The rule runs in the decoded filter, placed as §3 asked, reading
 the boundary from the unfolded text; §5 is decided as the default with no
 flag. §6's cost is measured and real — the numbers are at the end of that
 section, along with the remedy that was tried, measured useless, and removed.
-The slow tail is recorded in [later](../later.md); the client timeout it can
+The slow tail is recorded in [later](../README.md); the client timeout it can
 now reach answers with a sentence instead of a raw errno, shipped in the same
 pull request because that is what made the path reachable.
 
@@ -238,7 +240,7 @@ streaming the scan backwards (`query-performance.md §9`), a scan cap with an
 honest "stopped early" answer, or the index this repo has twice declined to
 build. Shipped as-is, on the judgment that these searches previously returned
 garbage instantly and now return the right thing slowly; the slow tail is
-recorded in [later](../later.md). The timeout itself answers with words now —
+recorded in [later](../README.md). The timeout itself answers with words now —
 which command, which deadline, that the daemon is working rather than crashed —
 because a path a branch makes reachable ships with its error message, the
 standard the snapshot fallback's raw `EPERM` set.

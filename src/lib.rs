@@ -2,7 +2,7 @@
 //!
 //! The library half is shared by both binaries: `msg`, which is what a person
 //! runs, and `msgd`, the launchd agent that holds Full Disk Access so the
-//! terminal does not. See docs/projects/all/daemon-and-permissions.md.
+//! terminal does not. See docs/projects/daemon-and-permissions/readme.md.
 
 use std::path::PathBuf;
 

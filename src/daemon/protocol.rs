@@ -6,7 +6,7 @@
 //! No request carries a filesystem path. That is the rule the daemon's whole
 //! security value rests on, since it holds Full Disk Access and a path argument
 //! would turn it into a general-purpose reader: see
-//! docs/projects/all/daemon-and-permissions.md §6.
+//! docs/projects/daemon-and-permissions/readme.md §6.
 
 use std::path::PathBuf;
 

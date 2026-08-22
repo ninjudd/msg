@@ -1,6 +1,8 @@
 ---
-status: Shipped
+status: done
 ---
+
+**Outcome:** Shipped.
 
 # Plan: Make replies read as replies
 
@@ -105,7 +107,7 @@ handled. A reply is an ordinary message that points at another one.
 
 Caught on the real database rather than in a test. The first version built the
 excerpt from `message_body`, the raw decoded body — so a reply to a photo quoted
-a bare U+FFFC, which is exactly the hole [attachments.md](attachments.md) §1
+a bare U+FFFC, which is exactly the hole [attachments.md](../attachments/readme.md) §1
 exists to close, reintroduced one layer up.
 
 §4 above had already said not to do this, which is the useful part: the plan was
@@ -144,7 +146,7 @@ changes.
 Rendered output prints no rowid — `--json` has them, but a person reading a
 transcript has nothing to type. Attachments met exactly this and answered it by
 printing the id in the description, which is what made `msg save` usable at all
-([attachments.md §4](attachments.md)). The same answer fits here and costs
+([attachments.md §4](../attachments/readme.md)). The same answer fits here and costs
 almost nothing: the `↳ replying to …` line is the one line that exists *only* on
 replies, so putting the originator's rowid in it adds nothing to the 99% of
 messages that are not replies, and a thread would announce its own handle
