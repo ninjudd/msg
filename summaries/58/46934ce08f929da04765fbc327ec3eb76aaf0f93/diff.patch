@@ -1,0 +1,2108 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 8300059..4976157 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -42,6 +42,16 @@ write.
+   Neither gate is a substitute for the flag: on a machine where both are open,
+   a missing `--dry-run` texts someone.
+ 
++## Writing contacts is a production write too
++
++`msg contacts add`/`update` edit the user's address book through the daemon
++([contact-writing.md](docs/projects/contact-writing/readme.md)). There is no
++dry-run; the write is the command. Run one only when the task is exactly that
++write. In tests, the daemon takes a fake `ContactStore` through
++`DaemonOptions` — a test that reaches the real store edits a real card on
++whoever runs the suite, so every test injects the fake, and the AppleScript
++layer is exercised live, on purpose, with values the user asked for.
++
+ ## This repository is public
+ 
+ `github.com/ninjudd/msg` is public. Nothing derived from the author's own data
+diff --git a/README.md b/README.md
+index 903043a..b6a2d51 100644
+--- a/README.md
++++ b/README.md
+@@ -492,6 +492,47 @@ disagree about who somebody is. An address shared by records filed under
+ one home line are two people, and picking between people is the thing this
+ command never does.
+ 
++### Adding and updating a person
++
++`msg contacts add` puts a new person in Contacts, and `msg contacts update`
++changes what Contacts holds for one:
++
++```sh
++msg contacts add "Dana Reyes" --phone 3105551234 --email dana@example.com \
++    --title "Principal Engineer" --org "Example Corp"
++msg contacts update dana --title "Staff Engineer" --phone 3105556789
++msg contacts update dana --note ""     # replace the note with nothing
++```
++
++Both need [the daemon](#the-daemon): writes drive Contacts.app over Apple
++Events, and the Automation permission that authorizes them belongs to `msgd`
++rather than to your terminal. The first write asks — allow msgd to control
++Contacts and the grant sticks, revocable any time under System Settings >
++Privacy & Security > Automation.
++
++`add` takes the full name — the first word is the first name, the rest the
++last — and refuses a name that is already in Contacts, since the likely
++intent is `update`; pass `--duplicate` when you really do mean a second
++person with the same name. `add` also needs at least one `--phone` or
++`--email`, because `msg` finds people by their addresses and could not find
++a card without one again. `update` resolves its term exactly as
++[`resolve`](#resolving-a-person) does, ambiguity and exit statuses included.
++
++`--phone` and `--email` repeat, and on update they append — except that a
++value the card already carries, in any shape, is reported as already there
++rather than added again, so re-running a command never duplicates a number.
++`--title`, `--org`, and `--note` replace their field outright; an empty
++value clears it. Values land under the `other` label.
++
++Each write says what it did, one field per line, and takes `--json`:
++
++```
++$ msg contacts update dana --title "Staff Engineer" --phone 3105551234
++updated Dana Reyes
++  title Staff Engineer
++  phone 3105551234 (already there)
++```
++
+ ### Machine-readable output
+ 
+ Every read command accepts `--json`. `watch --json` emits newline-delimited
+@@ -593,9 +634,11 @@ security delete-identity -c "msg dev"             # remove the one msg created
+ **What it changes.** `watch` stops polling — the daemon tails the write-ahead log
+ and pushes to every watcher, so one process does the work no matter how many
+ terminals are following. Contact names are resolved by the daemon too, so
+-Contacts needs no permission of its own. And [sending](#sending) runs from the
+-daemon, which is what makes "may this tool text people?" an operating system
+-permission rather than a flag a program honours about itself.
++Contacts needs no permission of its own. And [sending](#sending) and
++[contact writing](#adding-and-updating-a-person) run from the daemon, which
++is what makes "may this tool text people?" — and "may it edit my
++contacts?" — an operating system permission rather than a flag a program
++honours about itself.
+ 
+ The two permissions are independent. Granting Full Disk Access does not let
+ `msgd` send, granting Automation does not let it read, and each is a separate
+@@ -607,7 +650,7 @@ script, because they are keyed to the bundle identifier:
+ 
+ ```sh
+ tccutil reset SystemPolicyAllFiles com.ninjudd.msgd   # stop it reading
+-tccutil reset AppleEvents com.ninjudd.msgd            # stop it sending
++tccutil reset AppleEvents com.ninjudd.msgd   # stop it driving Messages and Contacts
+ ```
+ 
+ The reasoning behind the design — including why the socket carries no
+diff --git a/docs/projects/contact-sources/readme.md b/docs/projects/contact-sources/readme.md
+index 86fa3eb..9211163 100644
+--- a/docs/projects/contact-sources/readme.md
++++ b/docs/projects/contact-sources/readme.md
+@@ -143,3 +143,15 @@ Until either option ships: #54's unification fix already answers
+ split-card contacts correctly, an exact full name resolves past the
+ auxiliary pollution, and the auxiliary source's presence is at least now
+ understood rather than mysterious.
++
++## 8 What contact writing measured (2026-08-19)
++
++Contact *writes* shipped separately (contact-writing.md) and chose Apple
++Events over `CNContactStore`, for a reason writes own — the note field
++needs a restricted entitlement no self-signed bundle can carry — so nothing
++there forecloses Option B for reads. What it did answer is a piece of §5's
++spike: a TCC prompt raised from launchd-agent context presents on screen
++and lands its grant on `msgd` — measured with the Automation prompt for a
++new target app, Contacts. Whether the Contacts *permission* prompt behaves
++the same is still unmeasured, but the mechanism it rides is now known to
++work from that context.
+diff --git a/docs/projects/contact-writing/readme.md b/docs/projects/contact-writing/readme.md
+new file mode 100644
+index 0000000..9b281e2
+--- /dev/null
++++ b/docs/projects/contact-writing/readme.md
+@@ -0,0 +1,198 @@
++---
++status: completed
++---
++
++**Outcome:** Shipped.
++
++# Plan: Add and update contacts from the command line
++
++**Status:** Shipped. Written and implemented in one pull request, after the
++read half (contact-resolution.md, since merged) made `msg` the tool that
++answers "who is somebody" and immediately raised the question it could not
++answer: how does somebody new get *into* Contacts without leaving the
++terminal? §8 records the first live run.
++
++## 1 Why
++
++`msg contacts resolve` turns a name into addresses, and nothing in `msg`
++goes the other way. The errand that motivated this — a list of people with
++phones, emails, titles, and notes, arriving in a message, wanted in
++Contacts — ends today in the Contacts UI, one field at a time, or in an
++osascript one-liner typed from a terminal, which costs an Automation grant
++to *the terminal* and therefore to everything the terminal runs.
++
++So: `msg contacts add` and `msg contacts update`. Writing goes to the same
++Contacts the resolver reads, and the permission lands on the daemon, where
++this project puts every grant it holds.
++
++## 2 Writes run in the daemon (DECIDED)
++
++The CLI holds no permission of its own and stays that way. A write from the
++CLI would put the permission prompt on the terminal — measured and vetoed in
++contact-sources.md §3, since a grant to the terminal is a grant to every
++process it ever runs. The daemon is a signed bundle whose grants are keyed
++to `com.ninjudd.msgd`, revocable one switch at a time, which is the entire
++argument of daemon-and-permissions.md applied unchanged.
++
++Without a daemon listening, both commands refuse with the same shape `send`
++uses: install the daemon, which holds the permission.
++
++## 3 Apple Events to Contacts.app, not CNContactStore (DECIDED)
++
++Two mechanisms can write a contact. The Contacts *framework*
++(`CNContactStore`) is the platform API contact-sources.md §5 sketches as
++Option B for reads; Apple *Events* drive Contacts.app the way
++`daemon/send.rs` already drives Messages. Writes take the second, for one
++decisive reason and two supporting ones:
++
++- **The note field is closed to the framework and open to the app.**
++  `CNContactNoteKey` requires `com.apple.developer.contacts.notes`, a
++  restricted entitlement granted by Apple per-application. A self-signed
++  bundle cannot carry it at all — AMFI refuses to launch a binary claiming a
++  restricted entitlement without an Apple-issued provisioning profile — so
++  under the signing this project uses (signing-identity.md), a
++  `CNContactStore` writer could never write a note, and a note is exactly
++  the field that makes "put this person in Contacts with everything I know
++  about them" whole. Contacts.app is itself entitled, and its scripting
++  interface writes notes freely.
++- **The permission path is proven, not spiked.** Whether the Contacts
++  permission prompt presents from launchd-agent context is the unmeasured
++  question Option B waits on. Apple Events from this daemon are measured:
++  `msgd` holds an Automation grant for Messages today, obtained through
++  exactly this flow. Writing contacts adds a second Automation row —
++  msgd → Contacts, prompted on first write — under machinery §7 and §13 of
++  daemon-and-permissions.md already document.
++- **Zero build machinery.** No Swift compilation unit, no linker work, no
++  new dependency; rust-rewrite.md §8's ledger stays at four. The Swift
++  surface confirmed-and-delayed-send.md §3 plans is still coming for the
++  reasons that plan owns; a write path that does not need it should not be
++  the thing that forces it in.
++
++What this does *not* decide: contact-sources.md's Option B, which is about
++reads. The wire commands below name what they do, not how — a future
++CN-backed reader (or writer, should the entitlement situation change) slots
++in behind the same protocol.
++
++Rejected: linking `CNContactStore` anyway and shipping without notes — it
++trades the feature's point for architectural tidiness, and runs an
++unmeasured spike on the critical path of an errand. Rejected: one big
++AppleScript with the logic inside it — comparison and dedup live in Rust
++where tests reach them (§6), and the scripts stay single-purpose the way
++`SEND_TEXT` is.
++
++## 4 The CLI surface
++
++```
++msg contacts add "Dana Reyes" --phone 3105551234 --email dana@example.com \
++    --title "Principal Engineer" --org "Example Corp" --note "referred by Sam"
++msg contacts update dana --title "Staff Engineer" --phone 3105556789
++```
++
++`add` takes the person's full name — first word is the first name, the rest
++the last name — and refuses when someone already answers to exactly that
++name, naming them, since the likely intent is `update`; `--duplicate`
++overrides for the father-and-son case the resolver already models. `add`
++also requires at least one `--phone` or `--email`: the resolver indexes
++people by address alone, so a card created without one could never be
++found by `update` or `resolve`, and would block its own re-add as a
++duplicate. (Added in review; the first version accepted a name with only
++`--title`, `--org`, or `--note`.) `update`
++resolves its term exactly as `contacts resolve` does — name, nickname, or
++address; a fragment that matches several people is refused naming the
++candidates, exit 3 — then applies the flags. Both print what changed, one
++field per line, and take `--json`.
++
++`--phone` and `--email` repeat. On update they append, except that a value
++whose `handle_key` the person already carries is reported as already there
++and skipped — so re-running a command is safe, and a number retyped in a
++different shape does not become a second phone. `--title`, `--org`, and
++`--note` set their field outright, replacing what was there; replacing is
++idempotent, and read-modify-append on a note would need the note read back
++through a parse there is no robust format for.
++
++Exit statuses keep the resolve contract: 0 wrote, 1 ordinary failure,
++2 the grant is missing, 3 the term or name was ambiguous.
++
++## 5 The wire
++
++`person-add` and `person-update`, protocol 18 → 19. Requests carry the
++fields; no request carries a filesystem path, so §6 of
++daemon-and-permissions.md is untouched. Both answer a `PersonWriteReply`:
++the Contacts record id, the name as filed, `created`, and `changed` /
++`unchanged` — field-per-entry lists the CLI prints as lines and `--json`
++hands over structured.
++
++The stale-daemon failure is the loud kind: an old daemon fails the version
++gate, and behind it the `COMMANDS` check names the unknown command. Nothing
++here changes the shape of an existing reply.
++
++## 6 The seam that keeps tests out of real Contacts (DECIDED)
++
++The daemon-side logic — the duplicate guard, resolve-then-apply, dedup by
++`handle_key`, the changed/unchanged accounting — is plain Rust, and the
++osascript boundary behind it is a trait (`ContactStore`): find ids by exact
++name, create, read a field's values, set a field, append a value. The
++production implementation is six small AppleScripts run the way `send.rs`
++runs its two, arguments passed to `on run` rather than interpolated. The
++test harness injects a fake store through `DaemonOptions`, the same door the
++fixture AddressBook uses, so `cargo test` writes no one's contacts and
++still pins every decision above the boundary.
++
++The scripts themselves are exercised live, not in tests — the same line
++`send.rs` draws, and the same reason §8 records measurements instead of
++assertions.
++
++## 7 What the update writes to, exactly
++
++`update` resolves a term to one person through the daemon's index, then
++addresses Contacts.app by that person's filed name. Records filed under one
++name are one person to the resolver (contact-resolution.md §5) because that
++is the unification Contacts itself displays, so when the app answers the
++name with several cards, they are that person's cards across accounts and
++the write goes to the first — the edit surfaces on the unified card either
++way. The already-there check reads every one of those cards, not only the
++first, because a value on any of them is one the unified card shows. (The
++first version read only the card it wrote to, and appended a duplicate of a
++value that lived on another.)
++
++"Filed name" means the resolver's rule exactly: first and last name
++joined, or the organization for a card with neither (`filed_name` in
++`src/contacts.rs`). The find script fetches every person's id, first
++name, last name, and organization, and Rust applies that rule and
++compares case-insensitively. (Corrected in review. The first version
++asked Contacts.app for `every person whose name is …`, but the scripting
++dictionary defines `name` by the display-order preference, so with
++Contacts showing last names first no filed name would ever match: `update`
++would find nobody and `add`'s duplicate guard would never fire. The
++replacement is four Apple Events rather than one, and its latency on a
++large address book has not been measured yet.) Two strangers sharing an exact full name collapse in the resolver
++before this code ever runs; that is a modeling limit this plan inherits
++rather than adds. New contacts land in the account Contacts.app itself
++files new people into.
++
++## 8 Measurements
++
++From the first live run, 2026-08-19, on the machine
++daemon-and-permissions.md measured:
++
++- **The Automation prompt presents from launchd-agent context for a second
++  target app.** The first write raised "msgd wants access to control
++  Contacts", it was approved at the machine, and the write completed —
++  §13's machinery confirmed for a target other than Messages. This is also
++  half an answer to the launchd-UI question contact-sources.md §5 and
++  confirmed-and-delayed-send.md §3 share: a *TCC* prompt presents from this
++  context; whether an alert or `LAContext` sheet of the daemon's own
++  presents is still that spike's to run.
++- **Driving Contacts.app launches it** when it is not already running,
++  without bringing a window forward.
++- **Latency.** An idempotent update — resolve the term, find the card, read
++  its phones, write nothing — round-trips in 0.75s. A five-field `add`,
++  which is six scripts each ending in a `save`, runs in a few seconds.
++- **A new card resolves within seconds of the write.** The daemon drops its
++  cached index after any write, and contactsd had synced the new record
++  into the AddressBook databases by the first resolve after the add.
++- **An appended value is stored under Apple's `other` label**, not
++  unlabeled: it comes back from `resolve` as `label: "other"`, and the
++  Contacts UI shows `other` beside it.
++- **Clearing works as replacing.** `--note ""` on five cards emptied the
++  note on each; nothing distinguishes a cleared field from one never set.
+diff --git a/skills/msg/SKILL.md b/skills/msg/SKILL.md
+index 66d90c3..0b32fcf 100644
+--- a/skills/msg/SKILL.md
++++ b/skills/msg/SKILL.md
+@@ -4,7 +4,8 @@ description: >-
+   Read, search, and send iMessages on this Mac with the msg CLI. Use when the
+   user asks about their text messages or iMessage conversations — what someone
+   said, finding or summarizing a conversation, following new messages, looking
+-  up a contact, saving an attachment they were sent — or asks to send a text.
++  up a contact, saving an attachment they were sent — or asks to send a text
++  or to add or update someone in their contacts.
+ ---
+ 
+ # msg — iMessages from the command line
+@@ -85,6 +86,34 @@ email=$(msg contacts resolve dana --email) && gog gmail search "from:$email"
+ On exit 3 the candidates are on stderr, each with an address — re-run with
+ that address (or the exact full name), not the same fragment again.
+ 
++## Writing a contact
++
++`msg` puts people *into* Contacts too. Contacts is the user's data: create
++or change a card only when the user asked for exactly that, and relay what
++each command prints — one line per field — as the confirmation of what
++changed.
++
++```sh
++msg contacts add "Dana Reyes" --phone 3105551234 --email dana@example.com \
++    --title "Principal Engineer" --org "Example Corp"
++msg contacts update dana --title "Staff Engineer" --phone 3105556789
++msg contacts update dana --note ""   # --title/--org/--note replace; "" clears
++```
++
++- `add` refuses a name Contacts already holds and points at `update`; pass
++  `--duplicate` only when the user confirms two people really share the
++  name.
++- `add` needs at least one `--phone` or `--email`; without an address the
++  person could never be resolved or updated afterwards.
++- `update` resolves its term the way `resolve` does, exit statuses
++  included — on 3, pick by address rather than retrying the fragment.
++- `--phone`/`--email` repeat and append. A value the card already carries,
++  whatever shape it was typed in, is skipped and reported `(already
++  there)`, so re-running a command is safe.
++- Writes need the daemon, and macOS asks once — a prompt naming msgd and
++  Contacts — which is the user's to answer, never yours to work around. A
++  refusal exits 2 naming the switch that reopens it.
++
+ ## Searching
+ 
+ ```sh
+diff --git a/src/bin/msg.rs b/src/bin/msg.rs
+index aa65dc0..9cbe589 100644
+--- a/src/bin/msg.rs
++++ b/src/bin/msg.rs
+@@ -14,7 +14,9 @@ use msg::daemon::install::{
+     Grant, built_bundle, bundle_path, install, is_loaded, log_path, open_automation,
+     open_full_disk_access, plist_path, signature_of, uninstall,
+ };
+-use msg::daemon::protocol::{Attachment, socket_path};
++use msg::daemon::protocol::{
++    Attachment, PersonAddRequest, PersonUpdateRequest, PersonWriteReply, socket_path,
++};
+ use msg::daemon::server::{Daemon, DaemonOptions};
+ use msg::db::human_bytes;
+ use msg::format::{Render, Renderer, Trail, render_chats, render_messages, to_json};
+@@ -175,6 +177,52 @@ struct ContactsArgs {
+ enum ContactsCommand {
+     /// one person from a name, and every address their record carries
+     Resolve(ResolveArgs),
++    /// put a new person in Contacts
++    Add(AddArgs),
++    /// change what Contacts holds for one person
++    Update(UpdateArgs),
++}
++
++#[derive(Args)]
++struct AddArgs {
++    /// the person's full name: first word is the first name, the rest the last
++    name: String,
++    #[command(flatten)]
++    fields: WriteFields,
++    /// add even though somebody already has exactly this name
++    #[arg(long)]
++    duplicate: bool,
++    #[arg(long)]
++    json: bool,
++}
++
++#[derive(Args)]
++struct UpdateArgs {
++    /// a name, a nickname, or one of their addresses
++    term: String,
++    #[command(flatten)]
++    fields: WriteFields,
++    #[arg(long)]
++    json: bool,
++}
++
++#[derive(Args)]
++struct WriteFields {
++    /// a phone number; repeat the flag for several
++    #[arg(long = "phone", value_name = "PHONE")]
++    phones: Vec<String>,
++    /// an email address; repeat the flag for several
++    #[arg(long = "email", value_name = "EMAIL")]
++    emails: Vec<String>,
++    /// job title, replaced outright
++    #[arg(long)]
++    title: Option<String>,
++    /// company or organization, replaced outright
++    #[arg(long)]
++    org: Option<String>,
++    /// the note on the card, replaced outright
++    #[arg(long)]
++    note: Option<String>,
+ }
+ 
+ #[derive(Args)]
+@@ -299,6 +347,28 @@ fn render_person(person: &msg::contacts::PersonRecord, ask: &ResolveArgs) -> msg
+     Ok(out)
+ }
+ 
++/// What a write printed: the verdict line, then one line per field, with the
++/// values the card already carried marked rather than repeated silently.
++fn render_write(reply: &PersonWriteReply, json: bool) -> String {
++    if json {
++        return to_json(reply);
++    }
++    let mut out = format!(
++        "{} {}\n",
++        if reply.created { "added" } else { "updated" },
++        reply.name
++    );
++    for line in &reply.changed {
++        // A note can span lines; the continuation indents so the next field
++        // still reads as a field.
++        out.push_str(&format!("  {}\n", line.replace('\n', "\n    ")));
++    }
++    for line in &reply.unchanged {
++        out.push_str(&format!("  {line} (already there)\n"));
++    }
++    out
++}
++
+ /// One value or all of them. Singular means exactly one: none is an ordinary
+ /// error, several are status 3 naming the candidates, and stdout stays empty
+ /// either way, so `$( … )` fails empty rather than splicing a wrong address
+@@ -531,18 +601,54 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
+         }
+ 
+         Command::Contacts(args) => {
+-            if let Some(ContactsCommand::Resolve(ask)) = &args.command {
+-                // `--no-names` promises Contacts stays unread, and resolving
+-                // is nothing but reading Contacts — refusing beats silently
+-                // doing the one thing the flag was passed to prevent.
++            if let Some(command) = &args.command {
++                // `--no-names` promises Contacts stays unread, and each of
++                // these is nothing but reading or writing Contacts —
++                // refusing beats silently doing the one thing the flag was
++                // passed to prevent.
+                 if !cli.names() {
+-                    return Err(Error::other(
+-                        "contacts resolve reads Contacts to answer; it cannot run with --no-names",
+-                    ));
++                    return Err(Error::other(format!(
++                        "contacts {} works on Contacts; it cannot run with --no-names",
++                        match command {
++                            ContactsCommand::Resolve(_) => "resolve",
++                            ContactsCommand::Add(_) => "add",
++                            ContactsCommand::Update(_) => "update",
++                        }
++                    )));
++                }
++            }
++            match &args.command {
++                Some(ContactsCommand::Resolve(ask)) => {
++                    let person = source.person(&ask.term)?;
++                    print(&render_person(&person, ask)?);
++                    return Ok(());
++                }
++                Some(ContactsCommand::Add(ask)) => {
++                    let reply = source.person_add(PersonAddRequest {
++                        name: ask.name.clone(),
++                        phones: ask.fields.phones.clone(),
++                        emails: ask.fields.emails.clone(),
++                        title: ask.fields.title.clone(),
++                        org: ask.fields.org.clone(),
++                        note: ask.fields.note.clone(),
++                        duplicate: ask.duplicate.then_some(true),
++                    })?;
++                    print(&render_write(&reply, ask.json));
++                    return Ok(());
++                }
++                Some(ContactsCommand::Update(ask)) => {
++                    let reply = source.person_update(PersonUpdateRequest {
++                        term: ask.term.clone(),
++                        phones: ask.fields.phones.clone(),
++                        emails: ask.fields.emails.clone(),
++                        title: ask.fields.title.clone(),
++                        org: ask.fields.org.clone(),
++                        note: ask.fields.note.clone(),
++                    })?;
++                    print(&render_write(&reply, ask.json));
++                    return Ok(());
+                 }
+-                let person = source.person(&ask.term)?;
+-                print(&render_person(&person, ask)?);
+-                return Ok(());
++                None => {}
+             }
+             let (handles, json) = (&args.handles, &args.json);
+             let reply = source.contacts(handles)?;
+@@ -747,6 +853,7 @@ fn daemon(cli: &Cli, command: &DaemonCommand) -> msg::Result<()> {
+                 db_path: cli.db.clone(),
+                 config_path: None,
+                 addressbook: None,
++                contacts_store: None,
+             });
+             let path = server.listen(None)?;
+             eprintln!("msgd {VERSION} listening on {}", path.display());
+diff --git a/src/contacts.rs b/src/contacts.rs
+index aae7385..bf376aa 100644
+--- a/src/contacts.rs
++++ b/src/contacts.rs
+@@ -821,20 +821,36 @@ fn person_names(row: &rusqlite::Row<'_>) -> Option<(String, Option<String>)> {
+             .map(|value| value.trim().to_string())
+             .filter(|value| !value.is_empty())
+     };
+-    let first = text("ZFIRSTNAME");
+-    let last = text("ZLASTNAME");
+-    let filed = if first.is_some() || last.is_some() {
+-        let parts: Vec<String> = [first, last].into_iter().flatten().collect();
+-        Some(parts.join(" "))
+-    } else {
+-        text("ZORGANIZATION")
+-    };
++    let filed = filed_name(
++        text("ZFIRSTNAME").as_deref(),
++        text("ZLASTNAME").as_deref(),
++        text("ZORGANIZATION").as_deref(),
++    );
+     match text("ZNICKNAME") {
+         Some(nickname) => Some((nickname, filed)),
+         None => Some((filed?, None)),
+     }
+ }
+ 
++/// The name a record is filed under: first and last name joined, or the
++/// organization for a card with neither. Writing finds cards in Contacts.app
++/// by this same rule, so the resolver and the writer cannot disagree about
++/// who a name means.
++pub fn filed_name(first: Option<&str>, last: Option<&str>, org: Option<&str>) -> Option<String> {
++    fn present(value: Option<&str>) -> Option<&str> {
++        value.map(str::trim).filter(|value| !value.is_empty())
++    }
++    let parts: Vec<&str> = [present(first), present(last)]
++        .into_iter()
++        .flatten()
++        .collect();
++    if parts.is_empty() {
++        present(org).map(str::to_string)
++    } else {
++        Some(parts.join(" "))
++    }
++}
++
+ /// Replace handles with names where they are known, keeping order.
+ pub fn name_handles(contacts: &ContactIndex, handles: Option<&str>) -> Option<String> {
+     let handles = handles?;
+diff --git a/src/daemon/contacts_app.rs b/src/daemon/contacts_app.rs
+new file mode 100644
+index 0000000..e30f451
+--- /dev/null
++++ b/src/daemon/contacts_app.rs
+@@ -0,0 +1,880 @@
++//! Driving Contacts.app over Apple Events.
++//!
++//! Only the daemon does this, for the reason sending lives here: the
++//! Automation grant lands on whichever process asks, and a grant to the
++//! terminal is a grant to everything the terminal runs
++//! (contact-writing.md §2). Driving Contacts is a second Automation row for
++//! `msgd`, separate from the Messages one, prompted on the first write.
++//!
++//! The scripts are deliberately dumb — find, create, read, set, append, one
++//! purpose each, arguments passed to `on run` rather than interpolated — and
++//! everything above them is plain Rust behind [`ContactStore`], so the tests
++//! inject a fake store and `cargo test` writes nobody's contacts
++//! (contact-writing.md §6).
++
++use std::process::Command;
++
++use crate::contacts::{ContactIndex, filed_name, handle_key};
++use crate::daemon::protocol::{PersonAddRequest, PersonUpdateRequest, PersonWriteReply};
++use crate::{Error, Result};
++
++/// A multi-valued field on a card.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum ValueField {
++    Phone,
++    Email,
++}
++
++impl ValueField {
++    /// The nouns Contacts.app's dictionary uses: one element, its
++    /// containing list.
++    fn nouns(self) -> (&'static str, &'static str) {
++        match self {
++            Self::Phone => ("phone", "phones"),
++            Self::Email => ("email", "emails"),
++        }
++    }
++
++    fn label(self) -> &'static str {
++        self.nouns().0
++    }
++}
++
++/// A single-valued field, replaced outright when it is set.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum TextField {
++    Title,
++    Org,
++    Note,
++}
++
++impl TextField {
++    /// The property name in Contacts.app's dictionary.
++    fn property(self) -> &'static str {
++        match self {
++            Self::Title => "job title",
++            Self::Org => "organization",
++            Self::Note => "note",
++        }
++    }
++
++    fn label(self) -> &'static str {
++        match self {
++            Self::Title => "title",
++            Self::Org => "org",
++            Self::Note => "note",
++        }
++    }
++}
++
++/// The osascript boundary. What crosses it is small on purpose: ids, names,
++/// and field values, so the logic that decides what to write sits above it
++/// where the tests are.
++pub trait ContactStore: Send + Sync {
++    /// Ids of every person filed under `name`, composed by
++    /// [`filed_name`] and compared the way the resolver compares names.
++    fn find(&self, name: &str) -> Result<Vec<String>>;
++    /// Create a person and answer their id. `last` may be empty.
++    fn create(&self, first: &str, last: &str) -> Result<String>;
++    /// Every stored value of one multi-valued field.
++    fn values(&self, id: &str, field: ValueField) -> Result<Vec<String>>;
++    /// Append one value to a multi-valued field.
++    fn append(&self, id: &str, field: ValueField, value: &str) -> Result<()>;
++    /// Replace a single-valued field.
++    fn set(&self, id: &str, field: TextField, value: &str) -> Result<()>;
++}
++
++/// The production store: Contacts.app, one osascript per operation.
++pub struct ContactsApp;
++
++/// Every person as `id`, first name, last name, organization, tab-separated,
++/// one per line, for [`filed_as`] to match in Rust. Matching the app's own
++/// `name` would be one Apple Event instead of four, but the dictionary
++/// defines `name` by "the name display order preference setting", so with
++/// Contacts showing last names first it answers `Reyes Dana` and no filed
++/// name ever matches.
++///
++/// Lists are joined rather than returned, because osascript prints a
++/// returned list comma-joined — and a value can legitimately contain a
++/// comma, where it can never contain a linefeed.
++const FIND: &str = r#"
++on run
++  tell application "Contacts"
++    set personIds to id of every person
++    set firstNames to first name of every person
++    set lastNames to last name of every person
++    set organizations to organization of every person
++  end tell
++  set rows to {}
++  set text item delimiters to tab
++  repeat with i from 1 to count of personIds
++    set row to {item i of personIds}
++    repeat with column in {item i of firstNames, item i of lastNames, item i of organizations}
++      set value to contents of column
++      if value is missing value then set value to ""
++      set end of row to value
++    end repeat
++    set end of rows to row as text
++  end repeat
++  set text item delimiters to linefeed
++  return rows as text
++end run
++"#;
++
++/// The ids among FIND's rows filed under `name`: composed by the resolver's
++/// rule, whitespace collapsed, case ignored — as the resolver's own exact
++/// match ignores it, and as the `whose name is` this replaced did.
++fn filed_as(rows: &str, name: &str) -> Vec<String> {
++    let squash = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
++    let wanted = squash(name).to_lowercase();
++    rows.lines()
++        .filter_map(|row| {
++            let mut columns = row.split('\t');
++            let id = columns.next().filter(|id| !id.is_empty())?;
++            let (first, last, org) = (columns.next(), columns.next(), columns.next());
++            let filed = filed_name(first, last, org)?;
++            (squash(&filed).to_lowercase() == wanted).then(|| id.to_string())
++        })
++        .collect()
++}
++
++const CREATE: &str = r#"
++on run {firstName, lastName}
++  tell application "Contacts"
++    if lastName is "" then
++      set newPerson to make new person with properties {first name:firstName}
++    else
++      set newPerson to make new person with properties {first name:firstName, last name:lastName}
++    end if
++    save
++    return id of newPerson
++  end tell
++end run
++"#;
++
++fn values_script(field: ValueField) -> String {
++    let (singular, _) = field.nouns();
++    format!(
++        r#"
++on run {{personId}}
++  set text item delimiters to linefeed
++  tell application "Contacts"
++    return (value of every {singular} of person id personId) as text
++  end tell
++end run
++"#
++    )
++}
++
++fn append_script(field: ValueField) -> String {
++    let (singular, plural) = field.nouns();
++    format!(
++        r#"
++on run {{personId, newValue}}
++  tell application "Contacts"
++    make new {singular} at end of {plural} of person id personId with properties {{value:newValue}}
++    save
++  end tell
++end run
++"#
++    )
++}
++
++fn set_script(field: TextField) -> String {
++    let property = field.property();
++    format!(
++        r#"
++on run {{personId, newValue}}
++  tell application "Contacts"
++    set {property} of person id personId to newValue
++    save
++  end tell
++end run
++"#
++    )
++}
++
++/// A refused Apple Event, told apart from an ordinary script failure so it
++/// can exit 2 with the remedy. macOS reports it as error -1743 whether the
++/// prompt was declined or the switch was later turned off.
++fn classify(stderr: &str) -> Error {
++    if stderr.contains("-1743") || stderr.contains("Not authorized") {
++        return Error::AccessDenied(
++            "msgd is not allowed to drive Contacts.\n\
++             Allow it under System Settings > Privacy & Security > Automation > msgd > Contacts.\n\
++             The entry appears after the first refused attempt; declining the prompt is what\n\
++             creates it."
++                .to_string(),
++        );
++    }
++    Error::other(stderr.to_string())
++}
++
++fn run(script: &str, args: &[&str]) -> Result<String> {
++    let output = Command::new("osascript")
++        .arg("-e")
++        .arg(script)
++        .args(args)
++        .output()
++        .map_err(|error| Error::other(format!("could not run osascript: {error}")))?;
++
++    if output.status.success() {
++        return Ok(String::from_utf8_lossy(&output.stdout)
++            .trim_end_matches(['\n', '\r'])
++            .to_string());
++    }
++    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
++    Err(if stderr.is_empty() {
++        Error::other(format!("osascript failed: {}", output.status))
++    } else {
++        classify(&stderr)
++    })
++}
++
++fn lines(joined: String) -> Vec<String> {
++    joined
++        .lines()
++        .map(str::to_string)
++        .filter(|line| !line.is_empty())
++        .collect()
++}
++
++impl ContactStore for ContactsApp {
++    fn find(&self, name: &str) -> Result<Vec<String>> {
++        Ok(filed_as(&run(FIND, &[])?, name))
++    }
++
++    fn create(&self, first: &str, last: &str) -> Result<String> {
++        run(CREATE, &[first, last])
++    }
++
++    fn values(&self, id: &str, field: ValueField) -> Result<Vec<String>> {
++        Ok(lines(run(&values_script(field), &[id])?))
++    }
++
++    fn append(&self, id: &str, field: ValueField, value: &str) -> Result<()> {
++        run(&append_script(field), &[id, value]).map(|_| ())
++    }
++
++    fn set(&self, id: &str, field: TextField, value: &str) -> Result<()> {
++        run(&set_script(field), &[id, value]).map(|_| ())
++    }
++}
++
++/// The fields a write carries, shared by add and update once the target
++/// card is settled.
++struct Fields<'a> {
++    phones: &'a [String],
++    emails: &'a [String],
++    title: Option<&'a str>,
++    org: Option<&'a str>,
++    note: Option<&'a str>,
++}
++
++impl Fields<'_> {
++    fn is_empty(&self) -> bool {
++        self.phones.is_empty()
++            && self.emails.is_empty()
++            && self.title.is_none()
++            && self.org.is_none()
++            && self.note.is_none()
++    }
++
++    /// Refuse a malformed value before the first Apple Event, so a bad one
++    /// never leaves a card half-written — or, on add, created and empty.
++    fn check(&self) -> Result<()> {
++        for (field, values) in [
++            (ValueField::Phone, self.phones),
++            (ValueField::Email, self.emails),
++        ] {
++            if values.iter().any(|value| value.trim().is_empty()) {
++                return Err(Error::other(format!("an empty --{}", field.label())));
++            }
++        }
++        Ok(())
++    }
++}
++
++/// Nothing asked for is a usage error, said before any Apple Event runs.
++fn nothing_to_write() -> Error {
++    Error::other("nothing to write: pass --phone, --email, --title, --org, or --note")
++}
++
++/// Write `fields` onto the card `id`, appending phones and emails the person
++/// does not already carry and replacing the rest. `cards` are every card the
++/// person is filed under, `id` among them, whose values count as already
++/// carried: Contacts shows them as one unified card, so a value on any of
++/// them is a value the person has. A card just created passes none.
++fn apply(
++    store: &dyn ContactStore,
++    id: &str,
++    fields: &Fields<'_>,
++    cards: &[String],
++) -> Result<(Vec<String>, Vec<String>)> {
++    let mut changed = Vec::new();
++    let mut unchanged = Vec::new();
++
++    for (field, values) in [
++        (ValueField::Phone, fields.phones),
++        (ValueField::Email, fields.emails),
++    ] {
++        if values.is_empty() {
++            continue;
++        }
++        // Keyed the way the resolver keys handles, so a number retyped in
++        // another shape is the same number rather than a second phone.
++        let mut held = Vec::new();
++        for card in cards {
++            held.extend(
++                store
++                    .values(card, field)?
++                    .iter()
++                    .filter_map(|value| handle_key(value)),
++            );
++        }
++        for value in values {
++            let value = value.trim();
++            let key = handle_key(value);
++            if let Some(key) = &key
++                && held.contains(key)
++            {
++                unchanged.push(format!("{} {value}", field.label()));
++                continue;
++            }
++            store.append(id, field, value)?;
++            changed.push(format!("{} {value}", field.label()));
++            held.extend(key);
++        }
++    }
++
++    for (field, value) in [
++        (TextField::Title, fields.title),
++        (TextField::Org, fields.org),
++        (TextField::Note, fields.note),
++    ] {
++        if let Some(value) = value {
++            store.set(id, field, value)?;
++            changed.push(format!("{} {value}", field.label()));
++        }
++    }
++
++    Ok((changed, unchanged))
++}
++
++/// `msg contacts add`: create the card, then write the fields onto it.
++pub fn add(store: &dyn ContactStore, ask: &PersonAddRequest) -> Result<PersonWriteReply> {
++    // Whitespace collapsed first, so the name the duplicate guard looks for
++    // is exactly the one the card is created under: first word, then the
++    // rest.
++    let name = ask.name.split_whitespace().collect::<Vec<_>>().join(" ");
++    if name.is_empty() {
++        return Err(Error::other("no name to add"));
++    }
++    let fields = Fields {
++        phones: &ask.phones,
++        emails: &ask.emails,
++        title: ask.title.as_deref(),
++        org: ask.org.as_deref(),
++        note: ask.note.as_deref(),
++    };
++    // The resolver finds people by their addresses and by nothing else, so
++    // a card without one could never be found again by `update` or
++    // `resolve` — and would then block its own re-add as a duplicate.
++    if fields.phones.is_empty() && fields.emails.is_empty() {
++        return Err(Error::other(
++            "add needs a --phone or --email: msg finds people by their addresses, \
++             so without one it could not find them again",
++        ));
++    }
++    fields.check()?;
++
++    // The likely intent behind adding a name that already exists is
++    // `update`, so the collision is refused rather than resolved — but only
++    // refused, since two people can legitimately share a name
++    // (contact-writing.md §4).
++    if ask.duplicate != Some(true) {
++        let held = store.find(&name)?;
++        if !held.is_empty() {
++            return Err(Error::other(format!(
++                "{name} is already in Contacts; update them with `msg contacts update`, \
++                 or pass --duplicate to add another person with this name"
++            )));
++        }
++    }
++
++    let (first, last) = name.split_once(' ').unwrap_or((&name, ""));
++    let id = store.create(first, last)?;
++    let (changed, unchanged) = apply(store, &id, &fields, &[])?;
++    Ok(PersonWriteReply {
++        id,
++        name,
++        created: true,
++        changed,
++        unchanged,
++    })
++}
++
++/// `msg contacts update`: resolve the term the way `person` does, then
++/// address Contacts.app by the filed name (contact-writing.md §7).
++pub fn update(
++    index: &ContactIndex,
++    store: &dyn ContactStore,
++    ask: &PersonUpdateRequest,
++) -> Result<PersonWriteReply> {
++    let fields = Fields {
++        phones: &ask.phones,
++        emails: &ask.emails,
++        title: ask.title.as_deref(),
++        org: ask.org.as_deref(),
++        note: ask.note.as_deref(),
++    };
++    if fields.is_empty() {
++        return Err(nothing_to_write());
++    }
++    fields.check()?;
++
++    let person = index.person(&ask.term)?;
++    // Cards are found by their filed name as `filed_name` composes it from
++    // first name, last name, and organization, never by the app's `name`,
++    // which follows the display-order preference. The nickname is what we
++    // call them and is filed nowhere.
++    let filed = person.filed_as.as_deref().unwrap_or(&person.name);
++    let ids = store.find(filed)?;
++    let Some(id) = ids.first() else {
++        return Err(Error::other(format!(
++            "Contacts.app has nobody named {filed}, though the index resolves them \
++             — their record may belong to a source Contacts does not show"
++        )));
++    };
++
++    let (changed, unchanged) = apply(store, id, &fields, &ids)?;
++    Ok(PersonWriteReply {
++        id: id.clone(),
++        name: person.name,
++        created: false,
++        changed,
++        unchanged,
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::sync::Mutex;
++
++    /// Records every operation and answers from a script the test wrote.
++    #[derive(Default)]
++    struct Fake {
++        /// Ids `find` answers with, per exact name.
++        people: Vec<(&'static str, Vec<&'static str>)>,
++        /// Values `values` answers with, per (id, field).
++        held: Vec<((&'static str, ValueField), Vec<&'static str>)>,
++        log: Mutex<Vec<String>>,
++    }
++
++    impl Fake {
++        fn saw(&self) -> Vec<String> {
++            self.log.lock().unwrap().clone()
++        }
++    }
++
++    impl ContactStore for Fake {
++        fn find(&self, name: &str) -> Result<Vec<String>> {
++            self.log.lock().unwrap().push(format!("find {name}"));
++            Ok(self
++                .people
++                .iter()
++                .find(|(held, _)| *held == name)
++                .map(|(_, ids)| ids.iter().map(ToString::to_string).collect())
++                .unwrap_or_default())
++        }
++
++        fn create(&self, first: &str, last: &str) -> Result<String> {
++            self.log
++                .lock()
++                .unwrap()
++                .push(format!("create {first}|{last}"));
++            Ok("new-id".to_string())
++        }
++
++        fn values(&self, id: &str, field: ValueField) -> Result<Vec<String>> {
++            self.log
++                .lock()
++                .unwrap()
++                .push(format!("values {id} {field:?}"));
++            Ok(self
++                .held
++                .iter()
++                .find(|((held, kind), _)| *held == id && *kind == field)
++                .map(|(_, values)| values.iter().map(ToString::to_string).collect())
++                .unwrap_or_default())
++        }
++
++        fn append(&self, id: &str, field: ValueField, value: &str) -> Result<()> {
++            self.log
++                .lock()
++                .unwrap()
++                .push(format!("append {id} {field:?} {value}"));
++            Ok(())
++        }
++
++        fn set(&self, id: &str, field: TextField, value: &str) -> Result<()> {
++            self.log
++                .lock()
++                .unwrap()
++                .push(format!("set {id} {field:?} {value}"));
++            Ok(())
++        }
++    }
++
++    fn index() -> ContactIndex {
++        ContactIndex::for_test([
++            ("+13105551234", "a:1", "Dana Reyes"),
++            ("+14155550000", "a:2", "Dana Smith"),
++        ])
++    }
++
++    #[test]
++    fn add_splits_the_name_and_writes_every_field() {
++        let fake = Fake::default();
++        let reply = add(
++            &fake,
++            &PersonAddRequest {
++                name: "Dana de la Reyes".into(),
++                phones: vec!["(310) 555-1234".into()],
++                emails: vec!["dana@example.com".into()],
++                title: Some("Principal Engineer".into()),
++                org: Some("Example Corp".into()),
++                note: Some("referred by Sam".into()),
++                duplicate: None,
++            },
++        )
++        .unwrap();
++
++        assert!(reply.created);
++        assert_eq!(reply.id, "new-id");
++        assert_eq!(reply.name, "Dana de la Reyes");
++        assert_eq!(
++            reply.changed,
++            [
++                "phone (310) 555-1234",
++                "email dana@example.com",
++                "title Principal Engineer",
++                "org Example Corp",
++                "note referred by Sam",
++            ]
++        );
++        assert!(reply.unchanged.is_empty());
++        // First word, then the rest — and a fresh card is never read back.
++        let saw = fake.saw();
++        assert!(
++            saw.contains(&"create Dana|de la Reyes".to_string()),
++            "{saw:?}"
++        );
++        assert!(!saw.iter().any(|op| op.starts_with("values")), "{saw:?}");
++    }
++
++    #[test]
++    fn add_refuses_a_name_that_already_answers() {
++        let fake = Fake {
++            people: vec![("Dana Reyes", vec!["old-id"])],
++            ..Fake::default()
++        };
++        let ask = PersonAddRequest {
++            name: "Dana Reyes".into(),
++            phones: vec!["3105559876".into()],
++            ..Default::default()
++        };
++        match add(&fake, &ask) {
++            Err(Error::Other(message)) => {
++                assert!(message.contains("already in Contacts"), "{message}");
++                assert!(message.contains("--duplicate"), "{message}");
++            }
++            other => panic!("expected a refusal, got {other:?}"),
++        }
++        // Refused before anything was written.
++        assert!(!fake.saw().iter().any(|op| op.starts_with("create")));
++
++        // Said on purpose, the same request goes through.
++        let again = add(
++            &fake,
++            &PersonAddRequest {
++                duplicate: Some(true),
++                ..ask
++            },
++        )
++        .unwrap();
++        assert!(again.created);
++    }
++
++    /// Stray whitespace cannot slip a name past the duplicate guard: the name
++    /// looked for is the name that would be created.
++    #[test]
++    fn add_checks_the_name_it_would_create() {
++        let fake = Fake {
++            people: vec![("Dana Reyes", vec!["old-id"])],
++            ..Fake::default()
++        };
++        let outcome = add(
++            &fake,
++            &PersonAddRequest {
++                name: " Dana   Reyes ".into(),
++                phones: vec!["3105559876".into()],
++                ..Default::default()
++            },
++        );
++        match outcome {
++            Err(Error::Other(message)) => {
++                assert!(message.starts_with("Dana Reyes is"), "{message}")
++            }
++            other => panic!("expected a refusal, got {other:?}"),
++        }
++        assert_eq!(fake.saw(), ["find Dana Reyes"]);
++    }
++
++    /// A card with no address is one the resolver never indexes, so it is
++    /// refused rather than created unreachable.
++    #[test]
++    fn add_needs_a_phone_or_email() {
++        let fake = Fake::default();
++        let outcome = add(
++            &fake,
++            &PersonAddRequest {
++                name: "Robin Adeyemi".into(),
++                title: Some("Principal Engineer".into()),
++                ..Default::default()
++            },
++        );
++        match outcome {
++            Err(Error::Other(message)) => assert!(message.contains("--phone or --email")),
++            other => panic!("expected a refusal, got {other:?}"),
++        }
++        assert!(fake.saw().is_empty(), "{:?}", fake.saw());
++    }
++
++    #[test]
++    fn add_needs_a_name() {
++        assert!(matches!(
++            add(
++                &Fake::default(),
++                &PersonAddRequest {
++                    name: "  ".into(),
++                    ..Default::default()
++                }
++            ),
++            Err(Error::Other(_))
++        ));
++    }
++
++    /// An empty value anywhere in the request is refused before anything is
++    /// written, not after the values ahead of it went in.
++    #[test]
++    fn an_empty_value_is_refused_before_any_write() {
++        let fake = Fake::default();
++        let outcome = add(
++            &fake,
++            &PersonAddRequest {
++                name: "Robin Adeyemi".into(),
++                phones: vec!["3105559876".into()],
++                emails: vec![" ".into()],
++                ..Default::default()
++            },
++        );
++        assert!(matches!(outcome, Err(Error::Other(_))), "{outcome:?}");
++        assert!(fake.saw().is_empty(), "{:?}", fake.saw());
++
++        let fake = Fake {
++            people: vec![("Dana Reyes", vec!["card-1"])],
++            ..Fake::default()
++        };
++        let outcome = update(
++            &index(),
++            &fake,
++            &PersonUpdateRequest {
++                term: "dana reyes".into(),
++                phones: vec!["3105559999".into(), "".into()],
++                ..Default::default()
++            },
++        );
++        assert!(matches!(outcome, Err(Error::Other(_))), "{outcome:?}");
++        assert!(fake.saw().is_empty(), "{:?}", fake.saw());
++    }
++
++    #[test]
++    fn update_appends_what_is_new_and_skips_what_is_held() {
++        let fake = Fake {
++            people: vec![("Dana Reyes", vec!["card-1"])],
++            // The card holds the number in a different shape than the
++            // request retypes it, which is exactly what must not duplicate.
++            held: vec![(("card-1", ValueField::Phone), vec!["+1 (310) 555-1234"])],
++            ..Fake::default()
++        };
++        let reply = update(
++            &index(),
++            &fake,
++            &PersonUpdateRequest {
++                term: "dana reyes".into(),
++                phones: vec!["310-555-1234".into(), "3105559999".into()],
++                title: Some("Staff Engineer".into()),
++                ..Default::default()
++            },
++        )
++        .unwrap();
++
++        assert!(!reply.created);
++        assert_eq!(reply.id, "card-1");
++        assert_eq!(reply.name, "Dana Reyes");
++        assert_eq!(reply.changed, ["phone 3105559999", "title Staff Engineer"]);
++        assert_eq!(reply.unchanged, ["phone 310-555-1234"]);
++        let saw = fake.saw();
++        assert!(
++            saw.contains(&"append card-1 Phone 3105559999".to_string()),
++            "{saw:?}"
++        );
++        assert!(
++            !saw.contains(&"append card-1 Phone 310-555-1234".to_string()),
++            "{saw:?}"
++        );
++    }
++
++    /// A person filed as several cards is one person: a value any of them
++    /// carries is already there, even though the write goes to the first.
++    #[test]
++    fn update_skips_a_value_another_of_their_cards_carries() {
++        let fake = Fake {
++            people: vec![("Dana Reyes", vec!["card-1", "card-2"])],
++            held: vec![(("card-2", ValueField::Email), vec!["dana@example.com"])],
++            ..Fake::default()
++        };
++        let reply = update(
++            &index(),
++            &fake,
++            &PersonUpdateRequest {
++                term: "dana reyes".into(),
++                emails: vec!["Dana@Example.com".into()],
++                ..Default::default()
++            },
++        )
++        .unwrap();
++        assert_eq!(reply.id, "card-1");
++        assert!(reply.changed.is_empty(), "{:?}", reply.changed);
++        assert_eq!(reply.unchanged, ["email Dana@Example.com"]);
++        assert!(!fake.saw().iter().any(|op| op.starts_with("append")));
++    }
++
++    /// The term resolves the way `person` resolves, refusals included: a
++    /// fragment two people answer to is exit 3, not a pick.
++    #[test]
++    fn update_refuses_an_ambiguous_term() {
++        let fake = Fake::default();
++        let outcome = update(
++            &index(),
++            &fake,
++            &PersonUpdateRequest {
++                term: "dana".into(),
++                title: Some("Engineer".into()),
++                ..Default::default()
++            },
++        );
++        assert!(matches!(outcome, Err(Error::Ambiguous(_))), "{outcome:?}");
++        assert!(fake.saw().is_empty(), "nothing may be written");
++    }
++
++    /// The card is addressed by the filed name, not the nickname shown for
++    /// it — `find` composes names from first and last name, and a nickname
++    /// is neither.
++    #[test]
++    fn update_addresses_the_card_by_its_filed_name() {
++        let index = ContactIndex::for_test([("+13105551234", "a:1", "Dana Reyes")])
++            .nicknamed("+13105551234", "Dee");
++        let fake = Fake {
++            people: vec![("Dana Reyes", vec!["card-1"])],
++            ..Fake::default()
++        };
++        let reply = update(
++            &index,
++            &fake,
++            &PersonUpdateRequest {
++                term: "dee".into(),
++                org: Some("Example Corp".into()),
++                ..Default::default()
++            },
++        )
++        .unwrap();
++        assert_eq!(reply.name, "Dee");
++        assert!(fake.saw().contains(&"find Dana Reyes".to_string()));
++    }
++
++    #[test]
++    fn update_with_nothing_to_write_is_refused_before_resolving() {
++        let outcome = update(
++            &index(),
++            &Fake::default(),
++            &PersonUpdateRequest {
++                term: "dana".into(),
++                ..Default::default()
++            },
++        );
++        match outcome {
++            // Refused as usage, not as ambiguity: the term was never looked at.
++            Err(Error::Other(message)) => assert!(message.contains("nothing to write")),
++            other => panic!("expected a refusal, got {other:?}"),
++        }
++    }
++
++    #[test]
++    fn update_says_when_the_app_does_not_hold_the_person() {
++        let outcome = update(
++            &ContactIndex::for_test([("+13105551234", "a:1", "Dana Reyes")]),
++            &Fake::default(),
++            &PersonUpdateRequest {
++                term: "dana".into(),
++                note: Some("hello".into()),
++                ..Default::default()
++            },
++        );
++        match outcome {
++            Err(Error::Other(message)) => {
++                assert!(message.contains("nobody named Dana Reyes"), "{message}");
++            }
++            other => panic!("expected a refusal, got {other:?}"),
++        }
++    }
++
++    /// Cards are matched by the name the resolver files them under, built
++    /// from first and last name, so the app's display order never enters
++    /// into it.
++    #[test]
++    fn find_matches_the_filed_name_whatever_the_display_order() {
++        let rows = [
++            "card-1\tDana\tReyes\t",
++            "card-2\tdana \tREYES\tExample Corp",
++            "card-3\tReyes\tDana\t",
++            "card-4\t\t\tExample Corp",
++            "card-5\tSam\t\t",
++            "\tDana\tReyes\t",
++        ]
++        .join("\n");
++        assert_eq!(filed_as(&rows, "Dana  Reyes"), ["card-1", "card-2"]);
++        assert_eq!(filed_as(&rows, "example corp"), ["card-4"]);
++        assert_eq!(filed_as(&rows, "Sam"), ["card-5"]);
++        assert!(filed_as(&rows, "Dana").is_empty());
++        assert!(filed_as("", "Dana Reyes").is_empty());
++    }
++
++    /// A refused Apple Event exits 2 with the remedy; anything else a script
++    /// says is an ordinary error.
++    #[test]
++    fn a_refused_apple_event_is_access_denied() {
++        let refused =
++            classify("execution error: Not authorized to send Apple events to Contacts. (-1743)");
++        match refused {
++            Error::AccessDenied(message) => assert!(message.contains("Automation"), "{message}"),
++            other => panic!("{other:?}"),
++        }
++        assert!(matches!(
++            classify("execution error: Contacts got an error (-1728)"),
++            Error::Other(_)
++        ));
++    }
++}
+diff --git a/src/daemon/mod.rs b/src/daemon/mod.rs
+index 60f26c2..6d42b92 100644
+--- a/src/daemon/mod.rs
++++ b/src/daemon/mod.rs
+@@ -8,6 +8,7 @@
+ 
+ pub mod client;
+ pub mod config;
++pub mod contacts_app;
+ pub mod install;
+ pub mod protocol;
+ pub mod send;
+diff --git a/src/daemon/protocol.rs b/src/daemon/protocol.rs
+index 7ea45d1..3af3704 100644
+--- a/src/daemon/protocol.rs
++++ b/src/daemon/protocol.rs
+@@ -89,6 +89,13 @@ use crate::db::{Chat, Message};
+ /// a daemon that does not know them ignores them and answers with bare hits, so
+ /// `-C 3` would silently produce exactly what the flag was asked to change.
+ ///
++/// 19 adds `person-add` and `person-update` — contact writing, driving
++/// Contacts.app over Apple Events the way `send` drives Messages
++/// (contact-writing.md §5). New commands are the loud kind of skew: a stale
++/// daemon fails the version gate, and the `COMMANDS` check behind it names
++/// the command it does not know. The bump is what turns either report into
++/// "reinstall the daemon" rather than a puzzle about which side is behind.
++///
+ /// 18 adds the `person` command — the contact resolver, answering a term with
+ /// one person and every address their record carries — and the `ambiguous`
+ /// error code that carries its refusals. The code is the load-bearing half: a
+@@ -165,7 +172,7 @@ use crate::db::{Chat, Message};
+ /// saying so, which looks exactly like a person who only has one. The reply is
+ /// not wrong in a way anything can see — it is simply missing half the
+ /// conversation, which is the failure this number exists to make loud.
+-pub const PROTOCOL_VERSION: u32 = 18;
++pub const PROTOCOL_VERSION: u32 = 19;
+ 
+ /// The launchd job label, and the bundle identifier the TCC grant lands on.
+ pub const LABEL: &str = "com.ninjudd.msgd";
+@@ -278,6 +285,64 @@ pub struct PersonRequest {
+     pub term: String,
+ }
+ 
++/// Creating a person in Contacts. Every field is a value that lands on the
++/// card — nothing here names a file, so §6 is untouched.
++#[derive(Debug, Clone, Default, Serialize, Deserialize)]
++pub struct PersonAddRequest {
++    /// The full name: first word is the first name, the rest the last.
++    pub name: String,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub phones: Vec<String>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub emails: Vec<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub title: Option<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub org: Option<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub note: Option<String>,
++    /// Create even though somebody already has exactly this name — the
++    /// father-and-son case, said on purpose rather than fallen into.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub duplicate: Option<bool>,
++}
++
++/// Changing what Contacts holds for one person. `term` resolves the way
++/// `person` resolves — a name, a nickname, or an address — and the fields
++/// mean what they mean on [`PersonAddRequest`]: phones and emails append
++/// (skipping values the card already carries), the rest replace.
++#[derive(Debug, Clone, Default, Serialize, Deserialize)]
++pub struct PersonUpdateRequest {
++    pub term: String,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub phones: Vec<String>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub emails: Vec<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub title: Option<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub org: Option<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub note: Option<String>,
++}
++
++/// What a write did. `changed` and `unchanged` are printable lines —
++/// `phone 3105551234`, `title Principal Engineer` — one per field the
++/// request named, so the CLI prints them as they are and `--json` hands
++/// them over as two lists rather than a format to parse.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct PersonWriteReply {
++    /// The Contacts record id of the card that was written.
++    pub id: String,
++    /// What to call them, for the confirmation line.
++    pub name: String,
++    pub created: bool,
++    pub changed: Vec<String>,
++    /// Values the card already carried, skipped rather than duplicated.
++    pub unchanged: Vec<String>,
++}
++
+ /// An attachment, as bytes rather than a path.
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct Attachment {
+@@ -359,6 +424,12 @@ pub enum Request {
+     Watch(WatchRequest),
+     Resolve(ResolveRequest),
+     Person(PersonRequest),
++    /// Contact writing, behind the daemon's Automation grant for Contacts
++    /// (contact-writing.md §2).
++    #[serde(rename = "person-add")]
++    PersonAdd(PersonAddRequest),
++    #[serde(rename = "person-update")]
++    PersonUpdate(PersonUpdateRequest),
+     Send(SendRequest),
+     Contacts(ContactsRequest),
+     Save(SaveRequest),
+@@ -377,6 +448,8 @@ pub const COMMANDS: &[&str] = &[
+     "watch",
+     "resolve",
+     "person",
++    "person-add",
++    "person-update",
+     "send",
+     "contacts",
+     "save",
+@@ -718,6 +791,15 @@ mod tests {
+                 chat: "1".into(),
+                 ..Default::default()
+             }),
++            Request::Person(PersonRequest { term: "x".into() }),
++            Request::PersonAdd(PersonAddRequest {
++                name: "Dana Reyes".into(),
++                ..Default::default()
++            }),
++            Request::PersonUpdate(PersonUpdateRequest {
++                term: "dana".into(),
++                ..Default::default()
++            }),
+             Request::Send(SendRequest {
+                 chat: "1".into(),
+                 ..Default::default()
+diff --git a/src/daemon/server.rs b/src/daemon/server.rs
+index d5ae245..5b3e55c 100644
+--- a/src/daemon/server.rs
++++ b/src/daemon/server.rs
+@@ -17,6 +17,7 @@ use rusqlite::Connection;
+ use crate::apple::since_to_apple_date;
+ use crate::contacts::{ContactIndex, load_contacts_from};
+ use crate::daemon::config::{config_path, disabled_message, read_config};
++use crate::daemon::contacts_app::{ContactStore, ContactsApp};
+ use crate::daemon::protocol::{
+     AutomationReply, COMMANDS, ChatReply, ContactsReply, ErrorCode, Frame, PROTOCOL_VERSION,
+     Request, ResolvedHandle, SavePart, SaveReply, SendReply, StatusReply, WatchRequest, encode,
+@@ -93,7 +94,7 @@ struct Cached {
+ /// Both fields come from the daemon's own environment or its test harness, and
+ /// never from the wire — a client that could name either would be naming a
+ /// filesystem path, which is the one thing the protocol refuses (§6).
+-#[derive(Debug, Default, Clone)]
++#[derive(Default, Clone)]
+ pub struct DaemonOptions {
+     pub db_path: Option<String>,
+     /// Where the `send = true` gate is read from. `None` means the documented
+@@ -104,12 +105,38 @@ pub struct DaemonOptions {
+     /// `db_path`, since an in-process daemon cannot take it from the
+     /// environment without racing the other tests in the binary.
+     pub addressbook: Option<PathBuf>,
++    /// Where contact writes go. `None` means Contacts.app; the test harness
++    /// injects a fake here so `cargo test` writes nobody's contacts
++    /// (contact-writing.md §6).
++    pub contacts_store: Option<Arc<dyn ContactStore>>,
++}
++
++/// By hand because a `dyn` store has no `Debug` of its own, and what a reader
++/// wants to know is only whether one was injected.
++impl std::fmt::Debug for DaemonOptions {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("DaemonOptions")
++            .field("db_path", &self.db_path)
++            .field("config_path", &self.config_path)
++            .field("addressbook", &self.addressbook)
++            .field(
++                "contacts_store",
++                &self.contacts_store.as_ref().map(|_| ".."),
++            )
++            .finish()
++    }
+ }
+ 
+ struct Shared {
+     db_path: Option<String>,
+     config_path: Option<PathBuf>,
+     addressbook: Option<PathBuf>,
++    contacts_store: Arc<dyn ContactStore>,
++    /// Held across a whole add or update. Each is a read-modify-write against
++    /// Contacts — look for the name, then create; read the values, then
++    /// append — and every connection is served on its own thread, so two at
++    /// once would both pass the duplicate guard and both write.
++    contact_writes: Mutex<()>,
+     db: Mutex<Option<Connection>>,
+     contacts: Mutex<Option<Cached>>,
+     watchers: Mutex<Vec<Watcher>>,
+@@ -171,6 +198,12 @@ impl Shared {
+         guard.as_ref().expect("just loaded").index.clone()
+     }
+ 
++    /// Drop the cached index after a write, so the next resolve reads what
++    /// Contacts now holds rather than waiting out the interval.
++    fn forget_contacts(&self) {
++        *self.contacts.lock().expect("contacts lock") = None;
++    }
++
+     fn watcher_count(&self) -> usize {
+         self.watchers.lock().expect("watchers lock").len()
+     }
+@@ -192,6 +225,10 @@ impl Daemon {
+                 db_path: options.db_path,
+                 config_path: options.config_path,
+                 addressbook: options.addressbook,
++                contacts_store: options
++                    .contacts_store
++                    .unwrap_or_else(|| Arc::new(ContactsApp)),
++                contact_writes: Mutex::new(()),
+                 db: Mutex::new(None),
+                 contacts: Mutex::new(None),
+                 watchers: Mutex::new(Vec::new()),
+@@ -459,6 +496,24 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
+             let index = shared.contacts(true);
+             Ok(serde_json::to_value(index.person(&ask.term)?)?)
+         }
++        Request::PersonAdd(ask) => {
++            let _writing = shared.contact_writes.lock().expect("contact writes lock");
++            let reply = crate::daemon::contacts_app::add(shared.contacts_store.as_ref(), &ask);
++            // Dropped whether or not the write succeeded: one that failed
++            // part-way may still have changed what Contacts holds.
++            shared.forget_contacts();
++            Ok(serde_json::to_value(reply?)?)
++        }
++        Request::PersonUpdate(ask) => {
++            // Taken before the index loads, so an update queued behind another
++            // write resolves against what that write left.
++            let _writing = shared.contact_writes.lock().expect("contact writes lock");
++            let index = shared.contacts(true);
++            let reply =
++                crate::daemon::contacts_app::update(&index, shared.contacts_store.as_ref(), &ask);
++            shared.forget_contacts();
++            Ok(serde_json::to_value(reply?)?)
++        }
+         Request::Send(ask) => {
+             // The config key is checked here rather than in the client, because
+             // a check the caller runs on itself is advice rather than a gate (§7).
+diff --git a/src/source.rs b/src/source.rs
+index 479558a..6f6cf87 100644
+--- a/src/source.rs
++++ b/src/source.rs
+@@ -126,6 +126,13 @@ pub fn open_source(db: Option<String>) -> Source {
+     }
+ }
+ 
++fn no_write_daemon() -> Error {
++    Error::other(
++        "writing contacts needs the daemon, which drives Contacts with its own\n\
++         Automation permission. Install it with `msg daemon install`.",
++    )
++}
++
+ fn call(message: &Request) -> Result<serde_json::Value> {
+     let stream = connect_daemon(None)
+         .ok_or_else(|| Error::other("msgd stopped listening; try `msg daemon status`"))?;
+@@ -339,6 +346,29 @@ impl Source {
+         })
+     }
+ 
++    /// Contact writes are the daemon's for the reason sending is: the
++    /// Automation grant lands on whichever process asks, and the CLI holds no
++    /// permission of its own (contact-writing.md §2).
++    pub fn person_add(
++        &mut self,
++        ask: crate::daemon::protocol::PersonAddRequest,
++    ) -> Result<crate::daemon::protocol::PersonWriteReply> {
++        if self.kind != Kind::Daemon {
++            return Err(no_write_daemon());
++        }
++        Ok(serde_json::from_value(call(&Request::PersonAdd(ask))?)?)
++    }
++
++    pub fn person_update(
++        &mut self,
++        ask: crate::daemon::protocol::PersonUpdateRequest,
++    ) -> Result<crate::daemon::protocol::PersonWriteReply> {
++        if self.kind != Kind::Daemon {
++            return Err(no_write_daemon());
++        }
++        Ok(serde_json::from_value(call(&Request::PersonUpdate(ask))?)?)
++    }
++
+     /// Sending needs Automation, and the CLI deliberately no longer asks for it.
+     /// A gate the sending process enforces on itself is not a gate, so the only
+     /// way to send is through a daemon macOS has been told may drive Messages
+diff --git a/tests/cli.rs b/tests/cli.rs
+index 2ba90e9..1d46cba 100644
+--- a/tests/cli.rs
++++ b/tests/cli.rs
+@@ -735,6 +735,43 @@ fn the_mode_flags_are_mutually_exclusive() {
+     assert_eq!(code(&output), 1);
+ }
+ 
++/// Writing goes through the daemon or not at all: the fixture environment
++/// forces the direct path, where both commands refuse with the remedy rather
++/// than asking Contacts for anything.
++#[test]
++fn contact_writes_refuse_without_a_daemon() {
++    for args in [
++        vec!["contacts", "add", "Dana Duarte", "--phone", "3105550000"],
++        vec!["contacts", "update", "Dana Reyes", "--title", "Engineer"],
++    ] {
++        let output = msg_resolving(&args);
++        assert_eq!(code(&output), 1, "{args:?}");
++        assert_eq!(stdout(&output), "", "{args:?}");
++        let error = String::from_utf8_lossy(&output.stderr);
++        assert!(error.contains("msg daemon install"), "{args:?}: {error}");
++    }
++}
++
++/// `--no-names` promises Contacts stays untouched, and a write is nothing
++/// but touching Contacts.
++#[test]
++fn contact_writes_refuse_no_names() {
++    let output = msg_resolving(&[
++        "--no-names",
++        "contacts",
++        "add",
++        "Dana Duarte",
++        "--phone",
++        "3105550000",
++    ]);
++    assert_eq!(code(&output), 1);
++    assert!(
++        String::from_utf8_lossy(&output.stderr).contains("--no-names"),
++        "{}",
++        String::from_utf8_lossy(&output.stderr)
++    );
++}
++
+ #[test]
+ fn a_partial_contacts_load_exits_two_even_with_a_match_in_hand() {
+     // A second book: one healthy source holding Dana, and one database that
+diff --git a/tests/daemon.rs b/tests/daemon.rs
+index 81326f9..17134c6 100644
+--- a/tests/daemon.rs
++++ b/tests/daemon.rs
+@@ -17,8 +17,9 @@ use base64::Engine as _;
+ use msg::apple::to_apple_date;
+ use msg::daemon::client::{connect_daemon, connect_daemon_within, request};
+ use msg::daemon::protocol::{
+-    ChatRequest, ChatsRequest, ContactsRequest, Empty, PROTOCOL_VERSION, PersonRequest, Request,
+-    ResolveRequest, SavePart, SaveRequest, SearchRequest, SendRequest, WatchRequest, envelope,
++    ChatRequest, ChatsRequest, ContactsRequest, Empty, PROTOCOL_VERSION, PersonAddRequest,
++    PersonRequest, PersonUpdateRequest, Request, ResolveRequest, SavePart, SaveRequest,
++    SearchRequest, SendRequest, WatchRequest, envelope,
+ };
+ use msg::daemon::server::{Daemon, DaemonOptions};
+ use rusqlite::Connection;
+@@ -65,9 +66,79 @@ struct Harness {
+     socket: PathBuf,
+     config: PathBuf,
+     book: PathBuf,
++    store: std::sync::Arc<FakeContacts>,
+     _daemon: Daemon,
+ }
+ 
++/// The Contacts.app the write tests talk to, so no test here writes the
++/// contacts of whoever runs them — the same line the fixture AddressBook
++/// draws for reads. It holds the app half of the fixture book's people:
++/// Dana Reyes's card, with her number stored in a shape `handle_key` has to
++/// see through.
++#[derive(Default)]
++struct FakeContacts {
++    log: Mutex<Vec<String>>,
++}
++
++impl FakeContacts {
++    fn saw(&self) -> Vec<String> {
++        self.log.lock().unwrap().clone()
++    }
++
++    fn record(&self, line: String) {
++        self.log.lock().unwrap().push(line);
++    }
++}
++
++impl msg::daemon::contacts_app::ContactStore for FakeContacts {
++    fn find(&self, name: &str) -> msg::Result<Vec<String>> {
++        self.record(format!("find {name}"));
++        Ok(match name {
++            "Dana Reyes" => vec!["fake-card-dana".into()],
++            _ => Vec::new(),
++        })
++    }
++
++    fn create(&self, first: &str, last: &str) -> msg::Result<String> {
++        self.record(format!("create {first}|{last}"));
++        Ok(format!("fake-card-{}", first.to_lowercase()))
++    }
++
++    fn values(
++        &self,
++        id: &str,
++        field: msg::daemon::contacts_app::ValueField,
++    ) -> msg::Result<Vec<String>> {
++        self.record(format!("values {id} {field:?}"));
++        Ok(match (id, field) {
++            ("fake-card-dana", msg::daemon::contacts_app::ValueField::Phone) => {
++                vec!["(310) 555-1234".into()]
++            }
++            _ => Vec::new(),
++        })
++    }
++
++    fn append(
++        &self,
++        id: &str,
++        field: msg::daemon::contacts_app::ValueField,
++        value: &str,
++    ) -> msg::Result<()> {
++        self.record(format!("append {id} {field:?} {value}"));
++        Ok(())
++    }
++
++    fn set(
++        &self,
++        id: &str,
++        field: msg::daemon::contacts_app::TextField,
++        value: &str,
++    ) -> msg::Result<()> {
++        self.record(format!("set {id} {field:?} {value}"));
++        Ok(())
++    }
++}
++
+ /// One daemon for the whole file, like the TypeScript `beforeAll`.
+ fn harness() -> &'static Harness {
+     static HARNESS: OnceLock<Harness> = OnceLock::new();
+@@ -82,10 +153,12 @@ fn harness() -> &'static Harness {
+         let book = directory.join("book");
+         build_addressbook(&book);
+ 
++        let store = std::sync::Arc::new(FakeContacts::default());
+         let daemon = Daemon::new(DaemonOptions {
+             db_path: Some(database.to_string_lossy().into_owned()),
+             config_path: Some(config.clone()),
+             addressbook: Some(book.clone()),
++            contacts_store: Some(store.clone()),
+         });
+         daemon.listen(Some(socket.clone())).unwrap();
+         Harness {
+@@ -94,6 +167,7 @@ fn harness() -> &'static Harness {
+             socket,
+             config,
+             book,
++            store,
+             _daemon: daemon,
+         }
+     })
+@@ -651,6 +725,160 @@ fn reports_a_name_that_matches_nothing_rather_than_guessing() {
+     assert!(error.contains("no chat matching"), "{error}");
+ }
+ 
++// ------------------------------------------------------- contact writes
++//
++// Every write lands in the harness's fake store, never in Contacts.app —
++// the injection the store option exists for (contact-writing.md §6).
++
++#[test]
++fn adds_a_person_through_the_store() {
++    let value = ask(&Request::PersonAdd(PersonAddRequest {
++        name: "Robin Adeyemi".into(),
++        phones: vec!["+13105559876".into()],
++        title: Some("Principal Engineer".into()),
++        ..Default::default()
++    }))
++    .unwrap();
++    assert_eq!(value["created"], serde_json::json!(true));
++    assert_eq!(value["id"], serde_json::json!("fake-card-robin"));
++    assert_eq!(
++        value["changed"],
++        serde_json::json!(["phone +13105559876", "title Principal Engineer"])
++    );
++    let saw = harness().store.saw();
++    assert!(saw.contains(&"create Robin|Adeyemi".to_string()), "{saw:?}");
++}
++
++#[test]
++fn refuses_to_add_a_name_the_app_already_holds() {
++    let error = ask(&Request::PersonAdd(PersonAddRequest {
++        name: "Dana Reyes".into(),
++        phones: vec!["+13105559876".into()],
++        ..Default::default()
++    }))
++    .unwrap_err()
++    .to_string();
++    assert!(error.contains("--duplicate"), "{error}");
++}
++
++#[test]
++fn updates_the_card_and_skips_what_it_already_carries() {
++    // The card stores the number as `(310) 555-1234`; retyped here in
++    // another shape, it must read as the same number, not become a second
++    // phone.
++    let value = ask(&Request::PersonUpdate(PersonUpdateRequest {
++        term: "dana reyes".into(),
++        phones: vec!["310-555-1234".into()],
++        note: Some("moved to Lisbon".into()),
++        ..Default::default()
++    }))
++    .unwrap();
++    assert_eq!(value["created"], serde_json::json!(false));
++    assert_eq!(value["id"], serde_json::json!("fake-card-dana"));
++    assert_eq!(
++        value["changed"],
++        serde_json::json!(["note moved to Lisbon"])
++    );
++    assert_eq!(
++        value["unchanged"],
++        serde_json::json!(["phone 310-555-1234"])
++    );
++}
++
++/// The resolve contract holds on the write path: a term two people answer to
++/// comes back as the `ambiguous` code, so the CLI exits 3 naming them.
++#[test]
++fn an_ambiguous_update_term_answers_the_ambiguous_code() {
++    let frame = raw(&format!(
++        "{{\"cmd\":\"person-update\",\"v\":{PROTOCOL_VERSION},\"term\":\"dana\",\"title\":\"x\"}}\n"
++    ));
++    assert_eq!(frame["type"], serde_json::json!("error"));
++    assert_eq!(frame["code"], serde_json::json!("ambiguous"));
++}
++
++/// A store with the gap a real one has between looking and writing: `find`
++/// takes a moment, and only `create` makes a name findable.
++#[derive(Default)]
++struct SlowContacts {
++    created: Mutex<Vec<String>>,
++}
++
++impl msg::daemon::contacts_app::ContactStore for SlowContacts {
++    fn find(&self, name: &str) -> msg::Result<Vec<String>> {
++        let held = self.created.lock().unwrap().contains(&name.to_string());
++        std::thread::sleep(Duration::from_millis(200));
++        Ok(if held {
++            vec!["card".into()]
++        } else {
++            Vec::new()
++        })
++    }
++
++    fn create(&self, first: &str, last: &str) -> msg::Result<String> {
++        self.created.lock().unwrap().push(format!("{first} {last}"));
++        Ok("card".into())
++    }
++
++    fn values(
++        &self,
++        _: &str,
++        _: msg::daemon::contacts_app::ValueField,
++    ) -> msg::Result<Vec<String>> {
++        Ok(Vec::new())
++    }
++
++    fn append(
++        &self,
++        _: &str,
++        _: msg::daemon::contacts_app::ValueField,
++        _: &str,
++    ) -> msg::Result<()> {
++        Ok(())
++    }
++
++    fn set(&self, _: &str, _: msg::daemon::contacts_app::TextField, _: &str) -> msg::Result<()> {
++        Ok(())
++    }
++}
++
++/// Two adds of one name on two connections at once make one person: the
++/// second waits for the first and then finds it, rather than both looking
++/// before either creates.
++#[test]
++fn concurrent_adds_of_one_name_create_one_person() {
++    let directory = msg::db::temporary_directory("msg-writes-").unwrap();
++    let socket = directory.join("msgd.sock");
++    let store = std::sync::Arc::new(SlowContacts::default());
++    let daemon = Daemon::new(DaemonOptions {
++        db_path: None,
++        config_path: Some(directory.join("config-that-does-not-exist.toml")),
++        addressbook: Some(directory.join("no-book")),
++        contacts_store: Some(store.clone()),
++    });
++    daemon.listen(Some(socket.clone())).unwrap();
++
++    let adds: Vec<_> = (0..2)
++        .map(|_| {
++            let socket = socket.clone();
++            std::thread::spawn(move || {
++                let stream = connect_daemon(Some(&socket)).expect("daemon listening");
++                request(
++                    stream,
++                    &Request::PersonAdd(PersonAddRequest {
++                        name: "Robin Adeyemi".into(),
++                        phones: vec!["+13105559876".into()],
++                        ..Default::default()
++                    }),
++                )
++            })
++        })
++        .collect();
++    let outcomes: Vec<_> = adds.into_iter().map(|add| add.join().unwrap()).collect();
++
++    assert_eq!(*store.created.lock().unwrap(), ["Robin Adeyemi"]);
++    assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
++}
++
+ // ----------------------------------------------------------------- send
+ //
+ // Nothing here enables sending. The gate being shut is what is testable without
+@@ -1239,6 +1467,7 @@ fn a_daemon_that_cannot_read_the_database_says_so_in_its_own_words() {
+         db_path: Some(database.to_string_lossy().into_owned()),
+         config_path: Some(directory.join("config-that-does-not-exist.toml")),
+         addressbook: None,
++        contacts_store: Some(std::sync::Arc::new(FakeContacts::default())),
+     });
+     daemon.listen(Some(socket.clone())).unwrap();
+ 

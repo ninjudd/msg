@@ -1,0 +1,185 @@
+{
+ "version": 1,
+ "name": "Contact Writing",
+ "pr": {
+  "repo": "ninjudd/msg",
+  "number": 58,
+  "title": "Add and update contacts from the command line",
+  "head": "46934ce08f929da04765fbc327ec3eb76aaf0f93",
+  "headRef": "contact-writing",
+  "base": "d742fd3818c9276aeb88ac3e7ac2a52fbf0a4a2a",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "This adds <code>msg contacts add</code> and <code>msg contacts update</code>. Both run in <code>msgd</code>, which drives Contacts.app over Apple Events, so the Automation grant for Contacts belongs to the daemon rather than the terminal. That is the same model sending already uses (contact-writing.md §2).",
+   "Apple Events won over <code>CNContactStore</code> because the note field needs a restricted entitlement that a self-signed bundle cannot carry (§3). The logic that decides what to write sits in tested Rust above a <code>ContactStore</code> trait, and single-purpose AppleScripts for find, create, values, append, and set sit below it. Tests inject a fake store, so <code>cargo test</code> writes to nobody's contacts (§6).",
+   "The wire protocol moves from 18 to 19 for the new <code>person-add</code> and <code>person-update</code> commands."
+  ],
+  "cards": [
+   {
+    "id": "semantics",
+    "title": "Write semantics",
+    "html": "<div class=\"tblwrap\"><table class=\"tbl\"><thead><tr><th>Flag</th><th>Behaviour</th></tr></thead><tbody><tr><td><code>--phone</code>, <code>--email</code></td><td class=\"r\">Appended, skipped when <code>handle_key</code> already matches</td></tr><tr><td><code>--title</code>, <code>--org</code>, <code>--note</code></td><td class=\"r\">Replaced outright; an empty value clears the field</td></tr><tr><td><code>--duplicate</code> (add)</td><td class=\"r\">Adds a second person with a name Contacts already holds</td></tr></tbody></table></div><p class=\"note\">Exit status: 0 wrote, 1 failure, 2 grant missing, 3 ambiguous term.</p>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<ul class=\"tight\"><li>Round 1 at <code>a48b260</code> opened five P2 findings. Rounds at <code>53da4d6</code> and <code>13bcfc8</code> fixed all five and opened one more, about two comments that still described the old <code>name</code> match.</li><li><code>46934ce</code> rewrites those two comments, so all six finding threads are fixed and resolved, and the review at this head is clean.</li><li>The review's suggestions, none blocking: the <code>FIND</code> pairing loop is quadratic in the number of cards (about 6s at 10,000 cards and 24s at 20,000 on synthetic lists, against the CLI's 30s deadline), and it pairs four separately fetched lists by position.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "wire",
+   "title": "The wire contract",
+   "kicker": "Two new commands, a reply shape, and protocol 19",
+   "intro": [
+    "<code>PersonAddRequest</code> and <code>PersonUpdateRequest</code> carry field values and no filesystem paths, so the protocol's §6 rule is unaffected. <code>PersonWriteReply</code> returns the printable <code>changed</code> and <code>unchanged</code> lines, which the CLI prints as they are and <code>--json</code> passes through."
+   ],
+   "concepts": [
+    "An older daemon fails at the version gate, so the error it shows tells the user to reinstall it."
+   ],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "<code>COMMANDS</code> lists both new names, and the round-trip test covers both variants."
+    }
+   ],
+   "files": [
+    {
+     "path": "src/daemon/protocol.rs",
+     "note": "New request and reply types, plus the protocol 19 note"
+    }
+   ]
+  },
+  {
+   "id": "core",
+   "title": "The write core and the osascript boundary",
+   "kicker": "Duplicate guard, resolve-then-apply, dedup, and the scripts",
+   "intro": [
+    "<code>add</code> collapses whitespace in the name, requires at least one phone or email, and rejects empty values before any Apple Event runs. It then refuses a name that <code>find</code> already answers to unless <code>--duplicate</code> is set, and creates the card. <code>update</code> resolves its term through the index exactly as <code>resolve</code> does, finds the cards filed under that name, writes to the first, and counts values on every one of those cards as already present (§7).",
+    "<code>apply</code> reads the card's existing phones and emails, keys them with <code>handle_key</code>, appends only values it has not seen, and sets text fields. Scripts receive their arguments through <code>on run</code> rather than string interpolation."
+   ],
+   "concepts": [
+    "Error -1743 from a refused Apple Event maps to <code>AccessDenied</code>, which is exit 2."
+   ],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "<code>FIND</code> fetches each person's id, first name, last name, and organization. <code>filed_as</code> matches them with <code>filed_name</code>, the resolver's rule, ignoring case and extra whitespace, so the display order never affects the match."
+    },
+    {
+     "kind": "verify",
+     "text": "<code>Fields::check</code> runs before <code>find</code> or <code>create</code> in both <code>add</code> and <code>update</code>."
+    },
+    {
+     "kind": "verify",
+     "text": "The comments in <code>update</code> and on <code>update_addresses_the_card_by_its_filed_name</code> describe matching by <code>filed_name</code>, not by Contacts.app's <code>name</code>."
+    }
+   ],
+   "files": [
+    {
+     "path": "src/daemon/contacts_app.rs",
+     "note": "The whole feature: trait, scripts, add, update, apply, and unit tests against a fake"
+    },
+    {
+     "path": "src/contacts.rs",
+     "note": "<code>filed_name</code> is extracted here so the resolver and the writer share one naming rule"
+    }
+   ]
+  },
+  {
+   "id": "daemon",
+   "title": "Daemon wiring",
+   "kicker": "Injecting the store, serializing writes, and dropping the cache",
+   "intro": [
+    "<code>DaemonOptions</code> gains <code>contacts_store</code>, which defaults to <code>ContactsApp</code>. Each add or update holds the <code>contact_writes</code> mutex from start to finish, so two connections cannot both pass the duplicate guard. The cached index is dropped after every write, whether it succeeded or not."
+   ],
+   "concepts": [],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "Code takes <code>contact_writes</code> before <code>contacts</code>, never the other way round."
+    }
+   ],
+   "files": [
+    {
+     "path": "src/daemon/server.rs"
+    },
+    {
+     "path": "src/daemon/mod.rs"
+    }
+   ]
+  },
+  {
+   "id": "cli",
+   "title": "CLI and client",
+   "kicker": "The new subcommands and the refusal without a daemon",
+   "intro": [
+    "<code>msg contacts add|update</code> build the requests. <code>Source</code> refuses both unless it is talking to the daemon, and <code>--no-names</code> refuses every contacts subcommand."
+   ],
+   "concepts": [],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/bin/msg.rs",
+     "note": "Argument parsing and <code>render_write</code>"
+    },
+    {
+     "path": "src/source.rs"
+    }
+   ]
+  },
+  {
+   "id": "tests",
+   "title": "Tests",
+   "kicker": "The daemon harness with a fake store, and the CLI refusals",
+   "intro": [
+    "The daemon harness injects <code>FakeContacts</code>, and so does every other daemon a test builds, including the permission-denied test and the concurrency test's <code>SlowContacts</code>. The CLI tests set <code>MSG_DB</code>, which forces the direct path, where both commands refuse before reaching any daemon."
+   ],
+   "concepts": [],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "Every <code>DaemonOptions</code> in <code>tests/daemon.rs</code> sets <code>contacts_store</code> to a fake."
+    }
+   ],
+   "files": [
+    {
+     "path": "tests/daemon.rs"
+    },
+    {
+     "path": "tests/cli.rs"
+    }
+   ]
+  },
+  {
+   "id": "docs",
+   "title": "Plan and documentation",
+   "kicker": "The plan (Shipped), README, Agent Skill, and AGENTS.md",
+   "intro": [
+    "The plan now lives at <code>contact-writing/readme.md</code> with <code>status: completed</code>, following main's move to one folder per project. §4 and §7 record the changes made in review. <code>contact-sources</code> gains §8."
+   ],
+   "concepts": [],
+   "checks": [],
+   "files": [
+    {
+     "path": "docs/projects/contact-writing/readme.md"
+    },
+    {
+     "path": "docs/projects/contact-sources/readme.md"
+    },
+    {
+     "path": "README.md"
+    },
+    {
+     "path": "skills/msg/SKILL.md"
+    },
+    {
+     "path": "AGENTS.md"
+    }
+   ]
+  }
+ ]
+}
