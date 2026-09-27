@@ -321,7 +321,10 @@ fn apply(
 
 /// `msg contacts add`: create the card, then write the fields onto it.
 pub fn add(store: &dyn ContactStore, ask: &PersonAddRequest) -> Result<PersonWriteReply> {
-    let name = ask.name.trim();
+    // Whitespace collapsed first, so the name the duplicate guard looks for
+    // is exactly the one the card is created under: first word, then the
+    // rest.
+    let name = ask.name.split_whitespace().collect::<Vec<_>>().join(" ");
     if name.is_empty() {
         return Err(Error::other("no name to add"));
     }
@@ -348,7 +351,7 @@ pub fn add(store: &dyn ContactStore, ask: &PersonAddRequest) -> Result<PersonWri
     // refused, since two people can legitimately share a name
     // (contact-writing.md §4).
     if ask.duplicate != Some(true) {
-        let held = store.find(name)?;
+        let held = store.find(&name)?;
         if !held.is_empty() {
             return Err(Error::other(format!(
                 "{name} is already in Contacts; update them with `msg contacts update`, \
@@ -357,15 +360,12 @@ pub fn add(store: &dyn ContactStore, ask: &PersonAddRequest) -> Result<PersonWri
         }
     }
 
-    let (first, last) = match name.split_once(' ') {
-        Some((first, rest)) => (first, rest.trim()),
-        None => (name, ""),
-    };
+    let (first, last) = name.split_once(' ').unwrap_or((&name, ""));
     let id = store.create(first, last)?;
     let (changed, unchanged) = apply(store, &id, &fields, false)?;
     Ok(PersonWriteReply {
         id,
-        name: name.to_string(),
+        name,
         created: true,
         changed,
         unchanged,
@@ -561,6 +561,31 @@ mod tests {
         )
         .unwrap();
         assert!(again.created);
+    }
+
+    /// Stray whitespace cannot slip a name past the duplicate guard: the name
+    /// looked for is the name that would be created.
+    #[test]
+    fn add_checks_the_name_it_would_create() {
+        let fake = Fake {
+            people: vec![("Dana Reyes", vec!["old-id"])],
+            ..Fake::default()
+        };
+        let outcome = add(
+            &fake,
+            &PersonAddRequest {
+                name: " Dana   Reyes ".into(),
+                phones: vec!["3105559876".into()],
+                ..Default::default()
+            },
+        );
+        match outcome {
+            Err(Error::Other(message)) => {
+                assert!(message.starts_with("Dana Reyes is"), "{message}")
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(fake.saw(), ["find Dana Reyes"]);
     }
 
     /// A card with no address is one the resolver never indexes, so it is
