@@ -491,16 +491,18 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
             Ok(serde_json::to_value(index.person(&ask.term)?)?)
         }
         Request::PersonAdd(ask) => {
-            let reply = crate::daemon::contacts_app::add(shared.contacts_store.as_ref(), &ask)?;
+            let reply = crate::daemon::contacts_app::add(shared.contacts_store.as_ref(), &ask);
+            // Dropped whether or not the write succeeded: one that failed
+            // part-way may still have changed what Contacts holds.
             shared.forget_contacts();
-            Ok(serde_json::to_value(reply)?)
+            Ok(serde_json::to_value(reply?)?)
         }
         Request::PersonUpdate(ask) => {
             let index = shared.contacts(true);
             let reply =
-                crate::daemon::contacts_app::update(&index, shared.contacts_store.as_ref(), &ask)?;
+                crate::daemon::contacts_app::update(&index, shared.contacts_store.as_ref(), &ask);
             shared.forget_contacts();
-            Ok(serde_json::to_value(reply)?)
+            Ok(serde_json::to_value(reply?)?)
         }
         Request::Send(ask) => {
             // The config key is checked here rather than in the client, because

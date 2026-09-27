@@ -239,6 +239,20 @@ impl Fields<'_> {
             && self.org.is_none()
             && self.note.is_none()
     }
+
+    /// Refuse a malformed value before the first Apple Event, so a bad one
+    /// never leaves a card half-written — or, on add, created and empty.
+    fn check(&self) -> Result<()> {
+        for (field, values) in [
+            (ValueField::Phone, self.phones),
+            (ValueField::Email, self.emails),
+        ] {
+            if values.iter().any(|value| value.trim().is_empty()) {
+                return Err(Error::other(format!("an empty --{}", field.label())));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Nothing asked for is a usage error, said before any Apple Event runs.
@@ -278,9 +292,6 @@ fn apply(
         .collect();
         for value in values {
             let value = value.trim();
-            if value.is_empty() {
-                return Err(Error::other(format!("an empty --{}", field.label())));
-            }
             let key = handle_key(value);
             if let Some(key) = &key
                 && held.contains(key)
@@ -321,6 +332,7 @@ pub fn add(store: &dyn ContactStore, ask: &PersonAddRequest) -> Result<PersonWri
         org: ask.org.as_deref(),
         note: ask.note.as_deref(),
     };
+    fields.check()?;
 
     // The likely intent behind adding a name that already exists is
     // `update`, so the collision is refused rather than resolved — but only
@@ -368,6 +380,7 @@ pub fn update(
     if fields.is_empty() {
         return Err(nothing_to_write());
     }
+    fields.check()?;
 
     let person = index.person(&ask.term)?;
     // The name the card is filed under is the one Contacts.app's `name`
@@ -552,6 +565,40 @@ mod tests {
             ),
             Err(Error::Other(_))
         ));
+    }
+
+    /// An empty value anywhere in the request is refused before anything is
+    /// written, not after the values ahead of it went in.
+    #[test]
+    fn an_empty_value_is_refused_before_any_write() {
+        let fake = Fake::default();
+        let outcome = add(
+            &fake,
+            &PersonAddRequest {
+                name: "Robin Adeyemi".into(),
+                phones: vec!["3105559876".into()],
+                emails: vec![" ".into()],
+                ..Default::default()
+            },
+        );
+        assert!(matches!(outcome, Err(Error::Other(_))), "{outcome:?}");
+        assert!(fake.saw().is_empty(), "{:?}", fake.saw());
+
+        let fake = Fake {
+            people: vec![("Dana Reyes", vec!["card-1"])],
+            ..Fake::default()
+        };
+        let outcome = update(
+            &index(),
+            &fake,
+            &PersonUpdateRequest {
+                term: "dana reyes".into(),
+                phones: vec!["3105559999".into(), "".into()],
+                ..Default::default()
+            },
+        );
+        assert!(matches!(outcome, Err(Error::Other(_))), "{outcome:?}");
+        assert!(fake.saw().is_empty(), "{:?}", fake.saw());
     }
 
     #[test]
