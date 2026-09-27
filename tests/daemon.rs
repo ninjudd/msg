@@ -1467,7 +1467,7 @@ fn a_daemon_that_cannot_read_the_database_says_so_in_its_own_words() {
         db_path: Some(database.to_string_lossy().into_owned()),
         config_path: Some(directory.join("config-that-does-not-exist.toml")),
         addressbook: None,
-        contacts_store: None,
+        contacts_store: Some(std::sync::Arc::new(FakeContacts::default())),
     });
     daemon.listen(Some(socket.clone())).unwrap();
 
