@@ -14,7 +14,7 @@
 
 use std::process::Command;
 
-use crate::contacts::{ContactIndex, handle_key};
+use crate::contacts::{ContactIndex, filed_name, handle_key};
 use crate::daemon::protocol::{PersonAddRequest, PersonUpdateRequest, PersonWriteReply};
 use crate::{Error, Result};
 
@@ -71,7 +71,8 @@ impl TextField {
 /// and field values, so the logic that decides what to write sits above it
 /// where the tests are.
 pub trait ContactStore: Send + Sync {
-    /// Ids of every person whose name is exactly `name`.
+    /// Ids of every person filed under `name`, composed by
+    /// [`filed_name`] and compared the way the resolver compares names.
     fn find(&self, name: &str) -> Result<Vec<String>>;
     /// Create a person and answer their id. `last` may be empty.
     fn create(&self, first: &str, last: &str) -> Result<String>;
@@ -86,17 +87,56 @@ pub trait ContactStore: Send + Sync {
 /// The production store: Contacts.app, one osascript per operation.
 pub struct ContactsApp;
 
-/// The list is joined with linefeeds rather than returned as a list, because
-/// osascript prints a returned list comma-joined — and a phone value can
-/// legitimately contain a comma, where it can never contain a linefeed.
+/// Every person as `id`, first name, last name, organization, tab-separated,
+/// one per line, for [`filed_as`] to match in Rust. Matching the app's own
+/// `name` would be one Apple Event instead of four, but the dictionary
+/// defines `name` by "the name display order preference setting", so with
+/// Contacts showing last names first it answers `Reyes Dana` and no filed
+/// name ever matches.
+///
+/// Lists are joined rather than returned, because osascript prints a
+/// returned list comma-joined — and a value can legitimately contain a
+/// comma, where it can never contain a linefeed.
 const FIND: &str = r#"
-on run {personName}
-  set text item delimiters to linefeed
+on run
   tell application "Contacts"
-    return (id of every person whose name is personName) as text
+    set personIds to id of every person
+    set firstNames to first name of every person
+    set lastNames to last name of every person
+    set organizations to organization of every person
   end tell
+  set rows to {}
+  set text item delimiters to tab
+  repeat with i from 1 to count of personIds
+    set row to {item i of personIds}
+    repeat with column in {item i of firstNames, item i of lastNames, item i of organizations}
+      set value to contents of column
+      if value is missing value then set value to ""
+      set end of row to value
+    end repeat
+    set end of rows to row as text
+  end repeat
+  set text item delimiters to linefeed
+  return rows as text
 end run
 "#;
+
+/// The ids among FIND's rows filed under `name`: composed by the resolver's
+/// rule, whitespace collapsed, case ignored — as the resolver's own exact
+/// match ignores it, and as the `whose name is` this replaced did.
+fn filed_as(rows: &str, name: &str) -> Vec<String> {
+    let squash = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let wanted = squash(name).to_lowercase();
+    rows.lines()
+        .filter_map(|row| {
+            let mut columns = row.split('\t');
+            let id = columns.next().filter(|id| !id.is_empty())?;
+            let (first, last, org) = (columns.next(), columns.next(), columns.next());
+            let filed = filed_name(first, last, org)?;
+            (squash(&filed).to_lowercase() == wanted).then(|| id.to_string())
+        })
+        .collect()
+}
 
 const CREATE: &str = r#"
 on run {firstName, lastName}
@@ -201,7 +241,7 @@ fn lines(joined: String) -> Vec<String> {
 
 impl ContactStore for ContactsApp {
     fn find(&self, name: &str) -> Result<Vec<String>> {
-        Ok(lines(run(FIND, &[name])?))
+        Ok(filed_as(&run(FIND, &[])?, name))
     }
 
     fn create(&self, first: &str, last: &str) -> Result<String> {
@@ -796,6 +836,27 @@ mod tests {
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
+    }
+
+    /// Cards are matched by the name the resolver files them under, built
+    /// from first and last name, so the app's display order never enters
+    /// into it.
+    #[test]
+    fn find_matches_the_filed_name_whatever_the_display_order() {
+        let rows = [
+            "card-1\tDana\tReyes\t",
+            "card-2\tdana \tREYES\tExample Corp",
+            "card-3\tReyes\tDana\t",
+            "card-4\t\t\tExample Corp",
+            "card-5\tSam\t\t",
+            "\tDana\tReyes\t",
+        ]
+        .join("\n");
+        assert_eq!(filed_as(&rows, "Dana  Reyes"), ["card-1", "card-2"]);
+        assert_eq!(filed_as(&rows, "example corp"), ["card-4"]);
+        assert_eq!(filed_as(&rows, "Sam"), ["card-5"]);
+        assert!(filed_as(&rows, "Dana").is_empty());
+        assert!(filed_as("", "Dana Reyes").is_empty());
     }
 
     /// A refused Apple Event exits 2 with the remedy; anything else a script

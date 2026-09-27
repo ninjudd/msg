@@ -153,7 +153,19 @@ the write goes to the first — the edit surfaces on the unified card either
 way. The already-there check reads every one of those cards, not only the
 first, because a value on any of them is one the unified card shows. (The
 first version read only the card it wrote to, and appended a duplicate of a
-value that lived on another.) Two strangers sharing an exact full name collapse in the resolver
+value that lived on another.)
+
+"Filed name" means the resolver's rule exactly: first and last name
+joined, or the organization for a card with neither (`filed_name` in
+`src/contacts.rs`). The find script fetches every person's id, first
+name, last name, and organization, and Rust applies that rule and
+compares case-insensitively. (Corrected in review. The first version
+asked Contacts.app for `every person whose name is …`, but the scripting
+dictionary defines `name` by the display-order preference, so with
+Contacts showing last names first no filed name would ever match: `update`
+would find nobody and `add`'s duplicate guard would never fire. The
+replacement is four Apple Events rather than one, and its latency on a
+large address book has not been measured yet.) Two strangers sharing an exact full name collapse in the resolver
 before this code ever runs; that is a modeling limit this plan inherits
 rather than adds. New contacts land in the account Contacts.app itself
 files new people into.
