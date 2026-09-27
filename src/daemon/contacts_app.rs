@@ -434,8 +434,10 @@ pub fn update(
     fields.check()?;
 
     let person = index.person(&ask.term)?;
-    // The name the card is filed under is the one Contacts.app's `name`
-    // answers to; the nickname is what we call them, not what the app does.
+    // Cards are found by their filed name as `filed_name` composes it from
+    // first name, last name, and organization, never by the app's `name`,
+    // which follows the display-order preference. The nickname is what we
+    // call them and is filed nowhere.
     let filed = person.filed_as.as_deref().unwrap_or(&person.name);
     let ids = store.find(filed)?;
     let Some(id) = ids.first() else {
@@ -779,7 +781,8 @@ mod tests {
     }
 
     /// The card is addressed by the filed name, not the nickname shown for
-    /// it — the app's `name` answers to the former.
+    /// it — `find` composes names from first and last name, and a nickname
+    /// is neither.
     #[test]
     fn update_addresses_the_card_by_its_filed_name() {
         let index = ContactIndex::for_test([("+13105551234", "a:1", "Dana Reyes")])
