@@ -4,7 +4,7 @@
 #
 # The daemon is its own executable so that TCC's client is `msgd` rather than a
 # shared runtime, and so that the code holding Full Disk Access cannot be swapped
-# out from under the grant (docs/projects/all/daemon-and-permissions.md §4).
+# out from under the grant (docs/projects/daemon-and-permissions/readme.md §4).
 #
 # It lives in a bundle so that TCC keys its grants by bundle identifier rather
 # than by executable path. Path-keyed grants cannot be switched off — System

@@ -4,7 +4,7 @@
 //! sending: it prevents accidents and produces a refusal that names the key,
 //! instead of an opaque AppleScript -1743. The second gate is the Automation
 //! grant, which is the one that holds when this file does not. See
-//! docs/projects/all/daemon-and-permissions.md §7.
+//! docs/projects/daemon-and-permissions/readme.md §7.
 //!
 //! The daemon reads it, not the client. A check a caller performs on itself is
 //! advice, not a gate.
