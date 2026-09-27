@@ -91,7 +91,12 @@ msg contacts update dana --title "Staff Engineer" --phone 3105556789
 `add` takes the person's full name — first word is the first name, the rest
 the last name — and refuses when someone already answers to exactly that
 name, naming them, since the likely intent is `update`; `--duplicate`
-overrides for the father-and-son case the resolver already models. `update`
+overrides for the father-and-son case the resolver already models. `add`
+also requires at least one `--phone` or `--email`: the resolver indexes
+people by address alone, so a card created without one could never be
+found by `update` or `resolve`, and would block its own re-add as a
+duplicate. (Added in review; the first version accepted a name with only
+`--title`, `--org`, or `--note`.) `update`
 resolves its term exactly as `contacts resolve` does — name, nickname, or
 address; a fragment that matches several people is refused naming the
 candidates, exit 3 — then applies the flags. Both print what changed, one

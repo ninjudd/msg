@@ -332,6 +332,15 @@ pub fn add(store: &dyn ContactStore, ask: &PersonAddRequest) -> Result<PersonWri
         org: ask.org.as_deref(),
         note: ask.note.as_deref(),
     };
+    // The resolver finds people by their addresses and by nothing else, so
+    // a card without one could never be found again by `update` or
+    // `resolve` — and would then block its own re-add as a duplicate.
+    if fields.phones.is_empty() && fields.emails.is_empty() {
+        return Err(Error::other(
+            "add needs a --phone or --email: msg finds people by their addresses, \
+             so without one it could not find them again",
+        ));
+    }
     fields.check()?;
 
     // The likely intent behind adding a name that already exists is
@@ -529,6 +538,7 @@ mod tests {
         };
         let ask = PersonAddRequest {
             name: "Dana Reyes".into(),
+            phones: vec!["3105559876".into()],
             ..Default::default()
         };
         match add(&fake, &ask) {
@@ -551,6 +561,26 @@ mod tests {
         )
         .unwrap();
         assert!(again.created);
+    }
+
+    /// A card with no address is one the resolver never indexes, so it is
+    /// refused rather than created unreachable.
+    #[test]
+    fn add_needs_a_phone_or_email() {
+        let fake = Fake::default();
+        let outcome = add(
+            &fake,
+            &PersonAddRequest {
+                name: "Robin Adeyemi".into(),
+                title: Some("Principal Engineer".into()),
+                ..Default::default()
+            },
+        );
+        match outcome {
+            Err(Error::Other(message)) => assert!(message.contains("--phone or --email")),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(fake.saw().is_empty(), "{:?}", fake.saw());
     }
 
     #[test]

@@ -513,7 +513,9 @@ Privacy & Security > Automation.
 `add` takes the full name — the first word is the first name, the rest the
 last — and refuses a name that is already in Contacts, since the likely
 intent is `update`; pass `--duplicate` when you really do mean a second
-person with the same name. `update` resolves its term exactly as
+person with the same name. `add` also needs at least one `--phone` or
+`--email`, because `msg` finds people by their addresses and could not find
+a card without one again. `update` resolves its term exactly as
 [`resolve`](#resolving-a-person) does, ambiguity and exit statuses included.
 
 `--phone` and `--email` repeat, and on update they append — except that a

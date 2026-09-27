@@ -753,6 +753,7 @@ fn adds_a_person_through_the_store() {
 fn refuses_to_add_a_name_the_app_already_holds() {
     let error = ask(&Request::PersonAdd(PersonAddRequest {
         name: "Dana Reyes".into(),
+        phones: vec!["+13105559876".into()],
         ..Default::default()
     }))
     .unwrap_err()

@@ -103,6 +103,8 @@ msg contacts update dana --note ""   # --title/--org/--note replace; "" clears
 - `add` refuses a name Contacts already holds and points at `update`; pass
   `--duplicate` only when the user confirms two people really share the
   name.
+- `add` needs at least one `--phone` or `--email`; without an address the
+  person could never be resolved or updated afterwards.
 - `update` resolves its term the way `resolve` does, exit statuses
   included — on 3, pick by address rather than retrying the fragment.
 - `--phone`/`--email` repeat and append. A value the card already carries,
