@@ -1,6 +1,9 @@
 ---
-status: Shipped
+status: completed
 ---
+
+**Outcome:** Shipped. Widening the text match past its 5,000-row window (§3) is its
+own project, [text-match-window](../text-match-window/readme.md).
 
 # Plan: Resolve the person before matching chat rows
 

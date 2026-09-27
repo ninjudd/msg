@@ -1,6 +1,8 @@
 ---
-status: Shipped
+status: completed
 ---
+
+**Outcome:** Shipped.
 
 # Plan: A daemon, so the terminal stops holding Full Disk Access
 

@@ -1,6 +1,8 @@
 ---
-status: Shipped
+status: completed
 ---
+
+**Outcome:** Shipped.
 
 # Plan: Contact resolution as a public primitive
 
