@@ -1,0 +1,184 @@
+{
+ "version": 1,
+ "name": "Contact Writing",
+ "pr": {
+  "repo": "ninjudd/msg",
+  "number": 58,
+  "title": "Add and update contacts from the command line",
+  "head": "a48b2600bad89f6828e6f359b046e56002aba159",
+  "headRef": "contact-writing",
+  "base": "3b4cf4b504c766048b9523ae46b10a296bd614e2",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "This adds <code>msg contacts add</code> and <code>msg contacts update</code>. Both run in <code>msgd</code>, which drives Contacts.app over Apple Events, so the Automation grant for Contacts belongs to the daemon rather than the terminal. That is the same model sending already uses (contact-writing.md §2).",
+   "Apple Events won over <code>CNContactStore</code> because the note field needs a restricted entitlement that a self-signed bundle cannot carry (§3). The logic that decides what to write sits in tested Rust above a <code>ContactStore</code> trait, and six single-purpose AppleScripts sit below it. Tests inject a fake store, so <code>cargo test</code> writes to nobody's contacts (§6).",
+   "The wire protocol moves from 18 to 19 for the new <code>person-add</code> and <code>person-update</code> commands."
+  ],
+  "cards": [
+   {
+    "id": "semantics",
+    "title": "Write semantics",
+    "html": "<div class=\"tblwrap\"><table class=\"tbl\"><thead><tr><th>Flag</th><th>Behaviour</th></tr></thead><tbody><tr><td><code>--phone</code>, <code>--email</code></td><td class=\"r\">Appended, skipped when <code>handle_key</code> already matches</td></tr><tr><td><code>--title</code>, <code>--org</code>, <code>--note</code></td><td class=\"r\">Replaced outright; an empty value clears the field</td></tr><tr><td><code>--duplicate</code> (add)</td><td class=\"r\">Adds a second person with a name Contacts already holds</td></tr></tbody></table></div><p class=\"note\">Exit status: 0 wrote, 1 failure, 2 grant missing, 3 ambiguous term.</p>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<ul class=\"tight\"><li>Projector review at <code>a48b260</code>: changes requested, with five P2 threads open.</li><li>Codex and Cursor Bugbot left eight threads, several of which overlap these findings.</li><li>Tests, clippy, and fmt pass. The AppleScripts were not run live.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "wire",
+   "title": "The wire contract",
+   "kicker": "Two new commands, a reply shape, and protocol 19",
+   "intro": [
+    "<code>PersonAddRequest</code> and <code>PersonUpdateRequest</code> carry field values and no filesystem paths, so the protocol's §6 rule is unaffected. <code>PersonWriteReply</code> returns the printable <code>changed</code> and <code>unchanged</code> lines, which the CLI prints as they are and <code>--json</code> passes through."
+   ],
+   "concepts": [
+    "An older daemon fails at the version gate, so the error it shows tells the user to reinstall it."
+   ],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "<code>COMMANDS</code> lists both new names, and the round-trip test covers both variants."
+    }
+   ],
+   "files": [
+    {
+     "path": "src/daemon/protocol.rs",
+     "note": "New request and reply types, plus the protocol 19 note"
+    }
+   ]
+  },
+  {
+   "id": "core",
+   "title": "The write core and the osascript boundary",
+   "kicker": "Duplicate guard, resolve-then-apply, dedup, and the six scripts",
+   "intro": [
+    "<code>add</code> refuses a name that <code>find</code> already answers to unless <code>--duplicate</code> is set. It then splits the name at the first space and creates the card. <code>update</code> resolves its term through the index exactly as <code>resolve</code> does, then finds the card in Contacts.app by the filed name and writes to the first match (§7).",
+    "<code>apply</code> reads the card's existing phones and emails, keys them with <code>handle_key</code>, appends only values it has not seen, and sets text fields. Scripts receive their arguments through <code>on run</code> rather than string interpolation."
+   ],
+   "concepts": [
+    "Error -1743 from a refused Apple Event maps to <code>AccessDenied</code>, which is exit 2."
+   ],
+   "checks": [
+    {
+     "kind": "flag",
+     "text": "<code>src/daemon/contacts_app.rs:343</code>: <code>create</code> runs before <code>apply</code> rejects an empty <code>--phone</code> or <code>--email</code>, which leaves a name-only card and a stale index."
+    },
+    {
+     "kind": "flag",
+     "text": "<code>src/daemon/contacts_app.rs:96</code>: <code>FIND</code> matches <code>name</code>, which follows the Contacts display-order preference. With last names shown first, <code>update</code> finds nobody and the duplicate guard never fires."
+    },
+    {
+     "kind": "flag",
+     "text": "<code>src/daemon/contacts_app.rs:372</code>: a card added without a phone or email is not in the index, so <code>update</code> cannot reach it and <code>add</code> refuses it as a duplicate."
+    },
+    {
+     "kind": "flag",
+     "text": "<code>src/daemon/contacts_app.rs:272</code>: deduplication reads only the first card, not every address the resolved person carries."
+    },
+    {
+     "kind": "flag",
+     "text": "<code>src/daemon/contacts_app.rs:251</code>: the doc comment on <code>apply</code> describes an <code>existing</code> Option that the function does not take."
+    }
+   ],
+   "files": [
+    {
+     "path": "src/daemon/contacts_app.rs",
+     "note": "The whole feature: trait, scripts, add, update, apply, and unit tests against a fake"
+    }
+   ]
+  },
+  {
+   "id": "daemon",
+   "title": "Daemon wiring",
+   "kicker": "Injecting the store and dropping the cache after a write",
+   "intro": [
+    "<code>DaemonOptions</code> gains <code>contacts_store</code>, which defaults to <code>ContactsApp</code>. Once a write succeeds, the handlers drop the cached contact index so the next <code>resolve</code> sees the change."
+   ],
+   "concepts": [],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "<code>forget_contacts</code> runs only on the success path. A write that fails partway leaves the cached index stale."
+    }
+   ],
+   "files": [
+    {
+     "path": "src/daemon/server.rs"
+    },
+    {
+     "path": "src/daemon/mod.rs"
+    }
+   ]
+  },
+  {
+   "id": "cli",
+   "title": "CLI and client",
+   "kicker": "The new subcommands and the refusal without a daemon",
+   "intro": [
+    "<code>msg contacts add|update</code> build the requests. <code>Source</code> refuses both unless it is talking to the daemon, and <code>--no-names</code> refuses every contacts subcommand."
+   ],
+   "concepts": [],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/bin/msg.rs",
+     "note": "Argument parsing and <code>render_write</code>"
+    },
+    {
+     "path": "src/source.rs"
+    }
+   ]
+  },
+  {
+   "id": "tests",
+   "title": "Tests",
+   "kicker": "The daemon harness with a fake store, and the CLI refusals",
+   "intro": [
+    "The daemon harness injects <code>FakeContacts</code>, so every write test reaches a fake store. One existing test still builds a daemon with <code>contacts_store: None</code>, which is harmless today because that test sends no write."
+   ],
+   "concepts": [],
+   "checks": [],
+   "files": [
+    {
+     "path": "tests/daemon.rs"
+    },
+    {
+     "path": "tests/cli.rs"
+    }
+   ]
+  },
+  {
+   "id": "docs",
+   "title": "Plan and documentation",
+   "kicker": "The plan (Shipped), README, Agent Skill, and AGENTS.md",
+   "intro": [
+    "<code>contact-writing.md</code> is added as <code>Shipped</code> with no open questions. <code>contact-sources.md</code> gains §8, which records that a TCC prompt raised from launchd-agent context does appear on screen."
+   ],
+   "concepts": [],
+   "checks": [],
+   "files": [
+    {
+     "path": "docs/projects/all/contact-writing.md"
+    },
+    {
+     "path": "docs/projects/all/contact-sources.md"
+    },
+    {
+     "path": "README.md"
+    },
+    {
+     "path": "skills/msg/SKILL.md"
+    },
+    {
+     "path": "AGENTS.md"
+    }
+   ]
+  }
+ ]
+}
