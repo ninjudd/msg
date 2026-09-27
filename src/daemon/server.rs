@@ -1,6 +1,6 @@
 //! The daemon. It is the only process holding Full Disk Access, so it answers a
 //! deliberately small set of questions and takes no filesystem path from anyone:
-//! see docs/projects/all/daemon-and-permissions.md §6.
+//! see docs/projects/daemon-and-permissions/readme.md §6.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;

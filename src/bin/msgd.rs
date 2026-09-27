@@ -17,7 +17,7 @@ fn main() -> std::process::ExitCode {
     // Touch the database before anyone asks. Under launchd the *failure* is the
     // point: a denied access is what creates this bundle's entry in the Full
     // Disk Access list, and there is no other way to make it appear there to be
-    // switched on (docs/projects/all/daemon-and-permissions.md §9).
+    // switched on (docs/projects/daemon-and-permissions/readme.md §9).
     match daemon.probe_database() {
         Ok(()) => log("database readable"),
         Err(error) => {

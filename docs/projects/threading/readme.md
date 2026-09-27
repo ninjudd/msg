@@ -1,3 +1,10 @@
+---
+status: completed
+---
+
+**Outcome:** Shipped. Showing one thread on demand (§8) is its own project,
+[show-thread](../show-thread/readme.md).
+
 # Plan: Make replies read as replies
 
 **Status:** Done. Slice 1 shipped — a reply says what it is answering, in
@@ -75,9 +82,12 @@ recognise which message is being answered without reprinting it. The excerpt has
 to be built from the same decoded body everything else uses, so an attachment in
 the originator shows as its description rather than as an invisible character.
 
-Rendered, a reply says what it answers before saying itself. In `--json` the same
-thing arrives structured, so a consumer can rebuild the thread rather than parse
-prose.
+Rendered, a reply says what it answers after saying itself — corrected from
+"before" once real use showed the quote gluing itself to the preceding message,
+because an indented line in a terminal attaches to the line above it, and a
+reply right after its original rendered as that original replying to itself. In
+`--json` the same thing arrives structured, so a consumer can rebuild the
+thread rather than parse prose.
 
 ## 5 Slices
 
@@ -98,7 +108,7 @@ handled. A reply is an ordinary message that points at another one.
 
 Caught on the real database rather than in a test. The first version built the
 excerpt from `message_body`, the raw decoded body — so a reply to a photo quoted
-a bare U+FFFC, which is exactly the hole [attachments.md](attachments.md) §1
+a bare U+FFFC, which is exactly the hole [attachments.md](../attachments/readme.md) §1
 exists to close, reintroduced one layer up.
 
 §4 above had already said not to do this, which is the useful part: the plan was
@@ -137,7 +147,7 @@ changes.
 Rendered output prints no rowid — `--json` has them, but a person reading a
 transcript has nothing to type. Attachments met exactly this and answered it by
 printing the id in the description, which is what made `msg save` usable at all
-([attachments.md §4](attachments.md)). The same answer fits here and costs
+([attachments.md §4](../attachments/readme.md)). The same answer fits here and costs
 almost nothing: the `↳ replying to …` line is the one line that exists *only* on
 replies, so putting the originator's rowid in it adds nothing to the 99% of
 messages that are not replies, and a thread would announce its own handle

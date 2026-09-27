@@ -1,3 +1,10 @@
+---
+status: completed
+---
+
+**Outcome:** Shipped. Widening the text match past its 5,000-row window (§3) is its
+own project, [text-match-window](../text-match-window/readme.md).
+
 # Plan: Resolve the person before matching chat rows
 
 **Status:** Shipped 2026-08-09, in two slices. The windowed intersection came

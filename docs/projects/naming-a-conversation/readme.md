@@ -1,3 +1,9 @@
+---
+status: completed
+---
+
+**Outcome:** Shipped.
+
 # Plan: Name a conversation by who is in it
 
 **Status:** Slice one implemented. A name resolves through `resolve_person` and

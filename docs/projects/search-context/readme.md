@@ -1,3 +1,9 @@
+---
+status: completed
+---
+
+**Outcome:** Shipped.
+
 # Plan: Show what was said around a search hit
 
 **Status:** Shipped, one slice, as designed. `-A`/`-B`/`-C` on `msg search`,

@@ -1,6 +1,8 @@
 ---
-status: Shipped
+status: completed
 ---
+
+**Outcome:** Shipped.
 
 # Plan: Add and update contacts from the command line
 

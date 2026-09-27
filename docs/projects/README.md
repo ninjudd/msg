@@ -1,49 +1,36 @@
-# Projects
+# Project plans
 
-Work in progress lives here, in git, next to the code it describes.
+This directory follows the [Projector](https://github.com/ninjudd/projector)
+convention. Store each project in a permanent directory under `docs/projects/`.
+Use a lowercase `readme.md` entry point with YAML frontmatter carrying two
+fields: `status: draft|ready|in-progress|completed` records the lifecycle, and
+`priority: now|next|later` records when the work should happen. Priority is
+required unless the status is `completed`. Nest a project directory inside
+another project when the work is a subproject. Keep supplemental files beside
+the entry point that owns them.
 
-## How it works
+Status and priority changes edit frontmatter. Do not create shared queue
+files, status or priority directories, or symlinks, and do not move a project
+when its status or priority changes. Number plan sections and never renumber
+them after another document or code comment cites them.
 
-One directory of documents, and three short lists that point into it.
+Run `project list` to browse projects and `project check` to validate the
+tree. Both commands come from the Projector CLI:
 
-| | What it is |
-| --- | --- |
-| [Now](now.md) | What's actively being worked on. |
-| [Next](next.md) | Coming up, not started yet. |
-| [Later](later.md) | Wanted, nobody has committed to it. |
-| [All](all) | Every project document, whatever its state. Nothing here ever moves. |
-
-**A list entry is one line.** Name the work, link its plan if it has one, and
-add at most a sentence of why it matters. The moment the line wants a second
-sentence it wants a document instead. A line without a document is fine and
-common; a paragraph sitting in a list is not.
-
-Work flows down the lists as it gets picked up, [Later](later.md) →
-[Next](next.md) → [Now](now.md), and off the end when it's done. It flows back
-up too: an item that turns out bigger than expected moves to [Later](later.md)
-whole, plan and all. A project is past by **not being on any of the three
-lists**. There is no `done/` directory, so there is nothing to move when work
-finishes — you delete a line from `now.md`.
-
-Because documents never move, `docs/projects/all/<name>.md` can be linked from
-code comments, other docs, or a commit message and trusted to keep working.
-
-## Sections are part of the interface
-
-Plans are cited by section — `daemon-and-permissions.md §5` — because a comment
-states the behaviour and the section holds the reasoning behind it. Renumbering
-or removing a section breaks references no compiler will catch. Add sections at
-the end, or grep for the citation before you renumber:
-
-```
-grep -rn "daemon-and-permissions.md §" src docs
+```sh
+pipx install git+https://github.com/ninjudd/projector.git
 ```
 
-## What goes in a document
+## Conventions this repository adds
 
-A `# Title`, then a `**Status:**` line, then a `**Goal:**` line:
+Open a plan with a `# Title`, a `**Status:**` line, and a `**Goal:**` line:
 
 ```markdown
+---
+status: draft
+priority: next
+---
+
 # Plan: A daemon, so the terminal stops holding Full Disk Access
 
 **Status:** Designed, not started. `msg` currently requires Full Disk Access on
@@ -53,32 +40,62 @@ the terminal, which is what this replaces.
 Access on its own.
 ```
 
-The status line is prose rather than a keyword, because the useful thing to say
-is what has landed and what is left. Keep it to the state, and update it when
-that changes — a plan whose status says "Designed" a month after shipping is
-worse than no status at all.
+The frontmatter carries the claim, and the `**Status:**` line carries the
+story: what has landed, what is left, and what the plan waits on. A keyword
+cannot say that. Update both when the state changes. A plan whose status says
+"Designed" a month after shipping is worse than no status at all, and a stale
+keyword is worse again, because reviews read it. The goal states the outcome in
+a sentence or two, so a reader who stops after it still knows what the work
+delivers.
 
-Then write what the work needs. Two habits worth keeping:
+`draft` is load-bearing: it declares that the plan is not yet claiming to be
+executable, so open questions in a draft plan do not block its pull requests
+from merging. The pull request that moves a plan to `ready` or `in-progress` is
+making the readiness claim, and it answers for every question still open at
+that moment.
 
-- **Record decisions with their alternatives.** `(DECIDED)` with the rejected
-  options and why beats a plan that only states the outcome. Half of what these
-  documents are read for later is why the obvious cheaper thing was not done.
-  This matters more than usual here, because several of the security-shaped
-  conclusions are the opposite of the intuitive answer and will look like
-  oversights to anyone reading only the outcome.
-- **Correct the plan when something proves it wrong.** A finding that lands on a
-  plan gets fixed in the plan, noting what it replaced, the same as a finding
-  against code.
+A project is finished when its last pull request merges. That pull request
+sets `status: completed`, and the plan states in an `**Outcome:**` line whether
+it shipped, was abandoned, or was superseded. When a finished plan leaves a
+follow-up worth scheduling, give the follow-up its own project and link it from
+the outcome line, so it keeps a priority of its own.
+
+Record decisions with the alternatives they beat. Mark a settled one
+`(DECIDED)` and keep the rejected options and the reason each lost. Half of
+what these plans are read for later is why the obvious cheaper thing was not
+done. That matters more than usual here, because several of the security-shaped
+conclusions are the opposite of the intuitive answer and look like oversights
+to anyone reading only the outcome.
+
+Correct the plan when something proves it wrong. A finding against a plan gets
+fixed in the plan, noting what it replaced, the same as a finding against code.
+
+Cite a plan by section using the project name and a `.md` suffix, for example
+`daemon-and-permissions.md §5`, which names
+`docs/projects/daemon-and-permissions/readme.md`. The shorthand predates the
+move to permanent directories and survives it deliberately: the plans and the
+Rust sources carry dozens of these citations, and rewriting them to spell out
+`/readme.md` would change every one of those files to say what the short form
+already says. Write a link beside the citation when a reader needs to follow
+it. A citation states the behaviour and the section holds the reasoning behind
+it, so find the citations of a plan before you touch its sections:
+
+```sh
+rg -n 'daemon-and-permissions.md §' src docs scripts README.md AGENTS.md
+```
+
+A project with no plan yet is still a project. Give it a directory and a short
+`readme.md` that records the idea and why it matters, rather than a line in a
+shared list.
 
 Not everything here is a plan. Post-mortems, decision logs, and reference notes
-belong in a project's document too, which is why the directory is `all/` and not
-`plans/`.
+belong in a project's directory too.
 
-## What doesn't go here
+## What does not go here
 
 How-it-works documentation stays in [README.md](../../README.md), which
-describes current behaviour for someone using the tool. These are point-in-time
-execution artifacts: once the work has landed, the code and the README are the
-source of truth, and a finished project document is read for the *why* behind a
-design and the constraints it was built under. Don't rewrite a finished plan to
-match later reality.
+describes current behaviour for someone using the tool. These plans are
+point-in-time execution artifacts: once the work has landed, the code and the
+README are the source of truth, and a finished plan is read for the *why*
+behind a design and the constraints it was built under. Do not rewrite a
+finished plan to match later reality.

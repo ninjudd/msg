@@ -1,3 +1,8 @@
+---
+status: draft
+priority: next
+---
+
 # Plan: Read only the user-visible Contacts universe
 
 **Status:** Written up, not started. The findings were measured 2026-08-09

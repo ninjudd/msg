@@ -1,3 +1,8 @@
+---
+status: draft
+priority: next
+---
+
 # Plan: A person confirms every send, and a send can wait
 
 **Status:** Designed, not started. §3's spike — now three questions, not one —

@@ -197,12 +197,14 @@ An inline reply says what it is answering, so it stops reading as an unrelated
 remark that happens to come later:
 
 ```
+5:12 PM  Dana Reyes: what's a diffusion transformer?
 5:46 PM  Dana Reyes: Btw do you think we can find the inflator?
-         ↳ replying to me: Just read about it but not fully understanding it
 5:50 PM  me: It is the underlying model that generates music
+         ↳ replying to Dana Reyes: what's a diffusion transformer?
 ```
 
-Chronology is untouched — the quote sits above the reply rather than moving it.
+Chronology is untouched — the quote hangs below the reply rather than moving
+it.
 `--json` carries the same as a `replyTo` object with the answered message's
 rowid, sender, and excerpt. A reply whose original has been deleted still prints
 as an ordinary message.
@@ -471,7 +473,7 @@ a `+` is kept when stored but never invented, since a bare local number
 carries nothing to derive the country from. On one real database 64% of
 stored numbers carried a country code, so mixed shapes are a fact of the
 data rather than a bug here
-([contact-resolution.md §9](docs/projects/all/contact-resolution.md)).
+([contact-resolution.md §9](docs/projects/contact-resolution/readme.md)).
 
 Two edges, stated rather than smoothed over. A record with no phone and no
 email never resolves — `msg` indexes Contacts by address, and someone with
@@ -596,7 +598,7 @@ launches. The bundle exists so macOS keys its permissions by bundle identifier
 rather than by executable path: a path-keyed permission cannot be switched off —
 the toggle asks for Touch ID and then silently does nothing — which makes
 granting Automation a one-way door. The reasoning and the measurements are in
-[daemon-and-permissions.md §13](docs/projects/all/daemon-and-permissions.md).
+[daemon-and-permissions.md §13](docs/projects/daemon-and-permissions/readme.md).
 
 Being a bundle, it has an icon, which is how you find it in those two lists.
 `assets/msgd.svg` is the source and `assets/msgd.icns` is what ships; both are
@@ -619,7 +621,7 @@ anchors to the certificate and survives rebuilds. Nothing is submitted anywhere,
 macOS asks before `codesign` uses that key, once per build. Answering "Always
 Allow" removes the prompt and, with it, the thing that stops local code from
 signing its own daemon and inheriting the grant — see
-[signing-identity.md](docs/projects/all/signing-identity.md).
+[signing-identity.md](docs/projects/signing-identity/readme.md).
 
 ```sh
 MSG_SIGN_IDENTITY="my identity" ./scripts/build.sh   # a different certificate
@@ -652,7 +654,7 @@ tccutil reset AppleEvents com.ninjudd.msgd   # stop it driving Messages and Cont
 The reasoning behind the design — including why the socket carries no
 authentication, and why the daemon is a single executable rather than a copy of
 `node` — is in
-[docs/projects/all/daemon-and-permissions.md](docs/projects/all/daemon-and-permissions.md).
+[docs/projects/daemon-and-permissions/readme.md](docs/projects/daemon-and-permissions/readme.md).
 
 ## Options
 

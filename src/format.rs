@@ -321,22 +321,6 @@ impl Renderer {
                 _ => String::new(),
             };
             let body = one_line(message.body.as_deref().unwrap_or("(no text)"), styled);
-            // What is being answered goes above the answer, indented to the width of
-            // a timestamp, so a reply reads as a reply without the transcript
-            // stopping being chronological.
-            if let Some(answering) = &message.reply_to {
-                // Not folded: `excerpt` already flattened every run of
-                // whitespace to one space, so there is no newline here to
-                // mark and a fold call would be a dead path wearing a live
-                // one's clothes.
-                let quoted = answering.excerpt.as_deref().unwrap_or("(no text)");
-                out.push_str(&format!(
-                    "{gutter}{:width$}  ↳ replying to {}: {quoted}\n",
-                    "",
-                    answering.sender,
-                    width = stamp.chars().count()
-                ));
-            }
             // Reactions trail the message they answer after an arrow, oldest
             // first, skipped entirely when there are none — so ordinary output is
             // unchanged. An arrow rather than brackets, because brackets collided
@@ -376,6 +360,25 @@ impl Renderer {
                 "{gutter}{stamp}  {where_}{}: {body}{reactions}\n",
                 message.sender
             ));
+            // What is being answered goes below the answer, indented to the
+            // width of a timestamp. Below, because an indented line in a
+            // terminal attaches to the line above it: printed above the reply,
+            // this line glued itself to the previous message instead, and a
+            // reply sitting right after its original rendered as that original
+            // replying to itself.
+            if let Some(answering) = &message.reply_to {
+                // Not folded: `excerpt` already flattened every run of
+                // whitespace to one space, so there is no newline here to
+                // mark and a fold call would be a dead path wearing a live
+                // one's clothes.
+                let quoted = answering.excerpt.as_deref().unwrap_or("(no text)");
+                out.push_str(&format!(
+                    "{gutter}{:width$}  ↳ replying to {}: {quoted}\n",
+                    "",
+                    answering.sender,
+                    width = stamp.chars().count()
+                ));
+            }
         }
         out
     }
@@ -626,8 +629,10 @@ mod tests {
         assert_eq!(rendered, "Jan 15, 9:30 AM  Dana Reyes: hello\n");
     }
 
-    /// A reply names what it answers, above itself and indented to the width of
-    /// a timestamp, so the transcript stays chronological and still reads.
+    /// A reply names what it answers, below itself and indented to the width
+    /// of a timestamp — below, because an indented line reads as belonging to
+    /// the line above it, and above the reply it attached to the wrong
+    /// message.
     #[test]
     fn a_reply_says_what_it_is_answering() {
         let mut reply = message(2, "me", "yes, that works");
@@ -648,13 +653,13 @@ mod tests {
 
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 3, "{out}");
+        assert!(lines[1].contains("me: yes, that works"), "{out}");
         assert!(
-            lines[1].contains("↳ replying to Dana Reyes: are you around later"),
+            lines[2].contains("↳ replying to Dana Reyes: are you around later"),
             "{out}"
         );
         // Indented to where the sender starts, not to column zero.
-        assert!(lines[1].starts_with("       "), "{out}");
-        assert!(lines[2].contains("me: yes, that works"), "{out}");
+        assert!(lines[2].starts_with("       "), "{out}");
     }
 
     /// Every branch of the header, against one fixed clock — relative words

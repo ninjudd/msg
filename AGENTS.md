@@ -2,10 +2,20 @@
 
 ## Docs
 
-This repo follows the global `docs/projects/` convention, with one difference:
-there is no `docs/` overview, because [README.md](README.md) plays that role —
-it describes how `msg` works today, for someone using it. The work itself is in
-[`docs/projects/`](docs/projects/README.md).
+This repo follows the global `docs/` and `docs/projects/` convention, with one
+difference: there is no `docs/` overview, because [README.md](README.md) plays
+that role — it describes how `msg` works today, for someone using it.
+
+The work itself is in [`docs/projects/`](docs/projects/README.md), which
+follows the Projector convention rather than the three lists and `all/`
+directory the global convention describes: one permanent directory and
+lowercase `readme.md` per project, `status: draft|ready|in-progress|completed`
+beside `priority: now|next|later` in frontmatter, and plans cited by section so
+sections are never renumbered. Where the global convention and
+`docs/projects/README.md` disagree, the README wins. Use the `project` command
+rather than reading the tree by hand — `project list` groups by priority,
+`project show <name>` prints one plan, and `project check` validates every plan
+before you hand work over.
 
 [skills/msg/SKILL.md](skills/msg/SKILL.md) is user-facing documentation too —
 the Agent Skill that teaches Claude, Codex, and anything else speaking the
@@ -28,14 +38,14 @@ write.
   revoked.
 - Sending now runs in the daemon, off unless `send = true` is in
   `~/.config/msg/config.toml` *and* macOS has granted `msgd` Automation
-  ([daemon-and-permissions.md §7](docs/projects/all/daemon-and-permissions.md)).
+  ([daemon-and-permissions.md §7](docs/projects/daemon-and-permissions/readme.md)).
   Neither gate is a substitute for the flag: on a machine where both are open,
   a missing `--dry-run` texts someone.
 
 ## Writing contacts is a production write too
 
 `msg contacts add`/`update` edit the user's address book through the daemon
-([contact-writing.md](docs/projects/all/contact-writing.md)). There is no
+([contact-writing.md](docs/projects/contact-writing/readme.md)). There is no
 dry-run; the write is the command. Run one only when the task is exactly that
 write. In tests, the daemon takes a fake `ContactStore` through
 `DaemonOptions` — a test that reaches the real store edits a real card on
@@ -85,7 +95,7 @@ than by reasoning. Assume there are more.
   `defaults read com.apple.AddressBook` before opening the AddressBook databases
   makes TCC refuse them with `EPERM` for the rest of the process, even with Full
   Disk Access. Read the databases first
-  ([daemon-and-permissions.md §12](docs/projects/all/daemon-and-permissions.md)).
+  ([daemon-and-permissions.md §12](docs/projects/daemon-and-permissions/readme.md)).
   Full Disk Access is a property of each access, not of the process.
 
 Verify a schema assumption against the database before building on it. Column
@@ -104,7 +114,7 @@ insurance. Add it back with a failing case attached if one ever appears.
 Rust, edition 2024. Four dependencies — `rusqlite`, `clap`, `serde`, `chrono` —
 and the reasons each was chosen, along with the two that were refused (`regex`
 and `tokio`), are in
-[rust-rewrite.md §8](docs/projects/all/rust-rewrite.md). The typedstream decoder
+[rust-rewrite.md §8](docs/projects/rust-rewrite/readme.md). The typedstream decoder
 is hand-written because nothing else decodes it.
 
 ```sh
@@ -129,7 +139,7 @@ the lint is wrong here.
 ## Permissions
 
 Reading requires Full Disk Access, held either by
-[the daemon](docs/projects/all/daemon-and-permissions.md) or by the terminal.
+[the daemon](docs/projects/daemon-and-permissions/readme.md) or by the terminal.
 TCC attributes access to the responsible process, so granting it to a
 CLI-spawned child does nothing; a launchd job is its own responsible process,
 which is why `msgd` exists.
@@ -141,3 +151,29 @@ thing a new user hits — and it had already broken once: the snapshot fallback
 raised a raw `EPERM` from the copy instead of the explanation, and nothing caught
 it because the development machine held the grant. `tests/cli.rs` now pins both
 that path and the exit statuses, but revoke the grant before trusting either.
+
+<!-- projector:begin 1 -->
+## Projector conventions
+
+This repository keeps its project plans in Git with
+[Projector](https://github.com/ninjudd/projector). Read
+`docs/projects/README.md` before you change a plan. Use the `project` command
+to find and change projects instead of parsing plan files yourself, and run
+`project check` before you hand work over.
+
+Write new and substantially revised documentation in the Google developer
+documentation style: second person, present tense, active voice, sentence-case
+headings, exact identifiers in code font, and a command or example when it
+communicates more directly than prose. Keep `docs/` describing the behavior on
+the current branch, and update it in the change that alters that behavior. An
+existing document keeps its register until you revise it substantially.
+
+Write GitHub issues and review comments in the same style. Write a pull request
+body as prose that explains why the change exists, because a squash merge makes
+it the commit message. Match the line wrapping already used around a Markdown
+edit, and do not hard-wrap prose you post to GitHub, because GitHub renders
+line breaks.
+
+Projector generates this section. To change it, change the template in
+Projector and run `project init`.
+<!-- projector:end -->
