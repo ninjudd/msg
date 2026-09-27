@@ -150,7 +150,10 @@ name are one person to the resolver (contact-resolution.md §5) because that
 is the unification Contacts itself displays, so when the app answers the
 name with several cards, they are that person's cards across accounts and
 the write goes to the first — the edit surfaces on the unified card either
-way. Two strangers sharing an exact full name collapse in the resolver
+way. The already-there check reads every one of those cards, not only the
+first, because a value on any of them is one the unified card shows. (The
+first version read only the card it wrote to, and appended a duplicate of a
+value that lived on another.) Two strangers sharing an exact full name collapse in the resolver
 before this code ever runs; that is a modeling limit this plan inherits
 rather than adds. New contacts land in the account Contacts.app itself
 files new people into.

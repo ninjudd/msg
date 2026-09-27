@@ -260,15 +260,16 @@ fn nothing_to_write() -> Error {
     Error::other("nothing to write: pass --phone, --email, --title, --org, or --note")
 }
 
-/// Write `fields` onto the card `id`, appending phones and emails the card
-/// does not already carry and replacing the rest. `existing` holds the
-/// card's current values per multi-valued field, `None` when the card was
-/// just created and holds nothing.
+/// Write `fields` onto the card `id`, appending phones and emails the person
+/// does not already carry and replacing the rest. `cards` are every card the
+/// person is filed under, `id` among them, whose values count as already
+/// carried: Contacts shows them as one unified card, so a value on any of
+/// them is a value the person has. A card just created passes none.
 fn apply(
     store: &dyn ContactStore,
     id: &str,
     fields: &Fields<'_>,
-    read_existing: bool,
+    cards: &[String],
 ) -> Result<(Vec<String>, Vec<String>)> {
     let mut changed = Vec::new();
     let mut unchanged = Vec::new();
@@ -282,14 +283,15 @@ fn apply(
         }
         // Keyed the way the resolver keys handles, so a number retyped in
         // another shape is the same number rather than a second phone.
-        let mut held: Vec<String> = if read_existing {
-            store.values(id, field)?
-        } else {
-            Vec::new()
+        let mut held = Vec::new();
+        for card in cards {
+            held.extend(
+                store
+                    .values(card, field)?
+                    .iter()
+                    .filter_map(|value| handle_key(value)),
+            );
         }
-        .iter()
-        .filter_map(|value| handle_key(value))
-        .collect();
         for value in values {
             let value = value.trim();
             let key = handle_key(value);
@@ -362,7 +364,7 @@ pub fn add(store: &dyn ContactStore, ask: &PersonAddRequest) -> Result<PersonWri
 
     let (first, last) = name.split_once(' ').unwrap_or((&name, ""));
     let id = store.create(first, last)?;
-    let (changed, unchanged) = apply(store, &id, &fields, false)?;
+    let (changed, unchanged) = apply(store, &id, &fields, &[])?;
     Ok(PersonWriteReply {
         id,
         name,
@@ -403,7 +405,7 @@ pub fn update(
         )));
     };
 
-    let (changed, unchanged) = apply(store, id, &fields, true)?;
+    let (changed, unchanged) = apply(store, id, &fields, &ids)?;
     Ok(PersonWriteReply {
         id: id.clone(),
         name: person.name,
@@ -691,6 +693,31 @@ mod tests {
             !saw.contains(&"append card-1 Phone 310-555-1234".to_string()),
             "{saw:?}"
         );
+    }
+
+    /// A person filed as several cards is one person: a value any of them
+    /// carries is already there, even though the write goes to the first.
+    #[test]
+    fn update_skips_a_value_another_of_their_cards_carries() {
+        let fake = Fake {
+            people: vec![("Dana Reyes", vec!["card-1", "card-2"])],
+            held: vec![(("card-2", ValueField::Email), vec!["dana@example.com"])],
+            ..Fake::default()
+        };
+        let reply = update(
+            &index(),
+            &fake,
+            &PersonUpdateRequest {
+                term: "dana reyes".into(),
+                emails: vec!["Dana@Example.com".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(reply.id, "card-1");
+        assert!(reply.changed.is_empty(), "{:?}", reply.changed);
+        assert_eq!(reply.unchanged, ["email Dana@Example.com"]);
+        assert!(!fake.saw().iter().any(|op| op.starts_with("append")));
     }
 
     /// The term resolves the way `person` resolves, refusals included: a
