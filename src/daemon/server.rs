@@ -132,6 +132,11 @@ struct Shared {
     config_path: Option<PathBuf>,
     addressbook: Option<PathBuf>,
     contacts_store: Arc<dyn ContactStore>,
+    /// Held across a whole add or update. Each is a read-modify-write against
+    /// Contacts — look for the name, then create; read the values, then
+    /// append — and every connection is served on its own thread, so two at
+    /// once would both pass the duplicate guard and both write.
+    contact_writes: Mutex<()>,
     db: Mutex<Option<Connection>>,
     contacts: Mutex<Option<Cached>>,
     watchers: Mutex<Vec<Watcher>>,
@@ -223,6 +228,7 @@ impl Daemon {
                 contacts_store: options
                     .contacts_store
                     .unwrap_or_else(|| Arc::new(ContactsApp)),
+                contact_writes: Mutex::new(()),
                 db: Mutex::new(None),
                 contacts: Mutex::new(None),
                 watchers: Mutex::new(Vec::new()),
@@ -491,6 +497,7 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
             Ok(serde_json::to_value(index.person(&ask.term)?)?)
         }
         Request::PersonAdd(ask) => {
+            let _writing = shared.contact_writes.lock().expect("contact writes lock");
             let reply = crate::daemon::contacts_app::add(shared.contacts_store.as_ref(), &ask);
             // Dropped whether or not the write succeeded: one that failed
             // part-way may still have changed what Contacts holds.
@@ -498,6 +505,9 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
             Ok(serde_json::to_value(reply?)?)
         }
         Request::PersonUpdate(ask) => {
+            // Taken before the index loads, so an update queued behind another
+            // write resolves against what that write left.
+            let _writing = shared.contact_writes.lock().expect("contact writes lock");
             let index = shared.contacts(true);
             let reply =
                 crate::daemon::contacts_app::update(&index, shared.contacts_store.as_ref(), &ask);

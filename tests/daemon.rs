@@ -796,6 +796,89 @@ fn an_ambiguous_update_term_answers_the_ambiguous_code() {
     assert_eq!(frame["code"], serde_json::json!("ambiguous"));
 }
 
+/// A store with the gap a real one has between looking and writing: `find`
+/// takes a moment, and only `create` makes a name findable.
+#[derive(Default)]
+struct SlowContacts {
+    created: Mutex<Vec<String>>,
+}
+
+impl msg::daemon::contacts_app::ContactStore for SlowContacts {
+    fn find(&self, name: &str) -> msg::Result<Vec<String>> {
+        let held = self.created.lock().unwrap().contains(&name.to_string());
+        std::thread::sleep(Duration::from_millis(200));
+        Ok(if held {
+            vec!["card".into()]
+        } else {
+            Vec::new()
+        })
+    }
+
+    fn create(&self, first: &str, last: &str) -> msg::Result<String> {
+        self.created.lock().unwrap().push(format!("{first} {last}"));
+        Ok("card".into())
+    }
+
+    fn values(
+        &self,
+        _: &str,
+        _: msg::daemon::contacts_app::ValueField,
+    ) -> msg::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    fn append(
+        &self,
+        _: &str,
+        _: msg::daemon::contacts_app::ValueField,
+        _: &str,
+    ) -> msg::Result<()> {
+        Ok(())
+    }
+
+    fn set(&self, _: &str, _: msg::daemon::contacts_app::TextField, _: &str) -> msg::Result<()> {
+        Ok(())
+    }
+}
+
+/// Two adds of one name on two connections at once make one person: the
+/// second waits for the first and then finds it, rather than both looking
+/// before either creates.
+#[test]
+fn concurrent_adds_of_one_name_create_one_person() {
+    let directory = msg::db::temporary_directory("msg-writes-").unwrap();
+    let socket = directory.join("msgd.sock");
+    let store = std::sync::Arc::new(SlowContacts::default());
+    let daemon = Daemon::new(DaemonOptions {
+        db_path: None,
+        config_path: Some(directory.join("config-that-does-not-exist.toml")),
+        addressbook: Some(directory.join("no-book")),
+        contacts_store: Some(store.clone()),
+    });
+    daemon.listen(Some(socket.clone())).unwrap();
+
+    let adds: Vec<_> = (0..2)
+        .map(|_| {
+            let socket = socket.clone();
+            std::thread::spawn(move || {
+                let stream = connect_daemon(Some(&socket)).expect("daemon listening");
+                request(
+                    stream,
+                    &Request::PersonAdd(PersonAddRequest {
+                        name: "Robin Adeyemi".into(),
+                        phones: vec!["+13105559876".into()],
+                        ..Default::default()
+                    }),
+                )
+            })
+        })
+        .collect();
+    let outcomes: Vec<_> = adds.into_iter().map(|add| add.join().unwrap()).collect();
+
+    assert_eq!(*store.created.lock().unwrap(), ["Robin Adeyemi"]);
+    assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+}
+
 // ----------------------------------------------------------------- send
 //
 // Nothing here enables sending. The gate being shut is what is testable without
