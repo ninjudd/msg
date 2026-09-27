@@ -735,6 +735,43 @@ fn the_mode_flags_are_mutually_exclusive() {
     assert_eq!(code(&output), 1);
 }
 
+/// Writing goes through the daemon or not at all: the fixture environment
+/// forces the direct path, where both commands refuse with the remedy rather
+/// than asking Contacts for anything.
+#[test]
+fn contact_writes_refuse_without_a_daemon() {
+    for args in [
+        vec!["contacts", "add", "Dana Duarte", "--phone", "3105550000"],
+        vec!["contacts", "update", "Dana Reyes", "--title", "Engineer"],
+    ] {
+        let output = msg_resolving(&args);
+        assert_eq!(code(&output), 1, "{args:?}");
+        assert_eq!(stdout(&output), "", "{args:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("msg daemon install"), "{args:?}: {error}");
+    }
+}
+
+/// `--no-names` promises Contacts stays untouched, and a write is nothing
+/// but touching Contacts.
+#[test]
+fn contact_writes_refuse_no_names() {
+    let output = msg_resolving(&[
+        "--no-names",
+        "contacts",
+        "add",
+        "Dana Duarte",
+        "--phone",
+        "3105550000",
+    ]);
+    assert_eq!(code(&output), 1);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--no-names"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn a_partial_contacts_load_exits_two_even_with_a_match_in_hand() {
     // A second book: one healthy source holding Dana, and one database that

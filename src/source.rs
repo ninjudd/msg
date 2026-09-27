@@ -126,6 +126,13 @@ pub fn open_source(db: Option<String>) -> Source {
     }
 }
 
+fn no_write_daemon() -> Error {
+    Error::other(
+        "writing contacts needs the daemon, which drives Contacts with its own\n\
+         Automation permission. Install it with `msg daemon install`.",
+    )
+}
+
 fn call(message: &Request) -> Result<serde_json::Value> {
     let stream = connect_daemon(None)
         .ok_or_else(|| Error::other("msgd stopped listening; try `msg daemon status`"))?;
@@ -337,6 +344,29 @@ impl Source {
                 })
                 .collect(),
         })
+    }
+
+    /// Contact writes are the daemon's for the reason sending is: the
+    /// Automation grant lands on whichever process asks, and the CLI holds no
+    /// permission of its own (contact-writing.md §2).
+    pub fn person_add(
+        &mut self,
+        ask: crate::daemon::protocol::PersonAddRequest,
+    ) -> Result<crate::daemon::protocol::PersonWriteReply> {
+        if self.kind != Kind::Daemon {
+            return Err(no_write_daemon());
+        }
+        Ok(serde_json::from_value(call(&Request::PersonAdd(ask))?)?)
+    }
+
+    pub fn person_update(
+        &mut self,
+        ask: crate::daemon::protocol::PersonUpdateRequest,
+    ) -> Result<crate::daemon::protocol::PersonWriteReply> {
+        if self.kind != Kind::Daemon {
+            return Err(no_write_daemon());
+        }
+        Ok(serde_json::from_value(call(&Request::PersonUpdate(ask))?)?)
     }
 
     /// Sending needs Automation, and the CLI deliberately no longer asks for it.

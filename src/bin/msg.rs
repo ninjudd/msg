@@ -14,7 +14,9 @@ use msg::daemon::install::{
     Grant, built_bundle, bundle_path, install, is_loaded, log_path, open_automation,
     open_full_disk_access, plist_path, signature_of, uninstall,
 };
-use msg::daemon::protocol::{Attachment, socket_path};
+use msg::daemon::protocol::{
+    Attachment, PersonAddRequest, PersonUpdateRequest, PersonWriteReply, socket_path,
+};
 use msg::daemon::server::{Daemon, DaemonOptions};
 use msg::db::human_bytes;
 use msg::format::{Render, Renderer, Trail, render_chats, render_messages, to_json};
@@ -175,6 +177,52 @@ struct ContactsArgs {
 enum ContactsCommand {
     /// one person from a name, and every address their record carries
     Resolve(ResolveArgs),
+    /// put a new person in Contacts
+    Add(AddArgs),
+    /// change what Contacts holds for one person
+    Update(UpdateArgs),
+}
+
+#[derive(Args)]
+struct AddArgs {
+    /// the person's full name: first word is the first name, the rest the last
+    name: String,
+    #[command(flatten)]
+    fields: WriteFields,
+    /// add even though somebody already has exactly this name
+    #[arg(long)]
+    duplicate: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct UpdateArgs {
+    /// a name, a nickname, or one of their addresses
+    term: String,
+    #[command(flatten)]
+    fields: WriteFields,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct WriteFields {
+    /// a phone number; repeat the flag for several
+    #[arg(long = "phone", value_name = "PHONE")]
+    phones: Vec<String>,
+    /// an email address; repeat the flag for several
+    #[arg(long = "email", value_name = "EMAIL")]
+    emails: Vec<String>,
+    /// job title, replaced outright
+    #[arg(long)]
+    title: Option<String>,
+    /// company or organization, replaced outright
+    #[arg(long)]
+    org: Option<String>,
+    /// the note on the card, replaced outright
+    #[arg(long)]
+    note: Option<String>,
 }
 
 #[derive(Args)]
@@ -297,6 +345,28 @@ fn render_person(person: &msg::contacts::PersonRecord, ask: &ResolveArgs) -> msg
         }
     }
     Ok(out)
+}
+
+/// What a write printed: the verdict line, then one line per field, with the
+/// values the card already carried marked rather than repeated silently.
+fn render_write(reply: &PersonWriteReply, json: bool) -> String {
+    if json {
+        return to_json(reply);
+    }
+    let mut out = format!(
+        "{} {}\n",
+        if reply.created { "added" } else { "updated" },
+        reply.name
+    );
+    for line in &reply.changed {
+        // A note can span lines; the continuation indents so the next field
+        // still reads as a field.
+        out.push_str(&format!("  {}\n", line.replace('\n', "\n    ")));
+    }
+    for line in &reply.unchanged {
+        out.push_str(&format!("  {line} (already there)\n"));
+    }
+    out
 }
 
 /// One value or all of them. Singular means exactly one: none is an ordinary
@@ -531,18 +601,54 @@ fn data(cli: &Cli, source: &mut Source) -> msg::Result<()> {
         }
 
         Command::Contacts(args) => {
-            if let Some(ContactsCommand::Resolve(ask)) = &args.command {
-                // `--no-names` promises Contacts stays unread, and resolving
-                // is nothing but reading Contacts — refusing beats silently
-                // doing the one thing the flag was passed to prevent.
+            if let Some(command) = &args.command {
+                // `--no-names` promises Contacts stays unread, and each of
+                // these is nothing but reading or writing Contacts —
+                // refusing beats silently doing the one thing the flag was
+                // passed to prevent.
                 if !cli.names() {
-                    return Err(Error::other(
-                        "contacts resolve reads Contacts to answer; it cannot run with --no-names",
-                    ));
+                    return Err(Error::other(format!(
+                        "contacts {} works on Contacts; it cannot run with --no-names",
+                        match command {
+                            ContactsCommand::Resolve(_) => "resolve",
+                            ContactsCommand::Add(_) => "add",
+                            ContactsCommand::Update(_) => "update",
+                        }
+                    )));
                 }
-                let person = source.person(&ask.term)?;
-                print(&render_person(&person, ask)?);
-                return Ok(());
+            }
+            match &args.command {
+                Some(ContactsCommand::Resolve(ask)) => {
+                    let person = source.person(&ask.term)?;
+                    print(&render_person(&person, ask)?);
+                    return Ok(());
+                }
+                Some(ContactsCommand::Add(ask)) => {
+                    let reply = source.person_add(PersonAddRequest {
+                        name: ask.name.clone(),
+                        phones: ask.fields.phones.clone(),
+                        emails: ask.fields.emails.clone(),
+                        title: ask.fields.title.clone(),
+                        org: ask.fields.org.clone(),
+                        note: ask.fields.note.clone(),
+                        duplicate: ask.duplicate.then_some(true),
+                    })?;
+                    print(&render_write(&reply, ask.json));
+                    return Ok(());
+                }
+                Some(ContactsCommand::Update(ask)) => {
+                    let reply = source.person_update(PersonUpdateRequest {
+                        term: ask.term.clone(),
+                        phones: ask.fields.phones.clone(),
+                        emails: ask.fields.emails.clone(),
+                        title: ask.fields.title.clone(),
+                        org: ask.fields.org.clone(),
+                        note: ask.fields.note.clone(),
+                    })?;
+                    print(&render_write(&reply, ask.json));
+                    return Ok(());
+                }
+                None => {}
             }
             let (handles, json) = (&args.handles, &args.json);
             let reply = source.contacts(handles)?;
@@ -747,6 +853,7 @@ fn daemon(cli: &Cli, command: &DaemonCommand) -> msg::Result<()> {
                 db_path: cli.db.clone(),
                 config_path: None,
                 addressbook: None,
+                contacts_store: None,
             });
             let path = server.listen(None)?;
             eprintln!("msgd {VERSION} listening on {}", path.display());

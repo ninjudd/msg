@@ -821,17 +821,33 @@ fn person_names(row: &rusqlite::Row<'_>) -> Option<(String, Option<String>)> {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
     };
-    let first = text("ZFIRSTNAME");
-    let last = text("ZLASTNAME");
-    let filed = if first.is_some() || last.is_some() {
-        let parts: Vec<String> = [first, last].into_iter().flatten().collect();
-        Some(parts.join(" "))
-    } else {
-        text("ZORGANIZATION")
-    };
+    let filed = filed_name(
+        text("ZFIRSTNAME").as_deref(),
+        text("ZLASTNAME").as_deref(),
+        text("ZORGANIZATION").as_deref(),
+    );
     match text("ZNICKNAME") {
         Some(nickname) => Some((nickname, filed)),
         None => Some((filed?, None)),
+    }
+}
+
+/// The name a record is filed under: first and last name joined, or the
+/// organization for a card with neither. Writing finds cards in Contacts.app
+/// by this same rule, so the resolver and the writer cannot disagree about
+/// who a name means.
+pub fn filed_name(first: Option<&str>, last: Option<&str>, org: Option<&str>) -> Option<String> {
+    fn present(value: Option<&str>) -> Option<&str> {
+        value.map(str::trim).filter(|value| !value.is_empty())
+    }
+    let parts: Vec<&str> = [present(first), present(last)]
+        .into_iter()
+        .flatten()
+        .collect();
+    if parts.is_empty() {
+        present(org).map(str::to_string)
+    } else {
+        Some(parts.join(" "))
     }
 }
 
