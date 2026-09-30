@@ -89,6 +89,12 @@ use crate::db::{Chat, Message};
 /// a daemon that does not know them ignores them and answers with bare hits, so
 /// `-C 3` would silently produce exactly what the flag was asked to change.
 ///
+/// 20 adds `listed` to `send`, which asks the daemon to refuse anyone not on
+/// `/etc/msg/allowlist` (send-allowlist.md §6). A new *request* field that
+/// restricts, which is the worst kind to lose: a stale daemon ignores it and
+/// sends to whoever was named, so the one flag an agent is trusted to pass
+/// unattended would reach anyone. The version gate is what stops that.
+///
 /// 19 adds `person-add` and `person-update` — contact writing, driving
 /// Contacts.app over Apple Events the way `send` drives Messages
 /// (contact-writing.md §5). New commands are the loud kind of skew: a stale
@@ -172,7 +178,7 @@ use crate::db::{Chat, Message};
 /// saying so, which looks exactly like a person who only has one. The reply is
 /// not wrong in a way anything can see — it is simply missing half the
 /// conversation, which is the failure this number exists to make loud.
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// The launchd job label, and the bundle identifier the TCC grant lands on.
 pub const LABEL: &str = "com.ninjudd.msgd";
@@ -404,6 +410,11 @@ pub struct SendRequest {
     pub file: Option<Attachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub names: Option<bool>,
+    /// Refuse unless every member of the resolved conversation is on
+    /// `/etc/msg/allowlist` (send-allowlist.md §2). A guid is refused under
+    /// it, since a guid is sent without learning who is in the chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

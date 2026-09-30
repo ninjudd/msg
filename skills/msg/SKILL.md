@@ -169,6 +169,24 @@ the dry-run line to the user before sending when there is any doubt about the
 recipient. `--dry-run` works whether or not sending is enabled, so the
 preview is always available.
 
+**The one exception is `--listed`.** `/etc/msg/allowlist` holds the
+addresses the user has approved in advance, and `msg send --listed` refuses
+anyone not on it. Only root can write that file. When a task calls for
+texting someone on the list, send with `--listed` without stopping to ask,
+and keep the flag right after `send`, where the user's permission rule
+matches it:
+
+```sh
+cat /etc/msg/allowlist                             # who is listed; readable by anyone
+msg send --listed dana "on my way" --dry-run       # the address it would reach
+msg send --listed +13105551234 "on my way"         # send to that address
+```
+
+If the list refuses the send (`not sent: … is not on /etc/msg/allowlist`),
+the person was not approved in advance, and the rule above applies again: a
+plain `msg send` only for a message the user explicitly asked to send. Never
+edit the list. Adding someone is the user's decision, made with `sudo`.
+
 **Enabling sending is the user's decision, confirmed twice — never a fix you
 apply.** Two gates hold it shut: `send = true` in `~/.config/msg/config.toml`,
 and macOS Automation for `msgd`. If a send fails because a gate is closed, say

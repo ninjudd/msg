@@ -397,6 +397,46 @@ CLI with your own permissions and handed to the daemon as bytes; the daemon
 never opens a path a caller named, since it holds Full Disk Access and that
 would make it read anything.
 
+#### Sending only to people you listed
+
+`--listed` tells the daemon to refuse the send unless everyone in the
+conversation is on `/etc/msg/allowlist`. Use it to let an agent text a few
+people without asking you first: approve `msg send --listed` in the agent's
+permissions, and every other `msg send` still asks.
+
+The list holds one address per line: an email address, or a phone number with
+its country code. `#` starts a comment. Only root can write it, so create and
+edit it with `sudo`:
+
+```sh
+sudo mkdir -p /etc/msg
+sudo tee /etc/msg/allowlist <<'LIST'
++13105551234        # Dana
+robin@example.com
+LIST
+```
+
+```
+$ msg send --listed dana "running late" --dry-run
+would send to Dana Reyes (+13105551234): running late
+$ msg send --listed kit@example.com "hi" --dry-run
+not sent: Kit (kit@example.com) is not on /etc/msg/allowlist (unlisted: kit@example.com)
+```
+
+The check runs on the address the send resolves to, so each of a person's
+addresses has to be listed on its own. A group conversation passes only when
+every member is listed. A chat guid is refused, because a guid does not say who
+is in the chat. Numbers match in full, so `+13105551234` does not admit
+`+443105551234`.
+
+The daemon reads the list only when root owns the file and every directory
+above it, and nobody else can write them. Anything running as you, including
+an agent, can edit `~/.config/msg/config.toml`, but only root can add a person
+here. A list that is missing, or that fails that check, admits nobody. The two
+gates above still apply: `--listed` narrows who a send can reach and opens
+nothing. [send-allowlist.md](docs/projects/send-allowlist/readme.md) records
+why.
+
 ### Names
 
 Handles are resolved to contact names automatically, in rendered output and in
@@ -548,9 +588,10 @@ msg search "invoice" --json | jq '.[] | {date, sender, body}'
 [Agent Skill](https://agentskills.io) that teaches Claude Code, Codex, and
 anything else speaking that format how to drive `msg`: which command answers
 which question, how names resolve, that nothing is sent without an explicit
-ask and a `--dry-run` first — and that [sending](#sending) stays off unless
-the user twice confirms they want it on, since most people only ever read and
-search. Install it like the binary, with a symlink, so it tracks the checkout:
+ask and a `--dry-run` first, except with `--listed` to someone
+[you listed](#sending-only-to-people-you-listed), and that [sending](#sending)
+stays off unless the user twice confirms they want it on, since most people
+only ever read and search. Install it like the binary, with a symlink, so it tracks the checkout:
 
 ```sh
 mkdir -p ~/.claude/skills && ln -s "$PWD/skills/msg" ~/.claude/skills/msg   # Claude Code
@@ -560,7 +601,13 @@ mkdir -p ~/.codex/skills  && ln -s "$PWD/skills/msg" ~/.codex/skills/msg    # Co
 Skills are discovered at startup, so restart a session that was already open.
 The skill grants nothing: the agent's own permission prompts still stand in
 front of every command it runs, and sending stays behind
-[the same two gates](#sending) no matter who is typing.
+[the same two gates](#sending) no matter who is typing. To let a Claude Code
+agent send to listed people without a prompt, allow exactly the flag, and add
+no `ask` rule for `msg send`, since `ask` outranks `allow`:
+
+```json
+{ "permissions": { "allow": ["Bash(msg send --listed *)"] } }
+```
 
 ## The daemon
 
@@ -676,6 +723,7 @@ authentication, and why the daemon is a single executable rather than a copy of
 | `--interval <seconds>` | `watch` | poll frequency, without a daemon |
 | `-f, --file <path>` | `send` | send a file instead of text |
 | `--dry-run` | `send` | show without sending |
+| `--listed` | `send` | refuse unless every recipient is in `/etc/msg/allowlist` |
 | `--emails`, `--phones` | `contacts resolve` | every value of that kind, one per line |
 | `--email`, `--phone` | `contacts resolve` | exactly one value, or exit 3 naming the candidates |
 | `--json` | all read commands | machine-readable output |

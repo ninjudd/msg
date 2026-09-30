@@ -253,6 +253,24 @@ fn dry_run_resolves_and_prints_without_sending() {
     assert_eq!(stdout(&output), "would send to Ship Room: hello there\n");
 }
 
+/// `--listed` refuses a guid before anything is resolved, since a guid names a
+/// chat without saying who is in it. Checked in the client too, so the dry run
+/// gives the answer the send would.
+#[test]
+fn listed_refuses_a_chat_guid_even_in_a_dry_run() {
+    let output = msg(&[
+        "--no-names",
+        "send",
+        "--listed",
+        "iMessage;-;+13105551234",
+        "hi",
+        "--dry-run",
+    ]);
+    assert_eq!(code(&output), 1);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not a chat guid"), "{stderr}");
+}
+
 /// The flag reaches the window, the gutter marks the hit, and the messages
 /// around it come back — the whole path, through the binary rather than the
 /// library, since that is where the argument parsing lives.
