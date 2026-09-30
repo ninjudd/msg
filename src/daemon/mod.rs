@@ -6,6 +6,7 @@
 //! process and can hold the grant alone. See
 //! docs/projects/daemon-and-permissions/readme.md.
 
+pub mod allowlist;
 pub mod client;
 pub mod config;
 pub mod contacts_app;

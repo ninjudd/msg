@@ -258,6 +258,9 @@ struct SendArgs {
     /// show what would be sent without sending
     #[arg(long = "dry-run")]
     dry_run: bool,
+    /// refuse unless every recipient is listed in /etc/msg/allowlist
+    #[arg(long)]
+    listed: bool,
 }
 
 #[derive(Subcommand)]
@@ -709,9 +712,19 @@ fn send(cli: &Cli, source: &mut Source, args: &SendArgs) -> msg::Result<()> {
         .as_ref()
         .map_or_else(|| text.clone(), |path| path.to_string_lossy().into_owned());
 
+    if args.listed && msg::daemon::protocol::is_chat_guid(&args.chat) {
+        return Err(Error::other(msg::daemon::allowlist::guid_message()));
+    }
+
     if args.dry_run {
         // Unconditional, so the disabled state stays inspectable (§7).
         let chat = source.resolve(&args.chat, cli.names())?;
+        // Advice, as any check the client runs on itself is: the daemon
+        // checks again before it sends. Here it makes the preview say what
+        // the send would say.
+        if args.listed {
+            msg::daemon::allowlist::check(&chat, &Default::default())?;
+        }
         print(&format!(
             "would send to {}: {what}\n",
             msg::db::describe_target(&chat)
@@ -738,6 +751,7 @@ fn send(cli: &Cli, source: &mut Source, args: &SendArgs) -> msg::Result<()> {
         body: (!text.is_empty()).then_some(text),
         file,
         names: cli.names(),
+        listed: args.listed,
     })?;
     print(&format!("sent to {}: {what}\n", sent.name));
     Ok(())
@@ -854,6 +868,7 @@ fn daemon(cli: &Cli, command: &DaemonCommand) -> msg::Result<()> {
                 config_path: None,
                 addressbook: None,
                 contacts_store: None,
+                allowlist: None,
             });
             let path = server.listen(None)?;
             eprintln!("msgd {VERSION} listening on {}", path.display());

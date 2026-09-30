@@ -16,6 +16,7 @@ use rusqlite::Connection;
 
 use crate::apple::since_to_apple_date;
 use crate::contacts::{ContactIndex, load_contacts_from};
+use crate::daemon::allowlist::{self, Location};
 use crate::daemon::config::{config_path, disabled_message, read_config};
 use crate::daemon::contacts_app::{ContactStore, ContactsApp};
 use crate::daemon::protocol::{
@@ -109,6 +110,11 @@ pub struct DaemonOptions {
     /// injects a fake here so `cargo test` writes nobody's contacts
     /// (contact-writing.md §6).
     pub contacts_store: Option<Arc<dyn ContactStore>>,
+    /// The list `send --listed` is checked against, and who must own it.
+    /// `None` means `/etc/msg/allowlist` owned by root. Never read from the
+    /// environment, unlike the config path: a list the caller could relocate
+    /// is a list the caller could write (send-allowlist.md §3).
+    pub allowlist: Option<Location>,
 }
 
 /// By hand because a `dyn` store has no `Debug` of its own, and what a reader
@@ -123,6 +129,7 @@ impl std::fmt::Debug for DaemonOptions {
                 "contacts_store",
                 &self.contacts_store.as_ref().map(|_| ".."),
             )
+            .field("allowlist", &self.allowlist)
             .finish()
     }
 }
@@ -132,6 +139,7 @@ struct Shared {
     config_path: Option<PathBuf>,
     addressbook: Option<PathBuf>,
     contacts_store: Arc<dyn ContactStore>,
+    allowlist: Location,
     /// Held across a whole add or update. Each is a read-modify-write against
     /// Contacts — look for the name, then create; read the values, then
     /// append — and every connection is served on its own thread, so two at
@@ -228,6 +236,7 @@ impl Daemon {
                 contacts_store: options
                     .contacts_store
                     .unwrap_or_else(|| Arc::new(ContactsApp)),
+                allowlist: options.allowlist.unwrap_or_default(),
                 contact_writes: Mutex::new(()),
                 db: Mutex::new(None),
                 contacts: Mutex::new(None),
@@ -515,6 +524,23 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
             Ok(serde_json::to_value(reply?)?)
         }
         Request::Send(ask) => {
+            // The list comes before the config key, so a refusal names the list
+            // when both would refuse, and a listed address can be seen reaching
+            // the shut gate without anything being sent (send-allowlist.md §5).
+            // The conversation is resolved once, and the one checked is the one
+            // sent to.
+            let listed = if ask.listed == Some(true) {
+                if is_chat_guid(&ask.chat) {
+                    return Err(Error::other(allowlist::guid_message()));
+                }
+                let contacts = shared.contacts(ask.names != Some(false));
+                let chat = shared.with_db(|db| resolve_chat(db, &ask.chat, &contacts))?;
+                allowlist::check(&chat, &shared.allowlist)?;
+                Some(chat)
+            } else {
+                None
+            };
+
             // The config key is checked here rather than in the client, because
             // a check the caller runs on itself is advice rather than a gate (§7).
             let path = shared.config();
@@ -524,14 +550,19 @@ fn answer(shared: &Arc<Shared>, request: Request) -> Result<serde_json::Value> {
 
             // A guid needs no lookup, so a daemon holding Automation but not
             // Full Disk Access can still send.
-            let (guid, name) = if is_chat_guid(&ask.chat) {
-                (ask.chat.clone(), ask.chat)
-            } else {
-                let contacts = shared.contacts(ask.names != Some(false));
-                let chat = shared.with_db(|db| resolve_chat(db, &ask.chat, &contacts))?;
-                // Described with its address, so the confirmation names which
-                // of a person's conversations this went to.
-                (chat.guid.clone(), describe_target(&chat))
+            let chat = match listed {
+                Some(chat) => Some(chat),
+                None if is_chat_guid(&ask.chat) => None,
+                None => {
+                    let contacts = shared.contacts(ask.names != Some(false));
+                    Some(shared.with_db(|db| resolve_chat(db, &ask.chat, &contacts))?)
+                }
+            };
+            // Described with its address, so the confirmation names which of a
+            // person's conversations this went to.
+            let (guid, name) = match chat {
+                Some(chat) => (chat.guid.clone(), describe_target(&chat)),
+                None => (ask.chat.clone(), ask.chat),
             };
 
             if let Some(file) = ask.file {

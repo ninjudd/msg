@@ -154,11 +154,13 @@ fn harness() -> &'static Harness {
         build_addressbook(&book);
 
         let store = std::sync::Arc::new(FakeContacts::default());
+        let allowlist = build_allowlist(&directory);
         let daemon = Daemon::new(DaemonOptions {
             db_path: Some(database.to_string_lossy().into_owned()),
             config_path: Some(config.clone()),
             addressbook: Some(book.clone()),
             contacts_store: Some(store.clone()),
+            allowlist: Some(allowlist),
         });
         daemon.listen(Some(socket.clone())).unwrap();
         Harness {
@@ -171,6 +173,24 @@ fn harness() -> &'static Harness {
             _daemon: daemon,
         }
     })
+}
+
+/// The list `send --listed` is checked against: one of the fixture's numbers
+/// and one of Robin's two casings, but not Kit and not `someone@example.com`,
+/// so the Ship Room has one member on it and one off.
+///
+/// Owned by whoever runs the tests, and trusted as if that were root, since no
+/// test can create a root-owned file.
+fn build_allowlist(directory: &Path) -> msg::daemon::allowlist::Location {
+    use std::os::unix::fs::MetadataExt;
+
+    let path = directory.join("allowlist");
+    std::fs::write(&path, "+1 (310) 555-1234\nrobin@example.com\n").unwrap();
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+    msg::daemon::allowlist::Location {
+        path,
+        owner: std::fs::metadata(directory).unwrap().uid(),
+    }
 }
 
 fn build_fixture(path: &Path) {
@@ -854,6 +874,7 @@ fn concurrent_adds_of_one_name_create_one_person() {
         config_path: Some(directory.join("config-that-does-not-exist.toml")),
         addressbook: Some(directory.join("no-book")),
         contacts_store: Some(store.clone()),
+        allowlist: None,
     });
     daemon.listen(Some(socket.clone())).unwrap();
 
@@ -925,6 +946,73 @@ fn refuses_before_it_would_have_to_read_the_database() {
     // holds Automation and no Full Disk Access at all.
     let error = attempt_send("iMessage;+;chat9").to_string();
     assert!(error.contains("sending is disabled"), "{error}");
+}
+
+// --------------------------------------------------------- send --listed
+//
+// The list is checked before the config key, which is what makes the admitted
+// path testable at all: an address on the list gets as far as the shut gate and
+// stops there, so `SendDisabled` is the proof it was let through.
+
+fn attempt_listed_send(chat: &str) -> msg::Error {
+    ask(&Request::Send(SendRequest {
+        chat: chat.into(),
+        body: Some("hi".into()),
+        names: Some(false),
+        listed: Some(true),
+        ..Default::default()
+    }))
+    .unwrap_err()
+}
+
+#[test]
+fn a_listed_address_reaches_the_config_gate() {
+    let error = attempt_listed_send("+13105551234");
+    assert!(matches!(error, msg::Error::SendDisabled(_)), "{error}");
+}
+
+/// Robin is listed in one casing and messaged from two. Either conversation is
+/// Robin's, and an email address is not case-sensitive in practice.
+#[test]
+fn a_listed_address_in_another_casing_reaches_the_config_gate() {
+    let error = attempt_listed_send("ROBIN@example.com");
+    assert!(matches!(error, msg::Error::SendDisabled(_)), "{error}");
+}
+
+#[test]
+fn refuses_an_address_that_is_not_listed_before_the_config_gate() {
+    let error = attempt_listed_send("kit@example.com");
+    assert!(!matches!(error, msg::Error::SendDisabled(_)), "{error}");
+    let error = error.to_string();
+    assert!(error.contains("not sent"), "{error}");
+    assert!(error.contains("kit@example.com"), "{error}");
+}
+
+/// A room is listed only when everyone in it is. The Ship Room holds a listed
+/// number and an unlisted address, and the refusal names the one missing.
+#[test]
+fn refuses_a_room_with_a_member_who_is_not_listed() {
+    let error = attempt_listed_send("Ship Room").to_string();
+    assert!(error.contains("not sent"), "{error}");
+    assert!(error.contains("someone@example.com"), "{error}");
+}
+
+/// A guid is sent without a lookup, so there would be nobody to check.
+#[test]
+fn refuses_a_chat_guid_under_listed() {
+    let error = attempt_listed_send("iMessage;-;+13105551234").to_string();
+    assert!(error.contains("not a chat guid"), "{error}");
+}
+
+/// Without `listed` the list is never consulted, so an unlisted address still
+/// meets the config gate — the flag narrows what a send may reach and does
+/// nothing else.
+#[test]
+fn an_unlisted_address_without_the_flag_meets_the_config_gate_as_before() {
+    assert!(matches!(
+        attempt_send("kit@example.com"),
+        msg::Error::SendDisabled(_)
+    ));
 }
 
 // --------------------------------------------------------------- status
@@ -1468,6 +1556,7 @@ fn a_daemon_that_cannot_read_the_database_says_so_in_its_own_words() {
         config_path: Some(directory.join("config-that-does-not-exist.toml")),
         addressbook: None,
         contacts_store: Some(std::sync::Arc::new(FakeContacts::default())),
+        allowlist: None,
     });
     daemon.listen(Some(socket.clone())).unwrap();
 

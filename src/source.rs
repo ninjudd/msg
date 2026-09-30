@@ -77,6 +77,8 @@ pub struct SendQuery {
     /// Bytes rather than a path: the daemon never reads a path a client named (§6).
     pub file: Option<crate::daemon::protocol::Attachment>,
     pub names: bool,
+    /// Refuse anyone not on `/etc/msg/allowlist` (send-allowlist.md §2).
+    pub listed: bool,
 }
 
 /// Which end answered, which `msg daemon status` and the tests both care about.
@@ -385,6 +387,7 @@ impl Source {
             body: query.body.clone(),
             file: query.file.clone(),
             names: (!query.names).then_some(false),
+            listed: query.listed.then_some(true),
         }))?;
         Ok(serde_json::from_value(value)?)
     }
