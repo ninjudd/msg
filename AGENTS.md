@@ -152,7 +152,7 @@ raised a raw `EPERM` from the copy instead of the explanation, and nothing caugh
 it because the development machine held the grant. `tests/cli.rs` now pins both
 that path and the exit statuses, but revoke the grant before trusting either.
 
-<!-- projector:begin 1 -->
+<!-- projector:begin 4 -->
 ## Projector conventions
 
 This repository keeps its project plans in Git with
@@ -173,6 +173,20 @@ body as prose that explains why the change exists, because a squash merge makes
 it the commit message. Match the line wrapping already used around a Markdown
 edit, and do not hard-wrap prose you post to GitHub, because GitHub renders
 line breaks.
+
+Open every pull request as a draft, each layer of a stack included. A review
+loop marks a pull request ready when its head reviews clean, so a draft says
+the work has not been signed off yet. Never mark your own draft ready, even
+once the reason you drafted it is resolved, because only a clean review
+clears it.
+
+Open dependent work that is too large to review as one pull request as a
+GitHub stack with `gh stack`, as Projector's `implement` skill describes
+under "Stack dependent work". Fix stacked code on the branch that introduced
+it, and let `gh stack` carry the fix up right away by rebasing every layer
+above, so each layer stays on the current head of the one below and the
+stack can merge as a unit. Chain pull requests by base branch, and update
+them by merging, only where `gh stack` is unavailable.
 
 Projector generates this section. To change it, change the template in
 Projector and run `project init`.
